@@ -1,0 +1,140 @@
+/* The writing assistant's bar, between the editor's header and its canvas.
+ *
+ * Every control rule carries two classes (`.panel .run`) rather than one (`.panel input`), because the
+ * panel is rendered inside the host's own form on the post, page, product and block screens, where
+ * `.form input` — one class, one element — would otherwise win or lose on stylesheet order alone. Two
+ * classes beat it whichever order the bundler picks, which is the same argument ClassicEditor's own
+ * stylesheet makes for scoping under `.editor`. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px 10px;
+  border-bottom: 1px solid #cbd5e1;
+  background: #eef2ff;
+}
+
+.head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.title { color: #3730a3; font-size: .8rem; font-weight: 700; }
+
+.panel .close {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #4338ca;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: .8rem;
+  line-height: 1;
+}
+
+.panel .close:hover { border-color: #a5b4fc; background: #fff; }
+
+.status { margin: 0; color: #475569; font-size: .74rem; }
+
+.tasks { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.panel .task,
+.panel .taskActive {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  color: #3730a3;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: .73rem;
+}
+
+.panel .task:hover:not(:disabled) { background: #e0e7ff; }
+.panel .taskActive { border-color: #4f46e5; color: #fff; background: #4f46e5; font-weight: 700; }
+.panel .taskActive:hover:not(:disabled) { background: #4338ca; }
+
+.panel .close:disabled,
+.panel .task:disabled,
+.panel .taskActive:disabled,
+.panel .run:disabled,
+.panel .ghost:disabled { cursor: not-allowed; opacity: .45; }
+
+.row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.panel .field { display: flex; flex-direction: column; gap: 3px; color: #475569; font-size: .7rem; font-weight: 700; }
+.panel .grow { flex: 1 1 200px; }
+
+.panel .select,
+.panel .text {
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid #c7d2fe;
+  border-radius: 4px;
+  outline: 0;
+  color: #1e293b;
+  background: #fff;
+  font: inherit;
+  font-size: .76rem;
+  font-weight: 400;
+  resize: none;
+}
+
+.panel .select { width: auto; min-width: 132px; }
+.panel .select:focus,
+.panel .text:focus { border-color: #6366f1; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+.panel .run {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid #4f46e5;
+  border-radius: 4px;
+  color: #fff;
+  background: #4f46e5;
+  cursor: pointer;
+  font: inherit;
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.panel .run:hover:not(:disabled) { background: #4338ca; }
+
+.panel .ghost {
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 5px 10px;
+  border: 1px solid #c7d2fe;
+  border-radius: 4px;
+  color: #3730a3;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: .73rem;
+}
+
+.panel .ghost:hover:not(:disabled) { background: #e0e7ff; }
+
+.note { color: #64748b; font-size: .73rem; }
+.error { margin: 0; padding: 6px 8px; border-radius: 4px; color: #991b1b; background: #fef2f2; font-size: .74rem; }
+.result { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid #c7d2fe; }
+.summary { margin: 0; color: #1e293b; font-size: .76rem; }
+.warning { margin: 0; color: #92400e; font-size: .72rem; }

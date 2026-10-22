@@ -1,0 +1,129 @@
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { rwp } from '../lib/rwp';
+import { useApplyFilters } from '../core/HookSlot';
+
+export const sanitizeHtml = (html: string) => {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('script, style, iframe, object, embed').forEach((element) => element.remove());
+  template.content.querySelectorAll<HTMLElement>('*').forEach((element) => {
+    [...element.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+  });
+  // Deferred image loading, applied here rather than by whoever wrote the content: the classic
+  // editor, imported HTML and anything a plugin's `the_content` filter adds all end up in this one
+  // sanitizer, so this is the one place that sees every <img> a page will ever render. An author
+  // who wants a specific image to load eagerly (a hero image above the fold) sets loading="eager"
+  // by hand and it is left alone — only images that never declared an opinion get one here.
+  template.content.querySelectorAll<HTMLImageElement>('img:not([loading])').forEach((image) => {
+    image.setAttribute('loading', 'lazy');
+    if (!image.hasAttribute('decoding')) image.setAttribute('decoding', 'async');
+  });
+  return template;
+};
+
+const parseAttributes = (raw: string): Record<string, string> => {
+  const attributes: Record<string, string> = {};
+  const pattern = /([a-zA-Z0-9_-]+)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(raw))) attributes[match[1]] = match[2];
+  return attributes;
+};
+
+/**
+ * Replaces shortcodes with empty host spans and returns the components to portal into them.
+ *
+ * The substitution happens on the parsed DOM rather than the HTML string. Splitting the
+ * string at each shortcode would cut through open tags whenever one appeared mid-paragraph
+ * and hand React unbalanced fragments; editing text nodes in place keeps the markup valid.
+ */
+const buildMarkup = (html: string): { markup: string; nodes: ReactNode[] } => {
+  const template = sanitizeHtml(html);
+  const registered = rwp.getShortcodes();
+  const nodes: ReactNode[] = [];
+  if (registered.length === 0) return { markup: template.innerHTML, nodes };
+
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  while (walker.nextNode()) texts.push(walker.currentNode as Text);
+
+  texts.forEach((textNode) => {
+    const value = textNode.nodeValue || '';
+    if (!value.includes('[')) return;
+
+    const pattern = /\[([a-zA-Z0-9_-]+)([^\]]*)\]/g;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    let matched = false;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(value))) {
+      const shortcode = registered.find((item) => item.name === match![1]);
+      if (!shortcode) continue;
+      matched = true;
+      if (match.index > cursor) fragment.appendChild(document.createTextNode(value.slice(cursor, match.index)));
+      const host = document.createElement('span');
+      host.setAttribute('data-rwp-sc', String(nodes.length));
+      nodes.push(shortcode.render(parseAttributes(match[2])));
+      fragment.appendChild(host);
+      cursor = match.index + match[0].length;
+    }
+
+    if (!matched) return;
+    if (cursor < value.length) fragment.appendChild(document.createTextNode(value.slice(cursor)));
+    textNode.replaceWith(fragment);
+  });
+
+  return { markup: template.innerHTML, nodes };
+};
+
+export interface ContentRendererProps {
+  html: string;
+  className?: string;
+  /**
+   * Runs the HTML through the `the_content` filter first (WordPress's hook of the same name).
+   * Off for chrome that happens to be HTML — Theme Editor custom HTML blocks, area code — so a
+   * content filter does not also rewrite the header.
+   */
+  applyContentFilters?: boolean;
+}
+
+export default function ContentRenderer({ html, className, applyContentFilters = true }: ContentRendererProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Filtered before sanitizing, never after: whatever a filter returns still has to survive
+  // sanitizeHtml, or a plugin could smuggle a <script> into every page through this hook.
+  const filteredHtml = useApplyFilters<string>('the_content', html);
+  const source = applyContentFilters ? filteredHtml : html;
+  const { markup, nodes } = useMemo(() => buildMarkup(source), [source]);
+  const [hosts, setHosts] = useState<HTMLElement[]>([]);
+  const written = useRef<{ element: HTMLElement | null; markup: string }>({ element: null, markup: '' });
+
+  // The HTML is written here, not with dangerouslySetInnerHTML. With that, the hosts found after
+  // the first commit were later replaced by fresh copies, so every portal rendered into a detached
+  // element: an empty [rwp_login_form] and no error anywhere. Now the HTML is written only when
+  // the markup (or the element) changes, and the hosts are found in the same step, so they are
+  // always the ones on the page. Checked after every commit, before paint, so nothing flashes.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container || (written.current.element === container && written.current.markup === markup)) return;
+    container.innerHTML = markup;
+    written.current = { element: container, markup };
+    setHosts(Array.from(container.querySelectorAll<HTMLElement>('[data-rwp-sc]')));
+  });
+
+  return (
+    <div className={className}>
+      <div ref={containerRef} />
+      {hosts.map((host) => {
+        const index = Number(host.dataset.rwpSc);
+        return nodes[index] === undefined ? null : createPortal(nodes[index], host, String(index));
+      })}
+    </div>
+  );
+}

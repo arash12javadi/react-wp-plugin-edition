@@ -1,0 +1,252 @@
+.container {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 48px 40px 24px;
+}
+
+.containerWide {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 48px 40px 24px;
+}
+
+/*
+ * Full width is edge to edge: no page padding, so a builder section with "Full width" content
+ * reaches the screen edges (and its own .rwpb-section padding keeps the content readable).
+ * Boxed and Wide keep the gutters. The page builder's canvas repeats this rule
+ * (editor/editor.module.css .canvasFull) so the preview matches the live page.
+ */
+.containerFull {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.content {
+  color: #334155;
+  line-height: 1.75;
+}
+
+.content :global(h1),
+.content :global(h2),
+.content :global(h3),
+.content :global(h4),
+.content :global(h5),
+.content :global(h6) {
+  margin: 1.4em 0 .55em;
+  color: #0f172a;
+  line-height: 1.25;
+}
+
+.content :global(p) {
+  margin: 0 0 1em;
+}
+
+.content :global(ul),
+.content :global(ol) {
+  margin: 0 0 1em;
+  /* Logical, so list markers sit on the correct side in RTL content. */
+  padding-inline-start: 1.5rem;
+}
+
+.content :global(blockquote) {
+  margin: 1.25em 0;
+  padding: .75rem 1rem;
+  border-inline-start: 4px solid #6366f1;
+  color: #475569;
+  background: #f8fafc;
+}
+
+.content :global(a) {
+  color: #4f46e5;
+}
+
+.content :global(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+/* The editor's canvas carries the same two rules (ClassicEditor.module.css), so a highlighted word or
+   a key the reader should press looks the same while it is being written and after it is published.
+   <sub> and <sup> are missing on purpose: the browser already raises and lowers both. */
+.content :global(kbd) {
+  border: 1px solid #cbd5e1;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #0f172a;
+  background: #f8fafc;
+  font-family: Consolas, monospace;
+  font-size: .86em;
+}
+
+.content :global(mark) {
+  padding: 0 1px;
+  color: inherit;
+  background: #fef08a;
+}
+
+.hero {
+  padding: clamp(32px, 7vw, 78px);
+  background: #f1eadf;
+  border: 1px solid #e9dfd1;
+  border-radius: 12px;
+}
+
+.hero h1 {
+  max-width: 720px;
+  margin: 8px 0 18px;
+  color: #111827;
+  font-size: clamp(2.2rem, 6vw, 4.5rem);
+  line-height: 1.02;
+  letter-spacing: -.06em;
+}
+
+.hero p:not(.kicker) {
+  max-width: 650px;
+  color: #4b5563;
+  font-size: 1.05rem;
+}
+
+.kicker {
+  margin: 0;
+  color: #2271b1;
+  font-size: .74rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.heroLink,
+.postCard a,
+.widget a {
+  color: #2271b1;
+  text-decoration: none;
+}
+
+.heroLink {
+  display: inline-block;
+  margin-top: 28px;
+  font-weight: 700;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(220px, 3fr);
+  gap: 64px;
+  padding-top: 64px;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.sectionHeading h2,
+.widget h2 {
+  margin: 4px 0 0;
+  color: #111827;
+}
+
+.sectionHeading h2 {
+  font-size: 2rem;
+}
+
+.postCard {
+  padding: 28px 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.postCard h3 {
+  margin: 6px 0 10px;
+  color: #111827;
+  font-size: 1.6rem;
+}
+
+.postCard p:not(.postMeta) {
+  margin-bottom: 16px;
+  color: #6b7280;
+}
+
+.postCard a {
+  font-weight: 700;
+}
+
+.postMeta,
+.muted {
+  color: #6b7280;
+  font-size: .85rem;
+}
+
+.sidebar {
+  display: grid;
+  align-content: start;
+  gap: 34px;
+}
+
+.widget {
+  padding-bottom: 28px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.widget h2 {
+  margin-bottom: 14px;
+  font-size: 1rem;
+}
+
+.widget input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+  color: #111827;
+}
+
+.widget ul {
+  display: grid;
+  gap: 9px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.error {
+  padding: 12px;
+  color: #991b1b;
+  background: #fef2f2;
+  border-radius: 5px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .container,
+  .containerWide {
+    padding: 24px 20px;
+  }
+
+  /* Full width has no gutters at any size; `.containerFull` is not in the rule above on purpose. */
+  .containerFull {
+    padding: 0;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 40px;
+    padding-top: 40px;
+  }
+}

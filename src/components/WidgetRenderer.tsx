@@ -1,0 +1,125 @@
+import { useEffect, useState } from 'react';
+import { client } from '../lib/db';
+import type { Category } from '../lib/types';
+import type { Widget } from '../lib/widgets';
+import LoginButton from './LoginButton';
+import LiveSearch from './LiveSearch';
+import ContentRenderer from './ContentRenderer';
+import styles from './PublicHome.module.css';
+import { useAppSettings } from '../lib/appSettings';
+import { MenuLabel, resolveMenuLinks, useMenuViewer, type DynamicMenuLink } from '../lib/dynamicMenu';
+import { translateTerm } from '../lib/translations';
+import { useTranslation } from '../context/I18nContext';
+
+type MenuItemRow = DynamicMenuLink;
+
+function SearchWidget({ widget }: { widget: Widget }) {
+  return <LiveSearch inputId={`search-${widget.id}`} placeholder={String(widget.settings.placeholder || 'Search posts…')} />;
+}
+
+function RecentPostsWidget({ widget }: { widget: Widget }) {
+  const [posts, setPosts] = useState<Array<{ id: number; title: string; slug: string }>>([]);
+  useEffect(() => {
+    client
+      .from('pages')
+      .select('id,title,slug')
+      .eq('status', 'published')
+      .eq('is_post', true)
+      .order('created_at', { ascending: false })
+      .limit(Number(widget.settings.count) || 5)
+      .then(({ data }) => setPosts((data || []) as Array<{ id: number; title: string; slug: string }>));
+  }, [widget.settings.count]);
+
+  if (posts.length === 0) return <p className={styles.muted}>No posts yet.</p>;
+  return <ul>{posts.map((post) => <li key={post.id}><a href={`/${post.slug}`}>{post.title}</a></li>)}</ul>;
+}
+
+function CategoriesWidget({ widget }: { widget: Widget }) {
+  // Re-renders on a language switch, which is what translateTerm() relies on.
+  const { t, formatNumber } = useTranslation();
+  const [categories, setCategories] = useState<Array<Category & { count: number }>>([]);
+  useEffect(() => {
+    const load = async () => {
+      const supabase = client;
+      const [{ data: cats }, { data: pages }] = await Promise.all([
+        supabase.from('categories').select('id,name,slug,description').order('name'),
+        supabase.from('pages').select('category_id').eq('status', 'published'),
+      ]);
+      const counts = new Map<string, number>();
+      (pages || []).forEach((page: { category_id: string | null }) => {
+        if (page.category_id) counts.set(page.category_id, (counts.get(page.category_id) || 0) + 1);
+      });
+      setCategories(((cats || []) as Category[]).map((category) => ({ ...category, count: counts.get(category.id) || 0 })));
+    };
+    void load();
+  }, []);
+
+  if (categories.length === 0) return <p className={styles.muted}>{t('widgets.noCategories', 'No categories yet.')}</p>;
+  return (
+    <ul>
+      {categories.map((category) => {
+        // category.<slug>.name / .description under Settings → Translations, else the stored text.
+        const description = translateTerm('category', category, 'description');
+        return (
+          <li key={category.id}>
+            <a href={`/?category=${category.slug}`} title={description || undefined}>{translateTerm('category', category)}</a>
+            {widget.settings.showCounts ? ` (${formatNumber(category.count)})` : ''}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function MenuWidget({ widget }: { widget: Widget }) {
+  const [items, setItems] = useState<MenuItemRow[]>([]);
+  const viewer = useMenuViewer();
+  const { settings: appSettings } = useAppSettings();
+  useEffect(() => {
+    const menuId = String(widget.settings.menuId || '');
+    if (!menuId) return;
+    client
+      .from('menus')
+      .select('items')
+      .eq('id', menuId)
+      .maybeSingle()
+      .then(({ data }) => setItems(Array.isArray(data?.items) ? data.items as MenuItemRow[] : []));
+  }, [widget.settings.menuId]);
+
+  if (items.length === 0) return <p className={styles.muted}>No menu selected.</p>;
+  return (
+    <ul>
+      {resolveMenuLinks(items, viewer, appSettings.menu.profile_url).map((item) => (
+        <li key={`${item.name}-${item.url}`}>
+          <a href={item.url} aria-label={item.label ? undefined : item.name}><MenuLabel link={item} size={20} /></a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export default function WidgetRenderer({ widget }: { widget: Widget }) {
+  const body = (() => {
+    switch (widget.type) {
+      case 'search': return <SearchWidget widget={widget} />;
+      case 'recent-posts': return <RecentPostsWidget widget={widget} />;
+      case 'categories': return <CategoriesWidget widget={widget} />;
+      case 'menu': return <MenuWidget widget={widget} />;
+      case 'text': return <ContentRenderer html={String(widget.settings.content || '')} />;
+      case 'login': return (
+        <LoginButton
+          label={String(widget.settings.label || '')}
+          variant={widget.settings.style === 'link' ? 'link' : 'button'}
+        />
+      );
+      default: return null;
+    }
+  })();
+
+  return (
+    <div className={styles.widget}>
+      {widget.title && <h2>{widget.title}</h2>}
+      {body}
+    </div>
+  );
+}

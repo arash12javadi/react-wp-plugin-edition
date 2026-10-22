@@ -1,0 +1,184 @@
+import type { MediaItem, MediaProvider } from './types';
+import type { SiteSettings } from './settings';
+import { client, getSystemSetting } from './db';
+import {
+  mediaStorageConfigFrom,
+  mediaStorageConfigKey,
+  type MediaStorageConfig,
+} from './integrations';
+
+export interface UploadResult {
+  url: string;
+  file_name: string;
+  provider_file_id: string | null;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  mime_type: string | null;
+  provider: MediaProvider;
+}
+
+/**
+ * What an upload needs, merged from the two places a site may have configured it.
+ *
+ * The Integrations hub (Settings → Integrations → Media & storage) is the only screen that writes
+ * these values, and its row wins. The legacy per-option fields are still read, so a site that
+ * configured Cloudinary or ImageKit before the hub existed keeps uploading without anyone
+ * re-entering anything.
+ */
+export interface UploadCredentials {
+  cloudinary: { cloudName: string; uploadPreset: string };
+  imagekit: { publicKey: string };
+}
+
+export const uploadCredentialsFrom = (
+  settings: SiteSettings,
+  media?: MediaStorageConfig | null,
+): UploadCredentials => ({
+  cloudinary: {
+    cloudName: media?.cloudinary.cloud_name || settings.cloudinary_cloud_name,
+    uploadPreset: media?.cloudinary.upload_preset || settings.cloudinary_upload_preset,
+  },
+  imagekit: { publicKey: media?.imagekit.public_key || settings.imagekit_public_key },
+});
+
+/**
+ * The media card's credential row, as the browser can see it. `manage_options` is what RLS asks for,
+ * so an editor sees `null` and the per-option fallback above covers them.
+ */
+export const fetchMediaStorageConfig = async (): Promise<MediaStorageConfig | null> => {
+  try {
+    return mediaStorageConfigFrom(await getSystemSetting<unknown>(mediaStorageConfigKey));
+  } catch {
+    return null;
+  }
+};
+
+// fetch() exposes no upload progress, so uploads go through XMLHttpRequest.
+const postForm = (url: string, form: FormData, onProgress: (percent: number) => void): Promise<any> =>
+  new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', url);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onload = () => {
+      let payload: any = null;
+      try {
+        payload = JSON.parse(request.responseText);
+      } catch {
+        // Providers return HTML or plain text for some failures.
+      }
+      if (request.status >= 200 && request.status < 300 && payload) {
+        resolve(payload);
+        return;
+      }
+      const detail = payload?.error?.message || payload?.message || request.responseText?.trim().slice(0, 300);
+      reject(new Error(detail
+        ? `${detail} (HTTP ${request.status})`
+        : `The upload service returned HTTP ${request.status} with no message.`));
+    };
+    request.onerror = () => reject(new Error('Network error during upload. Check the cloud name and your connection.'));
+    request.send(form);
+  });
+
+export const uploadToCloudinary = async (
+  file: File,
+  credentials: UploadCredentials,
+  onProgress: (percent: number) => void,
+  folder?: string,
+): Promise<UploadResult> => {
+  const { cloudName, uploadPreset } = credentials.cloudinary;
+  if (!cloudName || !uploadPreset) {
+    throw new Error('Cloudinary is not set up yet. Save the cloud name and an unsigned upload preset under Settings → Integrations → Media & storage.');
+  }
+  const form = new FormData();
+  form.append('file', file);
+  form.append('upload_preset', uploadPreset);
+  // "folder" works in both Cloudinary folder modes: fixed mode prefixes the public id, dynamic
+  // mode sets the asset folder. A folder set on the upload preset itself takes precedence.
+  //
+  // `folder` here is the PROVIDER folder, already namespaced by the caller through
+  // src/lib/mediaScope.js (media/… for the library, plugins/<id>/… for a plugin). That prefix is
+  // what plugin uninstall and site reset delete by, so an un-namespaced upload becomes a file
+  // nothing can ever clean up.
+  if (folder) form.append('folder', folder);
+
+  const result = await postForm(
+    `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+    form,
+    onProgress,
+  );
+
+  return {
+    url: result.secure_url,
+    file_name: result.original_filename || file.name,
+    provider_file_id: result.public_id ?? null,
+    width: result.width ?? null,
+    height: result.height ?? null,
+    bytes: result.bytes ?? file.size,
+    mime_type: result.format ? `${result.resource_type}/${result.format}` : file.type || null,
+    provider: 'cloudinary',
+  };
+};
+
+export const uploadToImageKit = async (
+  file: File,
+  credentials: UploadCredentials,
+  onProgress: (percent: number) => void,
+  folder?: string,
+): Promise<UploadResult> => {
+  const { publicKey } = credentials.imagekit;
+  if (!publicKey) {
+    throw new Error('ImageKit is not set up yet. Save the URL endpoint, public key and private key under Settings → Integrations → Media & storage.');
+  }
+  // The signature needs the private key, so it has to come from the server, which also checks
+  // the caller may upload and has room in their disk quota for this file.
+  const { data: sessionData } = await client.auth.getSession();
+  const authResponse = await fetch(`/api/imagekit-auth?bytes=${file.size}`, {
+    headers: { Authorization: `Bearer ${sessionData.session?.access_token || ''}` },
+  });
+  if (!authResponse.ok) {
+    const payload = await authResponse.json().catch(() => ({}));
+    throw new Error(payload.error || 'Could not get ImageKit upload credentials from the server.');
+  }
+  const { token, expire, signature } = await authResponse.json();
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('fileName', file.name);
+  form.append('publicKey', publicKey);
+  form.append('token', token);
+  form.append('expire', String(expire));
+  form.append('signature', signature);
+  // The signature covers only token and expire, so the folder can be chosen here.
+  if (folder) form.append('folder', `/${folder}`);
+
+  const result = await postForm('https://upload.imagekit.io/api/v1/files/upload', form, onProgress);
+
+  return {
+    url: result.url,
+    file_name: result.name || file.name,
+    provider_file_id: result.fileId ?? null,
+    width: result.width ?? null,
+    height: result.height ?? null,
+    bytes: result.size ?? file.size,
+    mime_type: result.fileType || file.type || null,
+    provider: 'imagekit',
+  };
+};
+
+export const formatBytes = (bytes: number | null): string => {
+  if (!bytes) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+};
+
+export const describeDimensions = (item: MediaItem): string =>
+  item.width && item.height ? `${item.width} × ${item.height}` : '—';

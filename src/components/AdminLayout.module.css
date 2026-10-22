@@ -1,0 +1,334 @@
+﻿.shell {
+  min-height: 100vh;
+  background: #f7f8fc;
+  color: #172033;
+  font-family: var(--rwp-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  text-align: start;
+}
+
+.workspace {
+  min-height: calc(100vh - 32px);
+  display: flex;
+}
+
+.sidebar {
+  width: 248px;
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: #111827;
+  color: #cbd5e1;
+  padding: 24px 14px;
+  box-sizing: border-box;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 700;
+  padding: 0 12px 28px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.brand > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brandImage {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.navList,
+.submenu {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.navText {
+  flex: 1;
+  min-width: 0;
+}
+
+.badge {
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: #dc2626;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.submenu {
+  margin: -2px 0 8px;
+  padding: 6px 0 6px 0;
+  border-radius: 0 0 8px 8px;
+  background: #0b1220;
+}
+
+.subItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  padding: 7px 12px 7px 22px;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: start;
+}
+
+.subItem:hover,
+.subItem:focus-visible {
+  color: #fff;
+}
+
+.subItemActive {
+  color: #fff;
+  font-weight: 700;
+}
+
+.subIcon {
+  width: 18px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.headerIcon {
+  margin-inline-end: 8px;
+}
+
+.brandMark,
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: #6366f1;
+  color: #fff;
+  font-weight: 700;
+}
+
+.brandMark {
+  width: 30px;
+  height: 30px;
+}
+
+.navLabel {
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 0 12px;
+  margin: 0 0 8px;
+}
+
+.navItem,
+.logoutButton,
+.menuButton {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.navItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #94a3b8;
+  background: transparent;
+  border-radius: 8px;
+  padding: 11px 12px;
+  margin-bottom: 4px;
+  text-align: start;
+}
+
+.navItem:hover,
+.navItem:focus-visible {
+  color: #fff;
+  background: #1e293b;
+}
+
+.navItemActive,
+.navItemActive:hover,
+.navItemActive:focus-visible {
+  color: #fff;
+  background: #4f46e5;
+}
+
+.navItemActive[aria-expanded="true"] {
+  margin-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+
+.navIcon {
+  width: 20px;
+  text-align: center;
+  font-size: 1.1rem;
+}
+
+.sidebarFooter {
+  margin-top: auto;
+}
+
+.logoutButton {
+  width: 100%;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: #94a3b8;
+  background: transparent;
+  padding: 11px 12px;
+  border-radius: 8px;
+  text-align: start;
+}
+
+.logoutButton:hover,
+.logoutButton:focus-visible {
+  color: #fff;
+  background: #1e293b;
+}
+
+.content {
+  min-width: 0;
+  flex: 1;
+}
+
+.header {
+  height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 34px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.headerTitle {
+  min-width: 0;
+}
+
+.eyebrow {
+  display: block;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header h1 {
+  margin: 2px 0 0;
+  color: #111827;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-inline-start: auto;
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+.viewSiteButton {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+
+.email {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main {
+  padding: 34px;
+}
+
+.menuButton,
+.backdrop {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  .sidebarOpen {
+    transform: translateX(0);
+  }
+
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    border: 0;
+    background: rgb(15 23 42 / 50%);
+  }
+
+  .menuButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    color: #334155;
+    background: transparent;
+    border-radius: 6px;
+    font-size: 1.2rem;
+  }
+
+  .header {
+    padding: 0 18px;
+  }
+
+  .main {
+    padding: 24px 18px;
+  }
+
+  .email {
+    display: none;
+  }
+}

@@ -1,0 +1,1353 @@
+<div align="center">
+
+# React-WP
+
+**A lightweight, modular, WordPress-style CMS built on React 19, Vite and Supabase.**
+
+Familiar to WordPress users (Setup Wizard, roles, plugins, themes, page builder, media library),
+but a single-page app on top of Postgres instead of a monolith on top of PHP.
+
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)](https://vite.dev)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20Auth-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
+[![Version](https://img.shields.io/badge/version-1.3.1-blue)](./package.json)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+[![Stars](https://img.shields.io/github/stars/arash12javadi/react-wp?style=flat&logo=github)](https://github.com/arash12javadi/react-wp/stargazers)
+
+[Key Features](#key-features) · [Architecture](#architecture--tech-stack) · [Deployment](#deployment-options) · [Quick Start](#getting-started) · [Security](#security--data-isolation) · [Reference](#technical-reference)
+
+</div>
+
+<a name="table-of-contents"></a>
+
+## 📑 Table of Contents
+
+1. [Overview](#overview)
+2. [Key Features](#key-features)
+3. [Architecture & Tech Stack](#architecture--tech-stack)
+4. [Deployment Options](#deployment-options)
+5. [Getting Started](#getting-started)
+6. [Security & Data Isolation](#security--data-isolation)
+7. [Contributing](#contributing)
+8. [License](#license)
+9. [Technical Reference](#technical-reference) (security engine, plugin API, media, shop, builder, i18n, chat…)
+
+---
+
+<a name="overview"></a>
+
+## Overview
+
+React-WP keeps the parts of WordPress people actually like and drops the parts they don't.
+
+| | Traditional monolithic CMS | React-WP |
+|---|---|---|
+| **Backend** | PHP + MySQL you operate | Supabase (Postgres + Auth), managed |
+| **Frontend** | Server-rendered PHP themes | React SPA, themed from a JSON layout |
+| **Install** | Unzip, edit `wp-config.php` | Browser Setup Wizard |
+| **Extending** | PHP plugins loaded on every request | Plugins as ES modules, loaded at runtime, with their own SQL schema |
+| **Permissions** | PHP capability checks | Same capability map in the UI **and** Postgres Row Level Security |
+| **Hosting** | Shared PHP hosting | A Node.js process/VPS, or serverless (Vercel) |
+
+**One Supabase project = one website**, exactly as one WordPress database = one site.
+
+> 💡 **Note:** The database is the whole backend. There is no API layer to keep in sync with the UI:
+> the browser talks to Supabase directly and Row Level Security decides what each visitor may do.
+> A small Node server (`server.mjs`) exists only for the things a browser must not do
+> (secrets, DDL, payments, SEO tags for crawlers, rate limiting).
+
+---
+
+<a name="universal-mode"></a>
+
+## 🌍 Universal Mode — a platform-agnostic Headless CMS
+
+As well as the Supabase backend described above, React-WP now runs on **any** environment that
+supports Node.js or the Web Fetch API, against **any** of four database backends. The Supabase path
+is fully unchanged (backward compatible); the new abstraction layers sit underneath it.
+
+### The abstraction layers
+
+| Layer | Location | What it does |
+|---|---|---|
+| `DBAdapter` | `src/lib/db/` | One interface for CRUD, table queries, the options key-value store and schema migrations. Four drivers: **Supabase** (`@supabase/supabase-js`), **PostgreSQL** (`pg`), **MySQL/MariaDB** (`mysql2`), **SQLite/LibSQL** (`better-sqlite3` / `@libsql/client`). |
+| `AuthAdapter` | `src/lib/auth/` | **Supabase** mode (native Auth + JWT) or **universal** mode (`bcryptjs` + `jose` JWTs against `rwp_users`). |
+| `StorageAdapter` | `src/lib/storage/` | **Local** uploads on a persistent disk, or **S3-compatible** object storage (AWS S3, Cloudflare R2, Supabase Storage, MinIO). |
+| Hono server | `src/server/` | The whole API engine, written against the standard `Request`/`Response` API so it runs unchanged on Node (`@hono/node-server`), Vercel/Netlify, and Cloudflare Workers/Pages. |
+| Migrations | `src/lib/db/migrations/` | Idempotent, dialect-specific DDL for `pages`, `categories`, `menus`, `options` (plus `posts`, `profiles`, `media`, `comments`, `plugins` and `rwp_users`), provisioned identically across Postgres, MySQL and SQLite. |
+
+### Runtime configuration
+
+Everything is driven by `src/lib/runtime.ts`, which reads a server-injected object
+(`window.__REACT_WP_CONFIG__`) or environment variables — `VITE_DB_TYPE`, `DATABASE_URL`,
+`JWT_SECRET`, `S3_*`, … A persistent server also reads/writes `data/react-wp-config.json`.
+The 5-step Setup Wizard (`/setup`) provisions the database, writes that file in persistent mode, and
+hands the same settings back as a ready-to-paste `.env` block — copyable in one click and
+downloadable as a file on every target, with the administrator's role reported as it was actually
+saved. See [`.env.example`](./.env.example) for every variable.
+
+The two sides resolve that configuration the same way, so a site that was configured **only** through
+`.env.local` is not asked to run the wizard again: on boot the server detects the database in the
+environment (the same `VITE_SUPABASE_*` pair the browser reads, or `DB_TYPE`/`VITE_DB_TYPE` +
+`DATABASE_URL`), adopts it as the site's own config — writing `data/react-wp-config.json` when the host
+can write to disk — and re-asserts `options.installed = true` in the database if the row is missing or
+stale. That last step is why an admin screen no longer answers *"This site is not installed, so plugins
+cannot be uploaded"* for a site that is plainly installed, and why no manual SQL is involved.
+
+### Running on each target
+
+**Local SQLite (zero config)**
+```bash
+VITE_DB_TYPE=libsql SQLITE_FILE=data/react-wp.db JWT_SECRET=$(openssl rand -hex 32) npm run start:hono
+# open http://localhost:3000/setup and pick "SQLite / Turso"
+```
+
+**Docker / VPS / DigitalOcean (persistent Node server)**
+```bash
+npm run build
+VITE_DB_TYPE=postgres DATABASE_URL=postgres://… JWT_SECRET=… npm run start:hono
+# mount ./data as a volume so react-wp-config.json and uploads/ survive restarts
+```
+
+**Vercel / Netlify (serverless)** — deploy `src/server/adapters/vercel.ts` as the function; the
+Setup Wizard's last step hands back a minimal `.env` block (only what the host needs to *boot*:
+`DB_TYPE`/`VITE_DB_TYPE`, `DATABASE_URL`, `JWT_SECRET`, plus `VITE_SUPABASE_*` for Supabase) to paste
+into the platform, with **Copy all** and **Download .env** beside it. Everything else the wizard
+collected — the storage driver above all — is written to the `system_settings` table and read back
+from the database, so no `RWP_STORAGE`/`S3_*` vars are required (you may still set them, e.g. `S3_*`
+credentials, to override what is stored).
+
+The last step is the same screen on every target, and it is the one place the installer admits what it
+did: it names the administrator it created **and the role that account's `profiles` row actually
+carries** (a promotion that matched no account is reported as a warning, instead of the site silently
+keeping the `subscriber` row `handle_new_user` gives every sign-up), lists each variable in the block
+with what it is for, and says where the file goes — `.env.local` in the project root for local work,
+the environment-variable screen on Vercel/Netlify, `env_file:` in `docker-compose.yml`, or
+`EnvironmentFile=` in a systemd unit. On a persistent host the block is extra rather than required:
+that server has already written `data/react-wp-config.json`, which is what tells it a site is
+installed — and a server that was handed nothing but that environment block answers as an installed
+site from its first boot, because it derives its config from the same variables the browser does.
+
+**Cloudflare Workers / Pages (edge)** — deploy `src/server/adapters/cloudflare.ts`; pair it with
+**Turso/LibSQL** (`VITE_DB_TYPE=libsql`, `DATABASE_URL=libsql://…`, `LIBSQL_AUTH_TOKEN`) and an
+S3-compatible bucket (Cloudflare R2). Hono's `fetch` handler is the entire server.
+
+**Supabase (the original path)** — unchanged: `npm start` runs `server.mjs` and the classic
+Supabase Setup Wizard, with RLS, the plugin installer and SEO prerendering. It resolves the Supabase
+pair from `.env.local` too, so a project that already has the schema applied needs no wizard run.
+
+### Notes
+
+- The universal drivers (`pg`, `mysql2`, `better-sqlite3`, `@libsql/client`, `bcryptjs`, `jose`,
+  `@aws-sdk/client-s3`) are **server-only** and loaded lazily, so they never enter the browser bundle.
+- The Supabase backend keeps the full 23-table `supabase/schema.sql` (RLS + triggers + RPCs); the
+  universal core schema in `src/lib/db/migrations/` is the platform-agnostic equivalent.
+- Run `npm run typecheck` to enforce types across every adapter and driver.
+
+[🔝 Back to top](#table-of-contents)
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="key-features"></a>
+
+## Key Features
+
+| Feature | What you get |
+|---|---|
+| 🧙 **WordPress-style Setup Wizard** | Enter your Supabase details in the browser; the installer creates the schema, the first administrator and default content (Home, Blog, policies, account pages). |
+| 🔐 **Role-based access control** | Roles live in `public.profiles` (not user-editable metadata). Capabilities are enforced in Postgres via `user_has_cap()`, mirrored in `src/lib/roles.ts` for the UI, with per-role and per-user grants under *Settings → Roles*. |
+| 🔌 **Runtime plugin registry** | Plugins are ES modules with a `manifest.json`. They register routes, admin pages, header items, hooks, server routes and their **own database schema**, installed on activation and removable (with backup) on uninstall. WordPress-style actions and filters share one hook registry. |
+| 🧱 **Visual page builder** | Drag-and-drop layouts, site templates (header, footer, single, archive, 404), per-language layouts, forms, dynamic tags, and an SEO audit tab. Ships as a plugin. |
+| 🖼️ **External media pipelines** | Media Library backed by Cloudinary or ImageKit, with folders, quotas, scoped access, and signed server-side deletes. |
+| 🔎 **SEO engine** | Meta/Open Graph tags written server-side (what crawlers read) and client-side, `/sitemap.xml`, `/robots.txt`, redirects and per-page SEO fields. |
+| 🛡️ **Security engine** | Rate limiting, anti-bot (Turnstile / reCAPTCHA), signed sessions, a page cache and response compression, all configured in *Settings → Security*. |
+| 🌍 **Multilingual and RTL** | Per-language settings, database-editable translations, logical CSS so `dir="rtl"` just works. |
+| 🛒 **Optional plugins** | Shop (Stripe/PayPal, computed in SQL), Chat with an AI assistant, Code Snippets, Persian Origins (bilingual content). |
+
+<details>
+<summary><b>Bundled plugins</b></summary>
+
+| Plugin | Folder | Purpose |
+|---|---|---|
+| Page Builder | `plugins/rwp-page-builder` | Visual editor, site templates, widgets, AI Section Refine, AI page generator, AI code assistant |
+| Shop | `plugins/rwp-shop` | Products, cart, checkout, coupons, stock, backup/import |
+| Chat | `plugins/rwp-chat` | Live chat, Telegram/WhatsApp hand-off, AI assistant |
+| Code Snippets | `plugins/rwp-code-snippets` | PHP-style snippets and an AI developer assistant |
+| Persian Origins | `plugins/persian-origins` | Bilingual (EN/FA) content and site text translation |
+| Sample Plugin | `plugins/rwp-sample-plugin` | Minimal starting point for your own plugin |
+
+Each plugin that owns tables ships `schema.sql` (run on activation) and `uninstall.sql`
+(run only when an administrator explicitly wipes its data). A site that never enables the shop
+never gets its `shop_*` tables.
+
+</details>
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="architecture--tech-stack"></a>
+
+## Architecture & Tech Stack
+
+| Layer | Technology | Role |
+|---|---|---|
+| Frontend | React 19, Vite 8 | SPA, admin, public site, editor canvas |
+| Rich text | TipTap (ProseMirror) | Classic content editor |
+| Data + Auth | Supabase (PostgreSQL, PostgREST, Auth) | The whole backend, secured by RLS |
+| Server | Node.js (`server.mjs`) | Static files, SEO tags, security middleware, plugin server routes, DDL |
+| Serverless | Vercel functions (`api/`) | Installer and plugin routes where no persistent process exists |
+| Media | Cloudinary / ImageKit | External file storage |
+| Email / AI | Nodemailer (SMTP), Gemini / OpenAI / Anthropic / any OpenAI-compatible service | Order and form email, optional AI features |
+
+```text
+                        ┌────────────────────────────┐
+                        │        Browser (SPA)       │
+                        │  React 19 · Vite bundle    │
+                        └───────┬─────────────┬──────┘
+        publishable key + RLS   │             │  /api/*  (secrets, DDL, payments)
+                                ▼             ▼
+                ┌──────────────────┐   ┌──────────────────────────┐
+                │     Supabase     │◄──│   server.mjs (Node.js)   │
+                │ Postgres · Auth  │   │ SEO · security · plugins │
+                │ RLS · SQL funcs  │   │ uses SUPABASE_SECRET_KEY │
+                └──────────────────┘   └───────────┬──────────────┘
+                                                   │
+                                     Cloudinary · ImageKit · Stripe
+                                     PayPal · SMTP · AI providers
+```
+
+<details>
+<summary><b>Setup Wizard flow</b></summary>
+
+```text
+ Open site ──► not installed? ──► Setup Wizard
+                                     │ 1. Supabase URL + publishable key
+                                     │ 2. DB password (or Session pooler string)
+                                     │ 3. Administrator account
+                                     ▼
+                    server runs supabase/schema.sql (23 core tables)
+                                     ▼
+              writes data/react-wp-config.json  (public values only)
+                                     ▼
+                 installs default content (Home, Blog, account pages)
+                                     ▼
+                              Dashboard ready
+```
+
+A site whose `.env.local` already carries the Supabase pair (or `DB_TYPE` + `DATABASE_URL`) never sees
+step 1: the server derives the same config from those variables on boot, treats *configured* as
+*installed*, and the wizard only runs where nothing is configured at all.
+
+</details>
+
+<details>
+<summary><b>Repository layout</b></summary>
+
+```text
+react-wp/
+├─ src/                 React app: admin, public site, theme engine, lib/
+├─ plugins/<id>/        manifest.json, schema.sql, uninstall.sql, server.mjs, UI
+├─ server/              Middleware (security, cache, compression), SEO, DB, plugin loader
+├─ server.mjs           Self-hosted Node entry point
+├─ api/                 Vercel serverless functions
+├─ supabase/
+│  └─ schema.sql        Core CMS schema (23 tables); safe to re-run
+├─ data/                react-wp-config.json (installer-created or derived from the environment, git-ignored)
+└─ updates.json         Version manifest used by Dashboard → Updates
+```
+
+</details>
+
+<details>
+<summary><b>Core schema vs. plugin schema</b></summary>
+
+- `supabase/schema.sql` is **core only**: pages, posts, categories, comments, profiles, options, menus, media, plugins, theme settings, roles, translations, engagement tables and more.
+- A plugin's `schema.sql` may depend on core, but **core never references a plugin object**, and one plugin never references another. Optional integrations are found by name at run time.
+- The schema must be safely re-runnable: `if not exists`, `drop policy/trigger if exists` before create, and a final `notify pgrst, 'reload schema';`.
+
+</details>
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="deployment-options"></a>
+
+## Deployment Options
+
+| | **Self-hosted Node.js / VPS** | **Serverless (Vercel / Netlify)** |
+|---|---|---|
+| Process model | One persistent `server.mjs` | Static SPA plus functions |
+| Setup Wizard | ✅ Full | ✅ Via `POST /api/install-schema` (`src/server/index.ts`) |
+| Config storage | `data/react-wp-config.json` (persistent volume), or the environment on boot | Environment variables |
+| Plugin schema install / uninstall | ✅ | ✅ With a direct Postgres connection, or the password in the dialog |
+| Plugin folder delete | ✅ Deletes `plugins/<id>/` | ✅ Commits the removal to the deployed repository |
+| Site reset | ✅ | ❌ |
+| Server-side SEO tags | ✅ | ❌ Client-side only |
+| Rate limiting, page cache, compression | ✅ | ❌ |
+| Best for | Full feature set | Simple, low-ops public sites |
+
+> ⚠️ **Warning:** Running a plugin's `schema.sql` needs a **direct Postgres connection**. A deployment
+> that holds one — `SUPABASE_DB_URL` or `DATABASE_URL` in the project's environment, or the database
+> password typed into the uninstall dialog — installs and uninstalls plugin schemas from the Plugins
+> screen exactly as `npm start` does, because both hosts run the same `server/pluginUninstall.mjs`; only
+> the two questions a host alone can answer (where the plugin's `manifest.json` comes from, and what
+> happens to its code) are passed in as options. A deployment with no such connection is told which
+> credential is missing instead of guessing, and a purely static host — the SPA with no functions — has
+> no such endpoint at all: apply the plugin SQL by hand in the Supabase SQL Editor there.
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="getting-started"></a>
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 20 or newer and npm
+- A free [Supabase](https://supabase.com) project (one per site)
+- A persistent directory for `data/` if you self-host
+
+### Self-hosted quick start
+
+```bash
+git clone https://github.com/arash12javadi/react-wp.git
+cd react-wp
+npm install
+cp .env.example .env.local     # then edit it (see below)
+npm run build
+npm start                      # builds again, then serves on http://localhost:3000
+```
+
+Open `http://localhost:3000` and follow the **Setup Wizard**.
+
+If `.env.local` already holds the database settings (see [Minimum environment](#minimum-environment)),
+there is nothing to follow: the server resolves that config on boot, reports
+`[Auto-Setup] Site installation verified/auto-seeded in system_settings.` in the terminal, writes
+`data/react-wp-config.json` for the browser, and the site comes up installed.
+
+`npm start` rebuilds the frontend first, so plugin changes are picked up. If you run
+`node server.mjs` directly, run `npm run build` first.
+
+### Minimum environment
+
+```dotenv
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=your_publishable_or_anon_key
+```
+
+<details>
+<summary><b>Full environment variable reference (<code>.env.local</code>)</b></summary>
+
+```dotenv
+# Public, safe for the browser when RLS is on
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=your_publishable_or_anon_key
+
+# Server-only: never use a VITE_ prefix
+SUPABASE_SECRET_KEY=your_server_secret_key
+SUPABASE_DB_URL=postgres://postgres:password@db.your-project-ref.supabase.co:5432/postgres  # Session mode, port 5432
+
+# Shop (optional)
+SITE_URL=https://shop.example.com
+STRIPE_SECRET_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+PAYPAL_CLIENT_ID=...
+PAYPAL_CLIENT_SECRET=...
+PAYPAL_MODE=sandbox
+
+# Everything else the site integrates with — GitHub, AI (Gemini / OpenAI / Anthropic /
+# OpenAI-compatible), media storage (Cloudinary/ImageKit/S3) and email (Resend/SendGrid/SMTP) — is
+# configured in the admin under Settings → Integrations, and stored in `system_settings`. There are
+# no SMTP_*, GEMINI_*, CLOUDINARY_*, IMAGEKIT_* or GITHUB_* variables any more: GitHub is a personal
+# access token pasted into its card, and the other three are keys pasted into theirs.
+
+# Security engine (all optional)
+ANTI_BOT_SECRET_KEY=
+TRUST_PROXY=false          # true ONLY behind a proxy that sets X-Forwarded-For
+SESSION_COOKIE_SECRET=
+```
+
+See [`.env.example`](./.env.example) for the annotated version.
+
+</details>
+
+### Development with hot reload
+
+```bash
+npm run dev      # Vite on :5173, with the API server on :3000 started alongside it
+```
+
+One terminal is enough. [`vite.devApi.mjs`](./vite.devApi.mjs) runs the same `server.mjs` that
+`npm start` runs — the code that ships, not a second implementation — and Vite proxies `/api` to it,
+so the Setup Wizard, sessions and media deletes behave on :5173 exactly as they do on :3000.
+
+If something is already listening on port 3000, that server is reused rather than a second one being
+started, so this still works:
+
+```bash
+npm start        # terminal 1: server on :3000
+npm run dev      # terminal 2: Vite on :5173, reusing that server
+```
+
+Set `RWP_DEV_API=off` to keep the API server entirely in your hands. Changes to `server.mjs` and
+`server/*.mjs` need a restart either way: only the browser bundle is hot-reloaded.
+
+Both ports share the same `data/react-wp-config.json`, so they use the same Supabase installation. The
+SPA process resolves the same environment fallback the API process does, so a site configured only
+through `.env.local` shows the same backend in both.
+
+### Checks
+
+```bash
+npm run build    # production build (SPA + the pre-bundled Vercel function)
+npm run lint     # ESLint (.js/.jsx only)
+npm run typecheck # tsc --noEmit
+```
+
+> 💡 **Note:** The installer first tries the generated PostgreSQL host. If it is unreachable from
+> your machine, paste the exact Supabase **Session pooler** connection string into the wizard.
+
+> ⚠️ **Warning:** Keep `data/` on a persistent volume. If the host wipes it on restart, React-WP
+> will ask you to install again.
+
+<details>
+<summary><b>Deploying to Vercel</b></summary>
+
+1. Import the repository and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`.
+2. Redeploy. `vercel.json` routes `/api/plugins/*` to the plugin function, every other `/api/*` path to the universal Hono function (`api/index.ts`), and everything else to `index.html`.
+3. Run the installer from the browser, or paste `supabase/schema.sql` into the Supabase SQL Editor. Step 5 runs the schema over a direct connection, promotes the administrator and hands back the environment block — copyable or downloadable as `.env` — to paste into the project; add it and redeploy so `/api/install/check` reports the site provisioned.
+
+`api/index.ts` imports `src/server-dist/vercel.mjs`, a single-file bundle of the whole Hono app that `npm run build:api` writes as the last step of `npm run build`. It has to be pre-bundled: Vercel transpiles each file under `api/` on its own and leaves relative specifiers extensionless, and these functions run under Node's native ESM resolver (`"type": "module"`), which refuses to resolve them — pointing the function at `src/server/adapters/vercel.ts` directly answers every `/api/*` request with `FUNCTION_INVOCATION_FAILED`.
+
+That bundle also carries `supabase/schema.sql` (inlined by `vite.api.config.mjs`), so the installer never reads the deployed filesystem — a function has no repository, and `__dirname` does not exist in an ES module. `api/install-schema.ts` is a second entry point onto the same bundle, so `/api/install-schema` has one implementation on every host.
+
+Remember the limits in [Deployment Options](#deployment-options).
+
+</details>
+
+<details>
+<summary><b>Updating an existing site</b></summary>
+
+`supabase/schema.sql` is the whole database schema and is **run by hand in the Supabase SQL
+Editor**; the app cannot change its own database. It is safe to re-run: it only creates what is
+missing. Dashboard → Updates only *checks* `updates.json`; it never installs anything. Pull,
+re-run `supabase/schema.sql` if the update changed the schema, then rebuild.
+
+</details>
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="security--data-isolation"></a>
+
+## Security & Data Isolation
+
+**Zero secret leakage** is the design rule: the browser only ever holds the publishable key.
+
+| Concern | How it is handled |
+|---|---|
+| Browser secrets | Only `VITE_SUPABASE_*` reach the bundle. Secret, DB, payment, SMTP, AI and CAPTCHA keys are server-only. |
+| Authorization | Postgres RLS via `user_has_cap()`. Roles come from `public.profiles`, never from `user_metadata`. |
+| Credentials in the database | Stored in tables with RLS on and **no policy** (`chat_secrets`, `rwp_security_secrets`), reachable only with the server's secret key. Never in `options`, which is world-readable. |
+| Prices and stock | Computed in SQL (`shop_calculate`, `shop_place_order`); the browser's amounts are never trusted. |
+| Visitor privacy | Views and likes store only salted, daily-rotated hashes; never raw IPs. |
+| Backups | Exports skip `profiles` and secret tables so a downloaded file cannot leak credentials. |
+| Rate limiting and bots | Per-process memory, not tables. `X-Forwarded-For` is trusted only with `TRUST_PROXY=true`. |
+| Destructive actions | Plugin wipe needs typing `DELETE`; site reset needs your password and typing `RESET`. |
+
+### Stateful vs. stateless deployments
+
+| | Self-hosted (stateful) | Serverless (stateless) |
+|---|---|---|
+| Config | `data/react-wp-config.json` (public values only, git-ignored), derived from the environment on boot when the file is absent or incomplete | Env vars |
+| Rate-limit counters, page cache | In process memory | Not available |
+| DB passwords | Used during install, never written to disk or returned to browsers | Same |
+
+> ⚠️ **Warning:** Never commit `.env`, `.env.local`, database dumps, connection strings, or
+> service-role keys. `SUPABASE_DB_URL` is a superuser credential for your whole database.
+
+<details>
+<summary><b>Auth and anti-bot: what is and is not protected</b></summary>
+
+Sign-in goes browser → Supabase, so the anti-bot check on login, register and comments runs
+**before** the request. It stops bots driving a real page; Supabase's own auth limits, email
+confirmation and the comment RLS policies stop the rest. Forms that reach `server.mjs` exchange a
+solved challenge for a clearance ticket that the server verifies, and those cannot be bypassed.
+
+</details>
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="contributing"></a>
+
+## Contributing
+
+Pull requests are welcome.
+
+1. Fork the repo and create a branch: `git checkout -b feature/my-change`.
+2. Read the [Technical Reference](#technical-reference) for the area you are changing.
+3. Run `npm run build` and `npm run lint`.
+4. For database changes, add them to `supabase/schema.sql` (core) or the plugin's `schema.sql`, and keep them **safely re-runnable**.
+5. Open a pull request describing what changed and why.
+
+Building a plugin? Start from `plugins/rwp-sample-plugin` and the [plugin API](#rwp-plugin-and-hook-api).
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="license"></a>
+
+## License
+
+No license file is included in this repository yet, so all rights are reserved by default.
+Add a `LICENSE` file (for example MIT) and update this section and the badge if you want others to use it freely.
+
+[🔝 Back to top](#table-of-contents)
+
+---
+
+<a name="technical-reference"></a>
+
+# Technical Reference
+
+Detailed, per-feature documentation and the reasoning behind each design decision.
+
+## Security, rate limiting, caching and the SEO routes
+
+Everything in this section is configured under **Settings → Security** and is created by
+`supabase/schema.sql`. It is core, not a plugin: `server.mjs` applies it before any plugin is
+loaded, and `/sitemap.xml` and `/robots.txt` are served on a site with no plugins at all.
+
+### How the settings reach the server
+
+Each knob is one row in the `options` table, and `server.mjs` reads them all in a single query
+every 30 seconds into `server/middleware/securitySettings.mjs`. Middleware then reads its rules
+out of memory, synchronously: a rate limiter that asks the database whether to allow a request has
+already spent more than it saves. Saving in the admin calls `POST /api/security/refresh`, so a
+change applies immediately rather than on the next tick.
+
+The CAPTCHA **secret key is deliberately not an option row**. `public.options` is world-readable —
+the public site reads `site_title` before anyone signs in — so a secret there is a file every
+visitor can download. It lives in `rwp_security_secrets`, which has RLS on and no policy at all;
+only the server's secret key reaches it, and the admin screen reports *set* or *not set*, never a
+value. `ANTI_BOT_SECRET_KEY` in `.env.local` overrides it.
+
+### Sessions
+
+Supabase owns the JWT's real lifetime (Dashboard → Authentication → Sessions) and nothing here can
+shorten it — a JWT is stateless and cannot be recalled. What Settings → Security configures is this
+site's own policy: how long someone stays signed in on this front end, whether "keep me signed in"
+extends it, and the `SameSite` policy of the cookie that carries it. The cookie is `HttpOnly`,
+`Secure` over HTTPS, and holds only `{user id, expiry, signature}` — never the access token. It
+also switches the page cache off for that browser, which is what stops a signed-in visitor being
+served someone else's cached page.
+
+**Sign out everywhere** deletes the account's rows in `auth.sessions` and revokes its refresh
+tokens over the direct Postgres connection, so every device is signed out at its next refresh.
+GoTrue's admin API revokes by JWT and has no "sign out this user id" call, which an administrator
+signing *someone else* out does not have. An access token already issued keeps working until it
+expires; the response says so rather than promising a cut the mechanism cannot deliver.
+
+### Anti-bot
+
+Two layers, and it is worth being precise about which is which:
+
+* **Honeypot** — an invisible field on public forms, plus a "submitted faster than a person types"
+  check. Costs nothing, needs no third party, catches most form spam. A filled trap pauses that
+  address for `anti_bot_flag_minutes`; a merely fast submission does not.
+* **CAPTCHA** — Cloudflare Turnstile or Google reCAPTCHA v3, chosen in the admin and verified
+  server-side against the provider before anything else happens.
+
+Sign-in, registration and comments go from the browser straight to Supabase, so for those forms the
+check runs **before** the request rather than around it. That stops bots driving a real page and
+does not stop something talking to the Supabase REST API directly — what stops that is Supabase's
+own auth rate limiting, email confirmation and the comment RLS policies. Forms that do reach this
+server exchange a solved challenge for a signed, short-lived, address-bound clearance ticket
+(`POST /api/security/verify`), which `requireClearance()` verifies; those cannot be bypassed.
+
+### Rate limiting
+
+Applied to every `/api` request, before the body is read and before Supabase is called. Two tiers
+share one window: `auth` (sign-in verification, CAPTCHA checks, the admin endpoints that run DDL or
+delete folders) and `api` (everything else). Each request is counted against **both** the caller's
+address and their account, and whichever is closer to its ceiling decides — address alone lets one
+account burn a shared office NAT's budget, account alone lets a bot that never signs in go
+uncounted. Page views and static files are not counted.
+
+Counters live in this process's memory, keyed by a salted hash, and are never written anywhere.
+Behind several Node processes each one limits its own share.
+
+> `X-Forwarded-For` is trusted only when `TRUST_PROXY=true`. Without a proxy in front, that header
+> is chosen by the caller, and a limiter keyed on a value the attacker controls is not a limiter.
+
+### Page cache
+
+With caching on, the finished HTML response — `index.html` after `server/seo.mjs` has injected the
+SEO tags, theme CSS and tracking scripts — is held in memory per path. That injection is three or
+four PostgREST round trips, so on a site with traffic it is the whole cost of a page view. The app
+still hydrates and still fetches the page body; this removes the repeated work in front of it.
+
+Never cached: anything but `GET`, any request with an `Authorization` header **or any cookie**,
+`/admin`, `/builder/*`, and any path with a query string other than known tracking parameters. The
+`X-RWP-Cache` response header says `HIT`, `STALE`, `MISS` or `BYPASS:<reason>`, so a page you
+expected to be cached tells you why it is not.
+
+Invalidation is explicit: the admin purges after content and settings saves (unless
+`cache_auto_purge_on_save` is off — see below), and `stale-while-revalidate` means a page past its
+lifetime is served immediately while the next render replaces it. `ETag` and `If-None-Match` give a
+304 to anyone who already has the current body. Fingerprinted files under `/assets/` are served
+`immutable`; everything else in `dist/` gets five minutes and a revalidation.
+
+**Auto-purge on save** (`cache_auto_purge_on_save`, on by default) governs only the *automatic*
+purge that runs after a page, post or settings save. The admin's own **"Purge the whole page
+cache"** button always runs regardless of this toggle — turning auto-purge off is for a busy site
+that would rather tolerate the TTL's staleness than pay a purge on every edit, not a way to disable
+manual purging too.
+
+### Response compression
+
+Independent of the page cache above — it is a pure transport optimisation with none of the page
+cache's staleness or privacy trade-offs, so unlike page caching it is **on by default**
+(`cache_enable_compression`). Brotli when the browser offers it, gzip otherwise, and never for
+images, fonts or video: compressing an already-compressed format burns CPU to make the response
+*larger* more often than smaller.
+
+Two different cost models, deliberately:
+
+* A **page cache entry** is compressed exactly once, when it is stored (a MISS or a background
+  stale re-render) — every `HIT` after that reuses the precomputed bytes and pays zero compression
+  cost. That split is the entire point of caching output rather than bolting a per-request
+  compression middleware in front of it.
+* A **built asset** under `dist/` (the app's JS/CSS bundles, SVGs) is compressed the first time it
+  is requested and kept in memory for the rest of the process's life — safe because Vite
+  fingerprints every asset by content hash, so the same pathname never means different bytes during
+  one run.
+
+`Vary: Accept-Encoding` is sent whenever compression is a possibility for that response, and a body
+under 256 bytes is left uncompressed on purpose: framing overhead can make a tiny response *bigger*.
+
+### Sitemap and robots.txt
+
+`/sitemap.xml` is generated on request from published pages, posts and categories, read with the
+**publishable** key — so it contains exactly what a visitor can see and no draft can leak into it.
+Pages marked *noindex* in the page editor and the Page Builder's site template rows are left out.
+
+`/robots.txt` is editable in the admin. An empty box means "serve the generated default", not
+"serve an empty file": clearing it by accident must not start inviting crawlers into `/admin`. A
+`Sitemap:` line is appended unless your text already has one.
+
+### What needs the Node server
+
+Rate limiting, the page cache, session revocation and the two SEO routes all live in `server.mjs`.
+On a static deployment the browser reports *this host has no such endpoint* rather than a database
+failure, the settings still save, and the forms still work with the honeypot alone.
+
+## RWP plugin and hook API
+
+React-WP exposes a typed extension API from [`src/lib/plugin-api.ts`](./src/lib/plugin-api.ts). Plugin IDs should use a unique prefix such as `ajdwp-`; public hooks use the `rwp_` prefix.
+
+```ts
+import { rwp } from './src/lib/plugin-api';
+
+const cleanup = rwp.registerPlugin({
+  id: 'ajdwp-seo-checklist',
+  name: 'AJDWP SEO Checklist',
+  version: '1.0.0',
+  author: 'Arash Javadi',
+  register({ actions, filters, admin, shortcodes }) {
+    const removeFilter = filters.add('rwp_post_excerpt', (excerpt) => `${excerpt} [SEO]`);
+    const removeAction = actions.add('rwp_post_created', (post) => {
+      console.log('New post:', post);
+    });
+    const removePage = admin.registerPage({
+      id: 'seo-checklist',
+      label: 'SEO Checklist',
+      component: SeoChecklistPage,
+    });
+    const removeShortcode = shortcodes.register({
+      name: 'seo_score',
+      render: () => 'SEO score',
+    });
+    return () => {
+      removeFilter();
+      removeAction();
+      removePage();
+      removeShortcode();
+    };
+  },
+});
+```
+
+Available actions include `rwp_init`, `rwp_admin_loaded`, `rwp_public_loaded`, `rwp_user_logged_in`, `rwp_post_created`, `rwp_post_updated`, `rwp_settings_saved`, and `rwp_menu_saved`. Filters include `rwp_site_title`, `rwp_public_menu`, `rwp_posts`, `rwp_post_title`, `rwp_post_excerpt`, and `rwp_admin_navigation`.
+
+`rwp.actions` and `rwp.filters` are a thin wrapper over the registry in [`src/core/hooks.ts`](./src/core/hooks.ts), which is what plugins should import directly when they want priorities or hook names core does not declare:
+
+```ts
+import { addFilter, addAction, applyFilters, doAction } from './src/lib/plugin-api';
+
+// Lower priority runs first; 10 is the default, as in WordPress.
+const remove = addFilter('the_content', (html) => html.replace(/\{\{year\}\}/g, '2026'), 5);
+```
+
+Both APIs share one registry, so a callback added through either is seen by both. A filter **must return the value**: one that returns `undefined`, or throws, is logged and skipped rather than being allowed to blank out a page. Every `add*` call returns a function that removes the callback again, and a plugin must return those from `register()` or its hooks keep running after it is deactivated.
+
+See [`plugins/rwp-sample-plugin/hooksAndI18nExample.tsx`](./plugins/rwp-sample-plugin/hooksAndI18nExample.tsx) for a runnable example of every hook API below.
+
+Registered admin pages appear in the admin navigation, dashboard widgets render on the dashboard, and registered shortcodes can be rendered by future content components. Plugin cleanup functions should always remove registrations when a plugin is deactivated.
+
+Administrators can manage registered plugins from the **Plugins** admin section. Activation state is stored in the `rwp_active_plugins` option, so it is shared across browsers and deployments connected to the same database. Plugin code is not sandboxed: an installed plugin runs with full access to the site in the browser, and its `server.mjs` runs inside the Node server, so only install plugins you trust.
+
+Plugin source folders belong in [`plugins/`](./plugins). Each plugin folder should contain a `manifest.json` with a unique `id` (the uploader names the folder after it), and an `index.tsx`. Vite discovers `index.tsx` files one level below this directory at build time. The Supabase schema creates a `plugins` table containing the plugin ID, metadata, source folder, activation state, and timestamps. The Plugins screen synchronizes registered bundled plugins into this table and displays them in a WordPress-style table.
+
+Plugins behave like WordPress: a plugin is installed while its folder exists. A folder added to `plugins/` appears as **inactive** (under `npm run dev` after a page reload; under `npm start` after a restart, because the browser bundle is built at startup; the Plugins screen says so when it finds a folder the running build lacks). **Delete** is only allowed for inactive plugins and removes the folder from disk through `POST /api/plugin-files/delete` (`server/pluginFiles.mjs`, `activate_plugins` capability). It refuses a plugin whose code another plugin imports (e.g. `rwp-page-builder`, used by `rwp-shop`), since the next build would fail. On Vercel there is no writable disk: remove the folder from the repository and redeploy. The old `rwp_deleted_plugins` option is no longer read.
+
+**Upload Plugin** (Plugins screen) installs a `.zip` file, or one downloaded from an `https://` URL, through `POST /api/admin/plugins/upload` (`server/pluginInstaller.mjs` where the site's own filesystem can be written to, `server/pluginGitInstaller.mjs` where it cannot, `activate_plugins` capability). Which of the two runs is decided per request by `src/server/pluginHostMode.ts`, before the body is read: a host that sets no serverless marker (`VERCEL`, `NOW_BUILDER`, `AWS_LAMBDA_FUNCTION_NAME`, `NETLIFY`, `CF_PAGES`, `DENO_DEPLOYMENT_ID`) and in which a probe file can be created and removed under `plugins/` and `.rwp-tmp/` is a host where `plugins/<id>/` survives — so `npm run start:hono` on a server of your own installs to disk exactly as `npm start` does, and the GitHub connection below is asked of only the hosts that cannot write a disk of their own. Every progress step carries the mode it belongs to (`local` or `github`), and so does the result, which is what the dialog labels its list with. The ZIP may hold the plugin at its root or inside one top-level folder (a GitHub "Download ZIP" works). It is limited to 25 MB, 150 MB unpacked and 5,000 files, and is refused if any path escapes the plugin folder or the plugin id is already installed. Files are unpacked into the git-ignored `.rwp-tmp/` and moved into `plugins/<id>/` only after validation — the destination is cleared, then one `rename`, then a copy-and-delete when Windows refuses that rename (a folder antivirus, the Vite watcher or an editor is holding open, or a `.rwp-tmp/` on another mount), so a locked folder no longer fails the upload. A `server.mjs` gets its import added between the `rwp:server-plugin-imports` markers in `server/plugins.mjs` (`server/serverPluginImports.mjs`, which syntax-checks the result and refuses if the region was hand-edited; a failure rolls the install back). Nothing is executed during install: `.sql` files are shown for you to run in the Supabase SQL Editor, and imported npm packages missing from `package.json` or `node_modules` are listed with an `npm install` command. The response streams progress as NDJSON — one `{ "type": "step" }` event per step, then `{ "type": "result" }` — and every host answers in that shape, which is why the upload dialog is one dialog. Afterwards restart `npm start` (it rebuilds, and server routes load at startup), then activate the plugin. `VERCEL_DEPLOY_HOOK_URL` is called as the last step on either host, but a Vercel deploy builds from Git, so on a self-hosted server that rebuild does *not* include the new plugin — the next paragraph is what does.
+
+**On Vercel — or any host whose filesystem is read-only — the same upload commits to Git instead.** There `server/pluginInstaller.mjs` would fail with `EROFS`, so the route hands the ZIP to `server/pluginGitInstaller.mjs`, which applies the same checks with the same functions — the same limits, the same refusal of a path outside the plugin folder, the same manifest validation — and then writes the plugin into the repository the deployment is built from in **one commit**, through GitHub's Git Data API (`server/pluginGitPush.mjs`): a tree built on the branch's current tree — the text of every file travels inside that one call, so a blob is uploaded only for a file that is not text, an empty one, or one past 8 MB — a commit, and the branch ref updated last, so a failure anywhere before that leaves the branch exactly as it was. The writes are serial and a second apart, because GitHub counts content-generating requests against a secondary rate limit that answers a burst with `HTTP 403`: a tree, a commit and a ref update are what an install makes. Files a previous version of the plugin left in `plugins/<id>/` are deleted in that commit too, and a plugin shipping a `server.mjs` has its import added to `server/plugins.mjs` in the same commit — the one path the installer may write outside `plugins/<id>/`. The credential is the stored **GitHub** connection from Settings → Integrations (`github_config`); an empty card is answered with `501` and the sentence that says so, because a host with no disk of its own has no other way in. Because the plugin arrives with a build, the dialog reports no restart: the platform rebuilds when it builds the commit, which is what `VERCEL_DEPLOY_HOOK_URL` above is for. Committing the folder yourself still works, and is exactly what the upload does for you.
+
+### Per-plugin database tables
+
+A fresh install creates the **core CMS only** — the tables in [`supabase/schema.sql`](./supabase/schema.sql) (twenty-two since the engagement tables were added). It no longer creates the twenty `shop_*` tables, the four page-builder tables or `code_snippets`, because a site that never enables those plugins has no use for them.
+
+Instead, a plugin that needs tables ships its own `schema.sql` and declares it in `manifest.json`:
+
+```json
+"database": {
+  "schema": "./schema.sql",
+  "uninstall": "./uninstall.sql",
+  "tables": ["shop_orders", "shop_products"],
+  "options": ["shop\\_%"],
+  "retains": ["Shop site templates stay in Pages as ordinary builder layouts."]
+}
+```
+
+`schema.sql` runs **when the plugin is activated**, through `POST /api/admin/plugins/install-schema` (`server/pluginSchema.mjs`). It runs inside a transaction, so a schema that fails half way applies nothing, and it must be safely re-runnable — activating an already-provisioned plugin is then a no-op rather than an error. `tables` is what gets exported to a backup; `options` are the `option_name` patterns the plugin owns; `retains` is shown in the uninstall dialog as "kept either way".
+
+A plugin's SQL may depend on core (`user_has_cap`, `pages`, `profiles`, `options`), but core never references a plugin object and one plugin never references another's. `pages.builder_data`, `builder_data_i18n`, `is_builder_enabled`, `is_site_template` and `template_type` stay **core columns** even though they look like builder state: core writes them (`rwp_install_default_content`, `builder_create_site_template`) and renders the header and footer from them through `<SiteTemplate>` with no builder installed.
+
+Running the database requires a direct PostgreSQL connection, because PostgREST cannot execute DDL. Set `SUPABASE_DB_URL` in `.env.local` (Supabase → Project Settings → Database → Connection string → URI, session mode on port 5432) and activation is a single click. Without it the server asks for your database password in the dialog instead. These endpoints exist only under `server.mjs`; on a static host, activation still works and the screen says the tables were not checked.
+
+### Uninstalling a plugin
+
+**Uninstall** on the Plugins screen opens a dialog rather than a `confirm()`, because uninstalling is three separate decisions: does the code go, does the data go, and is there a copy first. It lists every table the plugin owns with its row count, then offers:
+
+- **Download a backup and keep the data** — exports every row to a JSON file and removes only the plugin's code. Reinstalling brings everything back.
+- **Download a backup, then wipe the data** — exports first, and drops the tables only if that succeeded.
+- **Wipe the data without a backup** — drops the tables immediately.
+
+A wipe also deletes the plugin's **uploaded files**. Uploads are namespaced at the provider (`src/lib/mediaScope.js`): the Media Library uploads to `media/<library folder>`, a plugin to `plugins/<id>/…`. Uninstalling with a wipe clears only the plugin's own prefix and removes the matching `media` rows; `media/` is never touched, including files the plugin pointed at, because those are Library assets you may also be using on a page. A plugin can narrow its prefix in `manifest.json` with `"media": { "prefixes": [...] }`, but the server refuses any prefix outside its own `plugins/<id>/`.
+
+Note that this applies to files uploaded *after* this convention existed. Shop product images chosen from the Media Library before it are Library assets at the old un-namespaced paths, and are deliberately left alone.
+
+Both wiping options require typing `DELETE`, which the server checks too. The order on the server is fixed — export, then drop, then remove the folder — so nobody ends up with wiped tables and no backup file. Dropping runs the plugin's `uninstall.sql` in one transaction and then verifies the declared tables are actually gone; if any survived, the whole thing rolls back. Each `uninstall.sql` documents what it deliberately keeps, such as saved page layouts (core columns) and the shop's site templates (ordinary pages an administrator may have hand-edited).
+
+### Settings → Advanced → Reset Website
+
+A factory reset: it drops the `public` schema, deletes every account and flips `data/react-wp-config.json` back to `installed: false`, so the site returns to the Setup Wizard. It is restricted to Administrators and Super Admins — checked against `profiles.role` rather than the `manage_options` capability, which App Settings can grant to other roles — and requires re-entering the signed-in account's own password, which the server verifies against Supabase Auth, plus typing `RESET`. Everything runs in one transaction, so a failure leaves a working site.
+
+It also deletes every Cloudinary file the site uploaded, unless you clear the "also delete every uploaded file" box. That runs before the database is dropped, because the `media` table is the only record of what this site uploaded. Two passes: every public id recorded in `media` (which is what catches files from before the `media/` prefix existed, sitting at bare paths like `general/…`), then the `media/` and `plugins/` prefixes (which catches files Cloudinary still has but the table has lost track of).
+
+It deliberately does **not** call Cloudinary with an empty prefix or `all=true`. Those wipe the entire cloud, and one Cloudinary account is very often shared between a staging site, a production site and unrelated projects. "All media created by this website" means what the `media` table knows about plus this site's own two prefixes — not everything the API key can reach.
+
+ImageKit files are not deleted: its delete API needs the stored fileId and has no bulk or prefix operation, so wiping a library of any size would mean one request per file. The confirmation screen reports how many were left so you can clear them in the ImageKit dashboard.
+
+Take a backup from Settings → Backup first — it is the only thing that brings any of this back.
+
+### Adding the plugins table to an existing database
+
+If the site was installed before plugin support was added, re-run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor: it creates the `plugins` table if it is missing and changes nothing else. The installer is the normal path for a new installation.
+
+### Unified pages and posts
+
+[`supabase/schema.sql`](./supabase/schema.sql) creates `categories` and the unified `pages` table. New installations get them at install time; re-running the file adds them to an older database. It does not copy a legacy `posts` table across by itself — bring those rows over by hand if you still have them.
+
+### Roles, capabilities, and the media library
+
+[`supabase/schema.sql`](./supabase/schema.sql) creates all of it. Re-running it adds whatever an older database is missing.
+
+The schema moves user roles out of `auth.users.raw_user_meta_data` and into a new `public.profiles` table. That change is a security fix, not a refactor: Supabase lets any signed-in user rewrite their own `user_metadata` with `supabase.auth.updateUser()`, so while roles lived there, any subscriber could promote themselves to administrator, and the row level security policies that read the same value believed them. Roles now live in `profiles`, a trigger rejects anyone changing their own role, and every table policy checks `public.user_has_cap()` instead of the JWT.
+
+Running the schema creates a `profiles` row for every account that does not already have one, with the default role; roles from the old metadata are not read back, so assign them by hand under **Users**. New sign-ups always start as `subscriber`.
+
+Roles and their capabilities are defined in [`src/lib/roles.ts`](./src/lib/roles.ts) and mirrored into SQL by `public.user_has_cap()`. **If you change one, change the other** — the TypeScript map drives the admin UI, and the SQL function drives what the database actually permits. Capabilities added under Settings → Roles are data (two tables both sides read), not code, so they need no such change.
+
+Administrators can view every user and change roles under the **Users** admin section. Creating and deleting accounts is not exposed in the admin UI, because the Supabase admin API requires a secret key that must never reach the browser; use the Supabase dashboard for that.
+
+### Settings → Integrations
+
+**Every credential this site owns lives here, not in an environment variable.** The screen is one card per service, each saving to its own `system_settings` row through the signed-in administrator's own session — which is the only client Supabase RLS lets near that table:
+
+| Card | Row | What it holds | Test button |
+| --- | --- | --- | --- |
+| GitHub | `github_config` | Personal access token, the account it belongs to, its scopes, and the repository and branch to publish to | — (the token is validated against GitHub as it is saved) |
+| AI | `ai_config` | Provider (Gemini / OpenAI / Anthropic / OpenAI-compatible), API key, model, and for a custom provider its base URL | **Test connection** — one authenticated call with the values on screen, reported in the provider's own words |
+| Media & storage | `media_storage_config` | Active provider, and Cloudinary / ImageKit / S3 credentials | — (the Media screen's own upload and delete are the test) |
+| Email | `email_config` | Provider (Resend / SendGrid / Custom SMTP), key, From address and name | **Send test email** — one short message through the *saved* configuration |
+
+Anything with a key is stored, never echoed: `GET /api/integrations/status` answers with presence only (`configured`, which provider, which fields are still missing), and a test route returns the provider's sentence rather than the credential. The two test routes are the only ones here that borrow a credential for an outbound call, so they are the only ones that authorize the caller (`manage_options`).
+
+**The GitHub card asks for a personal access token, not an OAuth app.** Create one under **GitHub → Settings → Developer settings → Personal access tokens** — a classic token with the `repo` scope, which is what writing to a repository (private ones included) takes, or a fine-grained token with **Contents: Read and write** on the repository this site publishes to. Paste it in and press **Save token**: the browser sends it to `api.github.com` once, reads back the account it belongs to and the repositories it can see, and only then stores the row — so a typo can never leave a token behind for the server to push with. Two things follow from the token being yours rather than the site's: publishing no longer shares one rate limit across every user of the site, which is what an OAuth app's token did, and there is no callback URL to register, so a site hosted where you do not control the domain can still publish. Nothing about the token is read from the environment, and `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` no longer exist.
+
+The **server** reads the rows through whichever connection the deployment has, in this order: an injected database adapter (the universal engine, on every backend except Supabase), a direct PostgreSQL connection (`DATABASE_URL` — one of the five infrastructure variables — or the older `SUPABASE_DB_URL`), the service key (`SUPABASE_SECRET_KEY`), then nothing. Under Supabase the publishable key can never read these rows, so the hub says which variable to set rather than reporting every card as unconfigured; that answer is `credentials.readable` in the status body, and it is why the screen can be honest about a half-configured deployment.
+
+Server-side helpers, one implementation shared by `server.mjs`, the Hono app and the `api/*` functions:
+
+```js
+import { readIntegrationRows, readMediaStorageSettings } from './server/integrationSettings.mjs';
+import { aiConfigFrom, emailConfigFrom, mediaStorageConfigFrom } from './server/integrationConfig.mjs';
+
+const media = await readMediaStorageSettings({ databaseUrl, dbType, supabaseUrl, supabaseKey, env });
+const { cloudinary, imagekit, s3 } = media.credentials;
+```
+
+Adding a card from a plugin is `integrations.registerCard({ id, title, icon, description, order, describe, renderComponent })` — `order` places it among the four above, `describe()` supplies the state pill, and `renderComponent` gets `{ status, refresh }` and owns its own row. `useIntegrationsRegistry()`, exported from `src/lib/plugin-api.ts`, is the same registry from inside a component.
+
+Payment keys are the deliberate exception: they stay in the shop plugin's own settings and environment, because that plugin reads them itself.
+
+### Media
+
+The same schema adds the `public.media` table behind the **Media** admin section, which stores uploads to Cloudinary and ImageKit alongside plain external image URLs. Provider settings live on the **Media & storage card under Settings → Integrations**.
+
+Which credentials you need depends on the operation, because Cloudinary and ImageKit differ:
+
+| Operation | Cloudinary | ImageKit |
+| --- | --- | --- |
+| Upload | Cloud name + unsigned upload preset from **Settings → Integrations → Media & storage**. Both are public. **No secret needed.** | Public key from the same card; the signature is made on the server with the private key. |
+| List / edit title and alt text | Nothing — this data lives in the database. | Nothing. |
+| Delete the actual file | Cloud name, API key and API secret, all saved on that card. | Private key, saved on the same card. |
+
+The asymmetry is that Cloudinary supports genuinely unsigned uploads, so the browser can upload on its own, but its destroy API is signed-only. ImageKit signs both. Every signed call therefore goes through the server: `/api/imagekit-auth` issues upload credentials, and `/api/media-delete` performs deletions. Both verify the caller's session and role before doing anything, using only the publishable key and the caller's own access token.
+
+**These credentials belong on the Media & storage card, not in `.env`.** They are written to `system_settings.media_storage_config` by the signed-in administrator, which is a row only a `manage_options` session may touch, and every server-side user of them (the upload signature, the delete, the bulk delete during a plugin uninstall, the site reset) reads that row:
+
+```js
+const media = await readMediaStorageSettings({ databaseUrl, dbType, supabaseUrl, supabaseKey, env });
+const credentials = media.credentials;   // cloudinary / imagekit / s3, presence-only elsewhere
+```
+
+Because RLS protects `system_settings`, the server needs a way in: `DATABASE_URL` (a direct PostgreSQL connection — one of the five infrastructure variables), `SUPABASE_SECRET_KEY`, or, on a self-hosted MySQL/SQLite/LibSQL site, its own database driver. `GET /api/integrations/status` reports which of those it found as `credentials.readable`, and the Integrations screen shows a banner naming the variable to set when there is none — rather than letting every card look unconfigured.
+
+If the delete credentials are missing, deleting still works but only removes the library record. The Media screen warns about this **before** you delete anything, rather than only failing at the moment you try.
+
+Files uploaded before the `provider_file_id` column existed are still deletable: the public id is recovered from the delivery URL, and running the schema backfills the column for existing rows.
+
+To create a Cloudinary unsigned preset: **Settings → Upload → Upload presets → Add upload preset**, set Signing Mode to **Unsigned**, and copy the preset name onto the Media & storage card along with your cloud name.
+
+### Page layout and SEO
+
+[`supabase/schema.sql`](./supabase/schema.sql) gives `pages` per-page layout controls (`layout`, `show_header`, `show_sidebar`, `show_footer`) and Yoast-style SEO fields. Safe to re-run on an existing database.
+
+Each page can choose Boxed, Wide or Full width from the editor's side panel. The same panel switches the header and navigation, the page title, the sidebar, the comments and the footer on or off for that page — the header, sidebar and footer choices are the page's `show_header`, `show_sidebar` and `show_footer` columns, so the classic editor and the page builder agree. The SEO panel below the editor provides a search-result preview, SEO title and meta description with length limits, a focus keyword with a checklist, Open Graph and Twitter fields, canonical URL and a `noindex` toggle.
+
+**How SEO tags are delivered matters more than the fields themselves.** React-WP is a client-rendered app, and Facebook, X, LinkedIn, WhatsApp and Slack never execute JavaScript — they read the raw HTML response. Meta tags set only by React would therefore produce blank link previews, while still looking correct in devtools, which makes the failure easy to miss.
+
+So the tags are written twice, and the two are not redundant:
+
+- [`server/seo.mjs`](./server/seo.mjs) looks up the page for the requested path and injects real tags into the HTML before it is sent. This is what crawlers consume.
+- [`src/lib/seo.ts`](./src/lib/seo.ts) reapplies them during in-app navigation.
+
+Both build their tags from the same function so they cannot drift apart. To verify the server half is working, request a page with `curl` and read the response body — if the tags appear only in devtools, social previews will be empty:
+
+```bash
+curl -s http://localhost:3000/your-slug | grep -i "og:title"
+```
+
+**This works on `npm start` only.** On Vercel the static build is served straight from the CDN, so no injection happens; matching it would need a rewrite routing HTML requests through a serverless function.
+
+### Accounts, login and registration
+
+The site has public `/login` and `/register` pages with email and password, plus optional Google and Facebook buttons. `/admin` no longer carries its own sign-in form; visiting it while signed out redirects to `/login?redirect=/admin`. Which page those addresses show is chosen under Settings → Accounts (see [Account pages, redirects and capability grants](#account-pages-redirects-and-capability-grants)).
+
+**New accounts get the role set under Settings → Accounts, and that is applied by the database, not the browser.** The `handle_new_user` trigger reads `default_user_role` from `options` and ignores whatever the sign-up request contains, because that payload is entirely attacker-controlled — accepting a role from it would restore the escalation path that [`public.profiles`](#roles-capabilities-and-the-media-library) exists to close. The trigger also refuses `administrator` and `super_admin` outright, so the dropdown offers Subscriber, Contributor, Author and Editor only. Promote accounts beyond that by hand under **Users**.
+
+To verify this is actually holding, try to defeat it from the browser console and confirm the profile still comes back as the configured default:
+
+```js
+await supabase.auth.signUp({ email: 't@example.com', password: 'secret123', options: { data: { role: 'administrator' } } })
+```
+
+#### Social sign-in needs Supabase configuration
+
+The toggles under Settings → Accounts only decide whether the buttons appear. Supabase performs the OAuth handshake, so each provider must also be set up there or the button returns an error:
+
+1. **Authentication → Providers** — enable Google or Facebook and paste in the client ID and secret from Google Cloud Console or Meta for Developers.
+2. **Authentication → URL Configuration** — set **Site URL** to your live address (for example `https://your-site.vercel.app`) and add the addresses sign-in returns to under **Redirect URLs**: `http://localhost:3000/**` for development and `https://your-site/**` for production. Sign-up and password-reset emails carry a `redirect_to`, but Supabase only honours one that matches this list and otherwise falls back to the **Site URL** — so a missing entry, or a Site URL still left at `http://localhost:3000`, is the usual cause of a confirmation link that opens localhost even on a live site.
+
+#### The `[rwp_login]` shortcode
+
+Add `[rwp_login]` to any page or post to place a login/logout button there. It accepts `label="Sign in"` and `style="link"`. The navbar links are separate and can be switched off under Settings → Accounts while the shortcode keeps working.
+
+This is also the release where the shortcode API documented above started doing anything. `parseShortcodes` existed but was never called, and content rendered through `dangerouslySetInnerHTML`, which cannot host a React component. [`ContentRenderer`](./src/components/ContentRenderer.tsx) now replaces each shortcode in the parsed DOM with a host element and portals the component into it, so shortcodes work inline as well as on their own line — and plugin-registered shortcodes work for the first time.
+
+#### Floating login
+
+**Settings → Floating Login** puts a button in a corner of every public page that opens a Log in / Register / Forgot password dialog, with a dark, light or glass theme and a live preview in the admin. Its six settings are `floating_login_*` rows in `options`; [`supabase/schema.sql`](./supabase/schema.sql) only seeds the defaults, which apply anyway when a row is missing.
+
+It uses the same flows as the `/login` screen: the reset email links to `/lost-password`, and sign-up never sends a role, so new accounts get the default role. The Register tab also needs "Anyone can register" under Settings → Accounts. The button is hidden for signed-in visitors and on the account pages. **Redirect after login** takes `current` (reload the page the visitor is on), a site path or an https:// address. There is no nonce: Supabase sends the session as a header, not a cookie, so the cross-site request a WordPress nonce guards against cannot act as the visitor.
+
+### Comments, profiles and widgets
+
+[`supabase/schema.sql`](./supabase/schema.sql) creates the comments table, the `profiles` `bio`/`avatar` columns, the comment policies and the `comments.author_id` link to `profiles`.
+
+**The comments table had to be repointed.** It referenced `posts(id)`, but all content has lived in the unified `pages` table since the 20260911 schema, so comments could not attach to anything the site actually renders. The schema adds `page_id`, `parent_id` and `author_id`.
+
+`comments.author_id` references `public.profiles(id)`, not `auth.users(id)`. That distinction matters: PostgREST can only embed a table it has a foreign key path to, so pointing at `auth.users` made every comment read fail while inserts kept working — a confusing split that the current schema corrects. `profiles.id` is itself a reference to `auth.users(id)`, so the two are equivalent in what they constrain.
+
+The author's display name is also stored on the comment row. `public.profiles` is readable by authenticated users only, since it holds email addresses, so without that copy every comment would show as "Someone" to signed-out readers.
+
+Commenting requires an account. The insert policy enforces `author_id = auth.uid()`, so a comment cannot be attributed to another user even by a hand-crafted request — the UI is not what stops it. Replies nest without limit in the data; `comment_max_depth` only caps how far they are indented when rendered. Comments are held for approval by default and moderated under **Comments** in the admin; individual pages can close discussion from the editor.
+
+**Profile** lives under its own admin section: display name, bio, avatar from the media library, email and password. Changing an email sends a confirmation link and does not take effect until it is clicked, which the screen states rather than claiming the change is saved. Roles are read-only here by design — self-service role changes are exactly what the profiles table exists to prevent.
+
+**Widgets** are under **Menus & Widgets → Sidebar & Widgets**. Six widget types (Search, Recent Posts, Categories, Text/HTML, Navigation Menu, Login) can be dragged into a Sidebar or Footer area and reordered. Configuration is stored in the `rwp_widget_areas` option. The sidebar appears on pages with **Show sidebar** enabled; when no widgets are configured, the original default sidebar still renders so nothing disappears on upgrade.
+
+### Shop (the `rwp-shop` plugin)
+
+A WooCommerce-style store, shipped as a bundled plugin in [`plugins/rwp-shop`](./plugins/rwp-shop).
+
+**Setup**
+
+1. Activate **RWP Shop** under **Plugins**. It installs its own `plugins/rwp-shop/schema.sql` (its twenty `shop_*` tables) on activation, and **Shop** then appears in the admin menu for Administrators and the new **Shop Manager** role.
+2. Under **Shop → Settings**: pick the currency, store address, payment methods, tax and shipping zones. Add products under **Shop → Products**. Dashboard → Overview lists whatever the shop still needs.
+3. For online payments and email, set the server environment variables listed in [`.env.example`](./.env.example) and restart: `SUPABASE_SECRET_KEY`, then any of `STRIPE_SECRET_KEY` (+ `STRIPE_WEBHOOK_SECRET`), `PAYPAL_CLIENT_ID`/`PAYPAL_CLIENT_SECRET`/`PAYPAL_MODE`, and `SMTP_*`. **Shop → Settings → Status** shows which are set.
+
+Public pages: `/shop`, `/product-category/<slug>`, `/product-tag/<slug>`, `/product/<slug>`, `/cart`, `/checkout`, `/checkout/order-received/<id>`, `/checkout/order-pay/<id>`, `/my-account`. Shortcodes: `[rwp_products limit="4" category="slug" featured="1" on_sale="1" orderby="popularity"]`, `[rwp_add_to_cart id="<product id>"]`, `[rwp_cart_link]`, and the commerce tools below.
+
+Features: simple, variable (attributes → variations), grouped and external products; sale prices with schedules; stock with backorders, low-stock thresholds and held stock for unpaid orders; categories, tags and global attributes with layered filtering; gallery; upsells and cross-sells; downloadable products with limits and expiry; coupons (percent, fixed cart, fixed product; spend limits, product/category/email restrictions, usage limits); tax rates by country/state/postcode/city with classes, priorities and compound rates, prices entered with or without tax; shipping zones with flat rate (per item and per shipping class), free shipping and local pickup; Stripe Checkout, PayPal, bank transfer, cheque and cash on delivery; refunds (manual, or through Stripe/PayPal); order notes; guest checkout and customer accounts (orders, downloads, addresses); reviews with verified owners; reports; order emails.
+
+**Prices are decided by the database, never the browser.** The cart sends only product ids and quantities. `shop_calculate()` works out prices, coupons, tax and shipping, and `shop_place_order()` repeats that calculation and takes stock with a conditional update inside the same transaction, so two customers cannot both buy the last item. A total computed in the browser would be attacker-controlled.
+
+**Online payments are confirmed with the gateway, server-side.** After Stripe or PayPal redirects back (or Stripe's webhook fires), the server asks the gateway whether the payment succeeded and then calls `shop_mark_order_paid()`, which checks the amount and currency against the order total. That function is granted to `service_role` only, which is why `SUPABASE_SECRET_KEY` is needed; anon and signed-in users get "permission denied". The secret key is used for nothing else.
+
+**Order emails** go out through SMTP. Emails that a guest's browser can trigger (a new order) are recorded in `shop_orders.emails_sent` so a replayed request cannot send them twice; that record also needs the secret key.
+
+**On Vercel** the shop works the same way: `api/plugins.ts` serves the plugin routes, and `vercel.json` now also routes unknown paths to `index.html`, so refreshing `/shop` or any other client route no longer 404s. Set the same environment variables in the Vercel project.
+
+The schema also fixes a sign-up bug in `handle_new_user`: when the `default_user_role` option had never been saved, `null not in (...)` evaluated to null rather than true, so the fallback to `subscriber` never ran and every sign-up failed.
+
+To test Stripe without real money use a `sk_test_` key and card `4242 4242 4242 4242`; for PayPal leave `PAYPAL_MODE=sandbox` and use a sandbox buyer account.
+
+#### Q&A, Make an Offer, price alerts and Frequently Bought Together
+
+Core's engagement tables come from [`supabase/schema.sql`](./supabase/schema.sql); the shop's own (`shop_product_qa`, `shop_product_offers`, `shop_price_drop_alerts`, `shop_product_bundles`) come from `plugins/rwp-shop/schema.sql`, which activating the shop on `npm start` runs. Both are safe to re-run. The shop's tables are declared in its manifest, so they are backed up and wiped with the shop.
+
+The product page shows all four, plus Like, Save and the view count from core's engagement system. Each is also a shortcode — `[rwp_product_qa]`, `[rwp_make_offer]`, `[rwp_price_alert]`, `[rwp_frequently_bought]` (with `id="…"` or `slug="…"`, or none on a product page) — and a Page Builder widget in the Shop group (Product Q&A, Make an Offer, Price Drop Alert, Frequently Bought Together, Product Like & Save), so a Product template can place them. They are managed under **Shop → Offers, Questions, Price alerts and Bundles**, where each screen also has its on/off setting.
+
+- **Product Q&A.** Signed-in customers ask; a question is visible only to its asker until the store answers it, and answering publishes it. Enforced by triggers, not the form: a customer cannot answer or publish, the asker's name is copied from their profile, and each person can ask five questions an hour.
+- **Make an Offer** (simple products). A customer offers a price between the configured minimum (50% by default) and the current price; the store accepts, declines or counters, and the customer can accept or decline a counter. **An accepted offer becomes a single-use coupon** for that product, that customer's email and one unit, valid for a configurable number of days. That is how the agreed price reaches checkout without the browser ever sending an amount: `shop_calculate` applies it like any other coupon. The customer sees the code in the offer dialog and gets an email when SMTP is configured (sent with the manager's own session, so no secret key is needed).
+- **Price-drop alerts.** A customer sets a target below today's price. Triggers on product and variation prices mark every alert the new price reaches, and the customer sees "Price dropped" on the product page at once. The emails go out from **Shop → Price alerts → Send** (SMTP needed); opening that screen also catches scheduled sales that started without anyone saving the product.
+- **Frequently Bought Together.** Under **Shop → Bundles**, choose suggested products for a main product with an optional discount of up to 90%. The widget offers "Add all to cart" for simple products. The discount is applied **inside `shop_calculate`** (`shop_apply_bundle_discounts`), to as many units of a suggested product as there are of the main product, so the cart, the checkout and the placed order all agree, and a hand-crafted request cannot claim it.
+
+### Engagement: likes, saves, follows and views
+
+`supabase/schema.sql` creates the engagement tables and functions (safe to re-run). Until they exist the buttons simply do not appear, and Dashboard → Overview says so.
+
+**What visitors get.** Posts show a Like button, a Save button, the view count and a Follow button for their author, under the content and (like and views) on post cards. Category archives have Follow; author archives have Follow for the author. Saving puts an item in "Saved Items", and the ▾ beside Save puts it in any collection the visitor names. The visitors' dashboard (`/dashboard`) gains **My saved collections** (filter, move, remove, rename or merge collections) and **Following**, the new posts — and, with the shop, products — from the authors and categories they follow, newest first. The feed refreshes itself through Supabase Realtime when a post is published (the schema adds `pages` to the `supabase_realtime` publication) and polls every minute as a fallback. Signed-out visitors who press Like, Save or Follow are sent to sign in and brought back.
+
+**Settings → Engagement** switches each feature off site-wide (`show_like_global`, `show_save_global`, `show_follow_global`, `show_views_global`) and chooses where buttons appear by themselves (`show_like_on_posts`, `show_like_on_products`, `show_follow_on_authors`, `show_views_on_single`, `show_views_on_archive`). They are keys of the `engagement` section of `rwp_app_settings`. Buttons placed by hand follow only the global switches. Pages, as opposed to posts, never get buttons automatically. "Count views" (`track_views`) is enforced in SQL: off means nothing is recorded.
+
+**Placing them yourself.** Shortcodes: `[rwp_like]`, `[rwp_save]`, `[rwp_follow type="user|category"]`, `[rwp_views]`, `[rwp_engagement]` (the whole row), `[rwp_popular_content limit="5" timeframe="week|month|all" type="page,product"]`, `[rwp_saved_collections]` and `[rwp_following_feed]`. Without an `id` they use the post they are written in. The Page Builder has an **Engagement Bar** widget (Post group, for posts, Single Post templates and Loop items) and a **Popular Content** widget. For code, `src/components/engagement` exports `LikeButton`, `SaveButton`, `FollowButton`, `ViewCount`, `EngagementBar`, `PopularContentFeed`, `SavedCollections` and `FollowingFeed`, and `src/lib/engagement.ts` has the `useEngagement(type, id)` and `useFollow(type, id)` hooks. Changes are optimistic: the button changes at once and goes back, with the database's reason, if the database refuses.
+
+**Popular content** ranks by `views + likes × 3`: inside the last 7 or 30 days from the raw events, or over all time from the lifetime counters `pages.views_count` and `pages.likes_count`.
+
+**What the database enforces.**
+
+- The counters on `pages` (and `shop_products`) are maintained by triggers on `likes` and `page_views`, and a guard trigger keeps them unchanged when anyone edits the row, so an author cannot inflate their own numbers and an editor saving a stale copy cannot reset them. Settings → Engagement → Recount likes rebuilds the like counts; view counts cannot be rebuilt, because old view records are pruned after 400 days while the counter keeps the lifetime total.
+- Likes, saves and follows can only be made for published content, through `rwp_set_like`, `rwp_set_bookmark`, `rwp_set_follow` and `rwp_set_category_follow` (the browser sends the state it wants, never "toggle"), or inserts that pass the same check in row level security. Saved items and likes are private to their owner; counts come from `rwp_engagement_state`.
+- Views are recorded only by `rwp_record_view`, callable by visitors: one view per browser per item every 30 minutes, none for an author reading their own post, at most 120 per browser and 600 per address an hour. **No IP address, account or visitor id is stored.** The browser keeps a random id in `localStorage`; the database stores only md5 hashes of it and of the address, salted with a random value that is replaced daily and deleted the day after (`rwp_view_salts`), so a stored hash cannot be traced back once that day is over.
+- **Dashboard → Analytics** (Editors and above, `rwp_engagement_report`) shows views, likes, saves and follows per period, views per day, the top content and the most-followed authors.
+
+**Other kinds of content** plug in without core knowing about them. A plugin creates `rwp_engagement_target_<type>(id text) returns jsonb` (null when the item is not public, otherwise its title, URL, image, author and counts) and can add feed items with `rwp_engagement_feed_<type>(user, limit, before)`. The shop does this for `product`, and drops both functions in its `uninstall.sql`.
+
+### Page builder (the `rwp-page-builder` plugin)
+
+An Elementor-style visual builder, shipped as a bundled plugin in [`plugins/rwp-page-builder`](./plugins/rwp-page-builder).
+
+**Setup**
+
+1. Activate **RWP Page Builder** under **Plugins** — it installs `plugins/rwp-page-builder/schema.sql`, which creates its layouts, templates, revisions, forms and widgets (Template, Loop, Mega Menu, Off-Canvas and Author Box). Activation runs that file **every time**, which is also how an existing install picks up a changed trigger or function: deactivate and activate the plugin again, or run the file yourself in the SQL Editor. Safe to re-run.
+2. Open any page from **Page Builder**, or with **Edit with Builder** in Pages & Posts. The builder runs full screen at `/builder/<page id>`.
+3. For form notification emails, set `SMTP_*` and `SUPABASE_SECRET_KEY` on the server. **Page Builder → Status** shows which are set. Entries are stored either way.
+
+**What it does.** Sections → columns → widgets, dragged from the panel or the navigator, with inner sections one level deep. Every element has Content, Style and Advanced tabs; responsive values are set per device (desktop, tablet 768px, mobile 375px) and inherit from larger devices. Widgets, grouped as in the panel:
+
+- **Basic:** Heading, Text Editor, Image (lightbox), Button, Divider, Spacer, Icon, Icon Box, Image Box, Video (YouTube/Vimeo/self-hosted, click-to-load), Google Maps (optional click-to-load), Star Rating, Image Carousel, Basic Gallery, Icon List, Counter, Progress Bar, Testimonial, Tabs, Accordion (optional FAQ schema), Toggle, Social Icons, Alert, SoundCloud, Shortcode, Custom HTML (HTML/CSS/JavaScript or React/JSX), Menu Anchor, Sidebar, Read More, Text Path.
+- **Pro:** Posts (grid/list/masonry, pagination), Posts Slider, Portfolio, Gallery (filterable grid/masonry/justified), Form, Login, Slideshow, Nav Menu, Menu (Mega Menu), Loop Grid, Loop Carousel, Carousel, Off-Canvas, Search (live results), Taxonomy Filter, Animated Headline, Price List, Price Table, Flip Box, Call to Action, Media Carousel, Testimonial Carousel, Reviews, Table of Contents, Countdown, Share Buttons, Blockquote, Template, Lottie, Code Highlight, Video Playlist, Hotspot, PayPal Button, Stripe Button, Progress Tracker, Facebook Button, Facebook Comments, Facebook Embed, Facebook Page.
+- **Post and Site:** Post Title, Excerpt, Content, Featured Image, Post Meta (Post Info), Site Logo, Site Title, Page Title, Author Box, Post Comments, Post Navigation, Archive Title, Archive Posts, Breadcrumbs, Sitemap.
+- **Site widgets** (WordPress's classic widgets): Pages, Calendar, Archives, Categories, Recent Posts, Search, Tag Cloud (of categories: posts have no tags), Recent Comments, Meta.
+- **Shop** (only while the shop plugin is active): Products, Product Categories, Menu Cart, Custom Add to Cart, Product Title, Product Images, Product Price, Add to Cart, Product Rating, Product Stock, Product Meta, Short Description, Product Content, Product Data Tabs, Additional Information, Product Related, Upsells, Archive Products, Archive Description, Cart, Checkout, My Account, Purchase Summary, Shop Notices.
+
+Sections and columns are Elementor's Container. Also: dynamic tags such as `{{page.title}}` and `{{user.name|there}}`, entrance and looping animations (duration, delay, easing, repeat, unlimited — they play in the canvas too, replaying the selected element when its Motion controls change), sticky elements, custom CSS per element (`selector { … }`), global colours and fonts, section and page templates (with JSON import/export), 30 revisions per page, undo/redo, autosave to the browser, a preview of unsaved changes, and a conflict check when two people save the same page.
+
+**How a layout is stored and shown.** The layout is a JSON tree in `pages.builder_data`; `is_builder_enabled` switches the public page from its classic content to the layout. The public site renders it with `BuilderRenderer`, which loads only the widget views: the editor, dnd-kit and the controls are a separate chunk that loads on `/builder/…` alone. Each element's styles are generated into one stylesheet with media queries at 1024px and 767px. In the editor the same generator runs for the previewed device only, so the canvas matches what that device shows without resizing the browser window. The canvas frame is laid out at the width of the device previewed — for Desktop, the width of the browser window — and then scaled with CSS `zoom` down to the width the panels leave over (`editor/Canvas.tsx`), so the page is laid out at the width the live site lays it out at: a block that writes its own media queries, percentages, grids or fixed card widths sees the same container it sees on the frontend, and only the pixels get smaller. That is why the frame must not be given `max-width: 100%` to make it fit — that re-lays the page out at the panel's width and is what makes a Custom HTML block look different in the canvas from the frontend. The frame is also a query container (`container-name: rwpb-canvas` on `.canvasSite` in `editor/editor.module.css`): `editor/containerCss.ts` rewrites the width media queries of every stylesheet the canvas injects — the generated rules, the theme's Custom CSS, and the CSS a Custom HTML block brings with it — into `@container` rules, so on the tablet and mobile previews a block's breakpoints answer for the width the page is laid out at instead of the browser window's.
+
+Three rules are enforced by the database, not the editor:
+
+- **Custom HTML is administrators only.** Its code runs in every visitor's browser, including an administrator's, so a contributor's script could take over an admin session. The `builder_guard_html` trigger refuses any save to a page or template that adds or changes Custom HTML code unless the user has `manage_options`. Moving or keeping existing code is allowed, so editors can still work on those pages. It covers all four code fields, React included: `builder_html_fingerprint` in the plugin's `schema.sql` lists every field the widget executes (add a field there when you add one, or a change to it would slip past the trigger).
+- **Form recipients are private.** `builder_data` is readable by anyone for a published page, so the email address a form notifies is saved in `builder_form_settings` (page editors and the server only), never in the layout. Revisions and templates don't contain it either.
+- **Submissions are validated against the saved form.** The browser posts values to `/api/plugins/rwp-page-builder/forms/submit`. `builder_submit_form()` looks the form up in the *published* page and checks required fields, email format and allowed choices; unknown fields are dropped. Visitors can't insert into `form_submissions` directly. Each form accepts at most 20 submissions a minute, the server limits each IP to 10 a minute, and a honeypot field drops simple bots.
+
+**Code fields use CodeMirror, with the builder's own completion.** Every code control — the Custom HTML widget's HTML, CSS, JavaScript and React fields, and each element's custom CSS — is a CodeMirror 6 editor ([`plugins/rwp-page-builder/editor/CodeField.tsx`](./plugins/rwp-page-builder/editor/CodeField.tsx)). The list it offers comes from the builder's own engine, [`src/lib/codeCompletion.ts`](./src/lib/codeCompletion.ts) (tables in `codeCompletionData.ts`), not from CodeMirror's HTML, CSS or JavaScript vocabulary: it knows the builder's widgets and their settings, the shortcodes, the dynamic tags, the class and id names the document actually uses, and the ordinary language words — sorted by what the caret is inside (a tag, an attribute, a declaration, a selector, a JSX prop) and trimmed to that context. CodeMirror's own completion is switched off, and Tab indents. CodeMirror sits in its own chunk (`codemirror` in `vite.config.js`) and is imported only from `plugins/rwp-page-builder/editor/`, so it loads with the builder on `/builder/…` and never on a public page.
+
+**Custom HTML has two modes.** *HTML, CSS & JavaScript* is what the widget always did: the HTML is written into the page, its CSS is scoped to the widget, and its JavaScript runs once on the live page after the widget renders (not in the editor), with `root` set to the widget's element. *React (JSX)* compiles the code to `React.createElement(…)` and hands it to React, so event handlers, refs, state and hooks work and nothing goes through `innerHTML`. The compiler ([`plugins/rwp-page-builder/render/jsx.ts`](./plugins/rwp-page-builder/render/jsx.ts)) is hand-written and dependency-free — no Babel and no build step, because it has to run inside a published page — and handles what the field promises: elements, `<>…</>` fragments, children, `{…}` expressions, `{...spread}`, `data-`/`aria-` attributes, HTML void tags left unclosed, `class`/`for` mapped to `className`/`htmlFor`, comments and JSX whitespace. There is no TypeScript, no imports, and no separate JavaScript field in React mode (a ref does the same job). The scope is exactly `React`, `settings` and `node` — the field's help text lists `React.createElement`, which is the same object — so components, hooks and refs all work. A broken field becomes a message in the editor and one console line on the live page, so the rest of the page still renders. CSS is used in both modes. The guard hashes the text of the four fields, not `mode`: switching mode cannot introduce code that was not already hashed, so an editor can still toggle it. Layouts saved before the modes existed carry no `mode` key and stay in HTML mode, so nothing needs migrating.
+**AI code assistant for Custom HTML.** The widget's Content tab has an **Ask AI** button for administrators (the same capability the save trigger requires, because the code runs in visitors' browsers). Describe the section you want and `POST ai/code` ([`serverCodeAi.mjs`](./plugins/rwp-page-builder/serverCodeAi.mjs)) asks the model configured on Settings → Integrations → AI for complete replacements of the fields the current mode uses — HTML/CSS/JavaScript, or JSX/CSS. Nothing changes until you review a per-field diff and press **Apply to code**: the chosen fields land in one store commit, so Ctrl+Z reverts the whole edit, and a field you changed while the request was in flight is left alone and reported. The request carries only this widget's code and your instruction; the server enforces per-field and total size ceilings and allows 6 calls a minute per user. **Cancel request** aborts the fetch, and closing the window aborts it too.
+
+**Featured images.** Pages have no separate featured image column, so the Posts and Featured Image widgets use each post's social image (SEO panel → og:image).
+
+**Page settings edit the page itself, not only the layout.** The builder's *Page settings* tab grew from view-only switches into the same controls the classic editor's sidebar has: title shown, comments, background and page CSS for the layout, and, for the page's own columns, content type (Page or Post in a category), category, slug, *Show sidebar* and the post-feed fields (featured category, posts limit, grid or list). Everything is saved by the same Save button as the layout, the tab reads the columns back after saving — the database trims and slugifies them, so what is shown is what is stored — and a change to any of them counts as an unsaved change, so the warning before leaving and the conflict check see it. A slug the classic editor would reject stops the save with a message naming the field. The featured image is the page's social image (SEO tab → og:image) because pages have no separate featured image column.
+
+**Templates travel as .json files.** Templates are managed in the builder's *Templates* dialog — Insert, **Export** and Delete on each one, plus **Import template (.json)** — and in the admin's **Templates** screen, where rows can be exported and deleted one by one or in bulk and a file can be imported. Both write and read the same document, `{ "format": "rwp-page-builder-template", "version": 1, "title": …, "type": "section"|"page", "content": [ …sections… ] }`, so a file from one site drops into another. Importing creates a new template, so an import is never the row the file came from.
+
+**Author names** in Post Meta come from `builder_author_names()`, which returns only the display names of people with published content: `profiles` itself is readable only when signed in, because it holds emails. The Author Box uses `builder_author_profile(page id)` for the same reason: name, avatar and bio of one published page's author.
+
+**Templates on public pages.** Saved templates are readable only by builders, so the Template widget (and Loop Grid, Loop Carousel, Carousel, Tabs, Mega Menu and Off-Canvas, which can show a template) reads them through `builder_template_public()`. It returns a template only when a published builder page uses it, directly or through one template that page uses; unused templates stay private. Loop widgets render the template once per post with that post as `{{post.*}}` and as the Post Title/Featured Image/… widgets' current post.
+
+**Posts Slider** pages through posts in a grid of columns × rows per slide. Columns are responsive, so a slide holds a different number of posts per device; each slide is one query page, loaded when it (or its neighbour) is shown. **Taxonomy Filter** filters Posts, Posts Slider, Loop Grid, Loop Carousel and Archive Posts widgets on the same page that share its *filter group* name.
+
+**Shop widgets** live in [`plugins/rwp-shop/builder`](./plugins/rwp-shop/builder) and are registered by the shop plugin, so switching the shop off removes them. Single-product widgets show the product picked in the widget, or `?product=slug` from the URL, so one builder page can act as a product template. Cart, Checkout and My Account embed the shop's own screens, so prices and totals still come from `shop_calculate`.
+
+### Backup and restore
+
+`supabase/schema.sql` creates the backup and restore functions (`rwp_backup_export`, `rwp_backup_import`). Safe to re-run.
+
+**Settings → Backup** has two buttons. **Export backup** downloads one `.zip` file; **Restore backup** puts its contents onto this site, or onto a fresh installation somewhere else. Administrators only (`manage_options`), enforced by the database functions, not the screen.
+
+**What's in the file.** `backup.json` holds every row of every table in `public` except `profiles`: pages, posts, menus, widgets and all other options, comments, the media library, plugin state, shop products, orders and coupons, builder layouts, revisions, templates and form entries. Tables added later to the schema or by plugins are included automatically. It also lists each user's email, display name, bio, avatar and role. It never contains passwords, `auth.users`, or anything from `.env.local`. It does contain customer emails, addresses and form entries, so store it like a database dump.
+
+**Why the restore runs in SQL.** `rwp_backup_import()` truncates and refills every table inside one transaction, so a failure (a bad row, a timeout) leaves the site exactly as it was. The browser could not do that with one request per table. The function also turns off user triggers while it inserts, so restored rows keep their timestamps, and the stock guard, review bookkeeping and builder revision triggers don't run a second time. It restores ids as they were, then moves each identity sequence past the highest id.
+
+**Accounts are matched by email, not copied.** A Supabase account can't be recreated from a backup without its password hash, and that hash must not leave the database. So every user reference (any column with a foreign key to `profiles` or `auth.users`) is re-pointed to the account on the target site with the same email. Unmatched references are cleared, and rows that can't exist without their account (`shop_customers`) are skipped. The report names the unmatched emails. The importing administrator's own role is never changed, and only a super admin can restore `super_admin`. The target's `installed` option is kept.
+
+**Media.** Cloudinary and ImageKit files are not in Supabase, so there are two levels of backup:
+
+- **Links only** (untick *Include media files*): the backup keeps the URLs. They keep working anywhere as long as the files stay in the original account. The file is small.
+- **Files included** (the default): the browser downloads every Cloudinary/ImageKit file into `media/` inside the ZIP. Both providers send `Access-Control-Allow-Origin: *`, so no server or secret is needed. Any file that fails to download is listed, and only its link is kept. External image links are always kept as links. On restore, tick *Upload the media files to this site's media account* when the original account won't stay available. Each file is uploaded with this site's media storage credentials (Settings → Integrations → Media & storage), and every copy of its old URL is replaced across the whole backup (page HTML, builder JSON, product galleries, avatars, options) before the database restore runs. The target also keeps its own Cloudinary/ImageKit settings. Only exact URLs are rewritten. A hand-edited Cloudinary transformation URL (`/upload/w_300/…`) keeps pointing at the old account.
+
+Everything happens in the browser and in Supabase, so this also works on Vercel.
+
+**Size limits.** The whole backup is held in browser memory, which is fine for hundreds of megabytes of media, not tens of gigabytes. Supabase cancels statements from signed-in users after 8 seconds by default; a very large restore can hit that and is rolled back. The error says so and gives the fix: `alter role authenticated set statement_timeout = '60s'; notify pgrst, 'reload config';`.
+
+### Shop backup and import
+
+The shop's backup functions live in `plugins/rwp-shop/schema.sql`, which activating the shop runs. Safe to re-run.
+
+**Shop → Backup** is for the shop alone, and for shop managers (`manage_shop`), not only administrators. Settings → Backup can only replace the whole site. This screen can move a catalogue to another store, merge two, or restore last week's orders without touching the rest.
+
+**Export** picks any of Orders, Products, Reports, Customers, Coupons, Reviews, Offers, Questions, Price alerts, Bundles and Settings, optionally orders from a date range and without trashed products. The `.zip` holds `shop-backup.json` (from `shop_backup_export()`), optional CSV copies of every table under `spreadsheets/`, and for Reports the sales report under `reports/`. Reports are never imported: they are calculated from orders. Payment secret keys are server environment variables and are never in the file. Images stay as URLs; Settings → Backup is the one that carries media files.
+
+**Import** takes a shop backup or a full site backup (only its shop part is used), and a mode per part:
+
+- **Update & add**: items that exist are overwritten, the rest added. An updated product ends up with exactly the backup's variations, files and categories, and an updated order with exactly its items, notes and refunds.
+- **Add missing only**: existing items and their children are left exactly as they are.
+- **Replace**: like update, then the part's items that are not in the backup are deleted (products take their reviews, questions, offers, alerts and bundles with them). Needs typing `REPLACE`.
+- **Add as copies** (products and coupons): everything gets a new id; a taken slug or coupon code gets `-2`, a taken SKU is cleared.
+
+**Preview changes** runs the real import in the database and rolls it back (`p_dry_run`), so the table it shows (added, updated, left alone, deleted, not imported, per table) is exactly what Import will do. Numbered rows (orders, items, notes, refunds, reviews) are numbered from the highest id in use rather than with `nextval`, because a sequence does not roll back and every preview would use up order numbers. The screen also downloads a backup of the same parts before a real import, unless unticked.
+
+**How an existing item is recognised.** By id first, then by what identifies it to a person: product slug, then SKU; category, tag, attribute and shipping class slug; coupon code; the setting's name; a variation by its options; an order by its **order key**, never its number (#12 on another site is a different order). Every reference inside the backup is then re-pointed to the row it became: category parents, variations, order items, refund lines, download counters, coupon product and category lists, upsells, bundle pairs and shipping class costs. A backup of reviews or orders without products carries each product's id, slug and SKU under `references`, so it still finds the same products on another site. New rows keep the backup's id when this site doesn't use it, which keeps order numbers and emailed download links working after a restore.
+
+**Accounts** are matched by email, like the site restore. Orders of someone without an account here keep their billing details and come back to that person through the existing guest-order claim when they sign up with that email. Rows that cannot exist without their account (saved addresses, questions, offers, price alerts) are skipped, and the report lists the emails.
+
+Like the site restore, the import runs in one transaction with the shop's triggers off, so orders don't take stock again, reviews keep their authors and dates, and questions aren't rate-limited. Ratings are recalculated from the reviews afterwards. Replace deletions run after the triggers are back on, so a deleted product still takes its likes and views with it. The 8-second statement limit applies here too; the error gives the same fix.
+
+### App Settings
+
+`supabase/schema.sql` creates the `rwp_app_settings` function and the quota overrides table. Safe to re-run. These settings are now under **Settings → General, Uploads, SEO and Languages** in the admin (administrators only); one Save button covers all of them. Roles moved to its own screen in 20261001 (see [Account pages, redirects and capability grants](#account-pages-redirects-and-capability-grants)).
+
+- **General** — show or hide titles on pages and posts and publish dates on posts (a hidden title stays in the page for screen readers); limit Authors, Contributors and Subscribers to media they uploaded; excerpt length in words or characters (moved here from Settings → Site); and the target of the `#profile_url#` menu placeholder.
+- **Uploads** — maximum file size, minimum and maximum image dimensions, a disk quota per role, and per-person overrides by email address.
+- **SEO** — a Meta keywords field in the page editor, and header and body tracking scripts such as Google Tag Manager.
+
+Menus gained two things under **Menus → Edit** on each item: labels and URLs can use `#profile_name#`, `#profile_avatar#`, `#profile_both#` and `#profile_url#`, and each item chooses what logged-out visitors see (the item, nothing, or another label and link). Items with a profile placeholder are hidden from logged-out visitors unless given a replacement. This is presentation only: the menu is public data, so hiding a link does not protect the page behind it.
+
+**What the database enforces, and what it cannot.** The settings are one JSON document in the `rwp_app_settings` option. Two parts of it are enforced in SQL, not just in the UI (role grants used to be a third; they are now their own tables):
+
+- **Media scoping** goes through `rwp_can_manage_media()`, used by both the media update/delete policies and `/api/media-delete`. That endpoint used to delete whatever provider file id the browser sent, so any uploader could delete anyone's file; it now takes only the library row id and reads the provider id from the database.
+- **Upload rules and quotas** are checked by the `media_enforce_upload_rules` trigger when a file is added to the library. It also sets `uploaded_by` to the caller, so an upload cannot be attributed to someone else to dodge their quota, and it stops size and owner fields being edited afterwards.
+
+The upload limit is not a hard limit on what reaches Cloudinary. Files go straight from the browser to the provider, so the size and dimensions the trigger checks are the ones the browser reports, and the unsigned preset accepts uploads from anyone who has it. The browser checks every file before sending it, which is what stops normal use and avoids leaving rejected files behind at the provider. For a hard limit, restrict the Cloudinary upload preset as well. ImageKit is stricter: `/api/imagekit-auth` now requires a signed-in uploader with room in their quota before it signs anything. Before this change it signed uploads for anyone.
+
+**Quota overrides are private.** `options` is publicly readable, and overrides are keyed by email, so they live in their own `rwp_quota_overrides` table that only administrators can read. Keying by email lets you set an allowance before the person signs up. An override applies to Administrators too; without one they are unlimited.
+
+**Tracking scripts** are written into the HTML by `server/seo.mjs` on `npm start`, so tag managers load before the app. The server also adds `<meta name="rwp-scripts">`, and the browser only injects the scripts itself when that marker is missing (Vercel, `npm run dev`), so pageviews are not counted twice. Neither path runs on `/admin` or `/builder/…`. Pasted code passes through [`src/lib/scriptSanitizer.js`](./src/lib/scriptSanitizer.js), which keeps only `<script>`, `<noscript>` with an iframe or image, `<link>` and `<meta>`, with https URLs, and lists anything it removed before you save. That keeps a snippet from breaking the page markup; it cannot make the JavaScript itself safe, which is why only administrators can save it.
+
+Deliberately not included from the legacy theme: a switch for thumbnail generation (Cloudinary and ImageKit generate sizes on request, so nothing is generated at upload), and a comments scoping toggle (comments were already limited: only Editors and above can open the Comments screen, and everyone else sees only approved comments and their own).
+
+### Account pages, redirects and capability grants
+
+`supabase/schema.sql` creates the capability tables and the default-content installer. Safe to re-run.
+
+**Default content no longer needs the Page Builder.** The first time an administrator opens the admin, core ([`src/lib/defaultContent.ts`](./src/lib/defaultContent.ts)) asks `rwp_install_default_content` for two groups, each installed once and recorded in the `rwp_default_content` option so deleted pages are not recreated:
+
+- **site** — Home (made the front page), Blog (the posts page), Sample Page, Sample Post (in an "Uncategorized" category), Privacy Policy and Cookie Policy. **Only on a site with no pages yet**, so upgrading never replaces a front page someone chose. With the Page Builder active, its `rwp_default_content` filter gives Home and Blog a layout and adds the site templates, in the same install.
+- **account** — Log In, Register, Lost Password, User Profile and Dashboard, each a normal page holding one shortcode and marked noindex. Existing sites get these too.
+
+**Account pages have fixed addresses.** `/login`, `/register`, `/lost-password`, `/profile` and `/dashboard` always show whatever Settings chose for them: the built-in screen, any page, a plugin screen (the shop offers My Account), or any other address. So every `Log in` link keeps working whichever page that is, and an unpublished or deleted choice falls back to the built-in screen instead of locking anyone out. The sign-in pages are chosen under **Settings → Accounts**, profile and dashboard under **Settings → Site** next to the home page; each picker has View, Edit page and Create page buttons.
+
+With the Page Builder active, these pages are built from its **Account Form** widget (Site category), whose screen, heading, texts, button, redirect and links are edited in the builder; pages that still hold only their default shortcode are converted the next time an administrator opens the admin, and pages you have edited are left alone. The forms are also shortcodes, so a classic page can put anything around them: `[rwp_login_form]`, `[rwp_register_form]`, `[rwp_lost_password_form]` (title, subtitle, button, redirect, links, social attributes), `[rwp_user_profile]` and `[rwp_user_dashboard]`. Plugins add dashboard cards with `addSlotContent('user_dashboard', …)` and `DashboardCard`, and offer addresses in the pickers with the `rwp_account_page_choices` filter.
+
+**Password reset now works end to end.** The email links to `/lost-password`, where the same form asks for the new password. Add `https://your-site/**` to Supabase's **Redirect URLs** and set its **Site URL** to your live address (see [Social sign-in needs Supabase configuration](#social-sign-in-needs-supabase-configuration)); when the return address is not listed Supabase substitutes the Site URL instead, and the app forwards people from there to `/lost-password` itself.
+
+**Settings → Accounts** also sets where signing in leads when the link did not ask for a page (default: the admin for roles that can use it, the user dashboard for everyone else), where signing out leads (default: stay on the page), and who sees the public admin toolbar (everyone signed in, only admin users, or nobody). `?redirect=` only accepts paths on this site, so it cannot be used as an open redirect.
+
+**"View site" opens the site where you prefer.** Settings → Accounts → *"View site" opens the site* chooses **In the same tab** (WordPress's behaviour, the default) or **In a new tab**, which keeps the admin screen exactly as you left it while you check the front end — handy while building a page. The admin toolbar's brand and site links follow the same preference; in new-tab mode "View site" is a real link rather than a click handler, so a popup blocker never sees it. Links in the Pages & Posts tables always open in a new tab, whatever this setting says, so a half-finished filter or selection is never lost.
+
+**Settings → Roles adds any capability to a role, or to one person.** The four fixed toggles that lived in `rwp_app_settings` are gone; any that were on are copied into `rwp_role_capabilities` and the old key is removed. Grants for one person live in `rwp_user_capabilities`, readable only by that person and by `list_users`. `public.user_has_cap()` reads both tables, so a grant is enforced by every policy, and [`src/lib/capabilityGrants.ts`](./src/lib/capabilityGrants.ts) loads them before the first render so the admin matches. **Only an Administrator or Super Admin can write either table**, checked on `profiles.role` rather than a capability: otherwise granting `manage_options` to a role would let that role grant itself the rest. Changing roles and Reset Website check `profiles.role` too, so no grant reaches them. Granting `manage_options`, `activate_plugins`, `edit_users` or `promote_users` asks first, because they amount to running the site.
+
+**Pages & Posts has a Category column.** Choosing a category for a page turns it into a post in that category (the blog and archives only list posts), "Page" turns a post back, and the same choice is a bulk action for the selected rows. A filter above the table shows one category.
+
+**The Pages & Posts tables use real links and icon actions.** A page's title is a link to its public address, opened in a new tab, so an editor can read the page beside the list; site templates and trashed rows keep a plain title, because neither has a public address. Row actions are icon buttons with a `title` and an `aria-label` — Edit (pencil), View (external link), Trash, Restore (rotate) and Delete permanently — and a plugin's own row actions (`rwp.getContentActions`, such as the page builder's *Edit with Builder*) keep their text labels in a small bordered button the same height as the icons, so the two kinds sit on one line.
+
+### Header zones, live search and per-page header/footer
+
+The per-page `show_header` / `show_footer` switches come from [`supabase/schema.sql`](./supabase/schema.sql). Safe to re-run.
+
+- **Header and footer blocks go Left, Center or Right.** Choose the side under *Place on* in the Theme Editor's Block library before adding a block, or later under the block's *Side of the row*. Blocks on one side keep their canvas order; *Auto* stays next to the block before it. Right used to be `margin-left: auto`, so two right-aligned blocks split the free space and a search box could end up stuck by the logo.
+- **The header and its menus are always on top** of page content (z-index 9800), so dropdowns are never hidden behind a section, slider or card. Full-screen overlays (off-canvas, search overlay, lightbox) still cover it.
+- **Search boxes** (Theme Editor Search block, Search widget, archives, the builder's WordPress Search widget) have a Go button and list matching pages and posts as visitors type; arrow keys and Enter pick a result.
+- **Pages & Posts → Show on this page**: header & navigation, sidebar, footer and comments, all on for new content.
+
+### Dashboard, admin navigation, logo and profile details
+
+`supabase/schema.sql` creates `profile_details`. Safe to re-run. Everything else in this section needs nothing extra.
+
+**Admin navigation works like WordPress.** Each sidebar item opens its screen and shows its submenu underneath: Settings → Site, Accounts, General, Uploads, SEO, Roles, Backup (App Settings is merged into Settings); Pages & Posts → All content, Add post, Add page, Categories; Media → Library; Menus → Menus, Sidebar & Widgets; Shop → Orders, Products, Reports, Customers, Coupons, Reviews, Settings. The location is kept in the URL (`/admin?section=settings&tab=seo`), so reloads and bookmarks return to the same screen, and the old ids (`app-settings`, `categories`, `rwp-shop-products`) still resolve. Icons are emoji: text, so the sidebar loads no icon font or image. Plugins add a submenu with `submenu` on `admin.registerPage`; the page component receives `subsection` and `navigate`.
+
+**Dashboard → Overview** is the admin's landing screen. Its setup checklist lists what is still missing, each item marked Required, Recommended or Optional, expandable into numbered steps with a link to the screen (or external dashboard) that fixes it: site title and tagline, logo and icon, an upload provider, Cloudinary delete keys, the ImageKit private key, missing database tables, the menu, social sign-in configuration, pending comments, your profile, and, from plugins, the shop's store address, payment methods, Stripe/PayPal keys, `SUPABASE_SECRET_KEY` and SMTP. Items can be hidden (remembered per person in the browser) and shown again. The number of visible required and recommended items, plus available updates, shows as a badge on Dashboard in the sidebar. Server secrets are only ever reported as set or not set: `/api/media-config` and the plugins' status routes never return a value. Plugin widgets such as *Shop at a glance* moved here from Pages & Posts, next to an *At a glance* panel of counts. Plugins add checklist items with `admin.registerSetupCheck`.
+
+**Dashboard → Updates** (administrators) compares the running version of the app (`package.json`) and each plugin (`manifest.json`) with a JSON feed, by default [`updates.json`](./updates.json) in this repository on GitHub. It can check by hand or automatically (every admin visit, daily, weekly or monthly); the result is stored in the `rwp_update_status` option so every administrator sees it, and the schedule in `rwp_update_settings`. There is no background process: a due check runs in the browser of the next administrator who opens the admin. Each update lists its notes. **Installing stays a step on the host** (`git pull` or a new ZIP, `npm install`, re-run `supabase/schema.sql` if the schema changed, `npm start`), and the screen explains it: the site runs from a build, so the browser cannot replace the code, and a server that downloads and runs code from a URL would let whoever controls that URL run anything on your host. To publish a release, bump `version` in `package.json` or the plugin's `manifest.json` and in `updates.json`, and note any schema change.
+
+**Dashboard → Guide & shortcodes** is documentation for new users inside the admin: first steps, the database, every `.env.local` variable and where to get it, content, menus and placeholders, media providers, a role/capability table generated from `roles.ts`, the page builder's dynamic tags, shop setup, backups and updates, plugin development, and troubleshooting. Shortcodes are listed from the registry, so a plugin's shortcodes appear automatically with the `description`, `example` and `attributes` it registers. Shop → Products has a *Copy shortcode* action for `[rwp_add_to_cart]`.
+
+**Logo.** Settings → Site → Header logo sets a logo image, its height, and what the header shows: title and tagline, title only, logo only, logo and title, or logo, title and tagline. A logo-based choice with no logo falls back to the title. This also fixed the header, which always showed the text "Just another React-WP site" instead of the saved tagline. The admin sidebar uses the site icon (or logo) instead of the "R" mark.
+
+**Site title in the browser tab.** `index.html` has a placeholder `<title>`. Only pages from the `pages` table replaced it, so the admin, login, register and plugin routes kept the placeholder ("react-wp") whatever the site title was. The server now writes the site title into the admin and builder HTML, and the app sets the tab title on every screen (`Screen ‹ Site title` in the admin).
+
+**Profile details.** Profile → More about you adds optional first and last name, pronouns, job title, company, website, location, time zone, phone, birth date and social links. They live in `public.profile_details`, not on `profiles`, because `profiles` is readable by every signed-in user and a phone number or birth date must not be: the new table is readable only by its owner and by roles with `list_users`, and writable by its owner and by `edit_users`. Websites must be `http(s)` URLs (enforced by a check constraint as well as the form). The table is included in backups automatically, and restored rows are matched to accounts by email like every other user reference.
+
+### Appearance → Theme Editor
+
+`supabase/schema.sql` creates `theme_settings`. Safe to re-run. Until it exists, the site renders the default layout and the editor explains why it cannot save.
+
+**What it edits.** Six tabs: Header, Footer, Sidebar, Comments, Layout / Index, and Custom CSS & Code. Each of the first five has two modes:
+
+- **Visual builder**: drag blocks from the block library onto the canvas, reorder them (by dragging or with the arrow buttons), and click one to change its content, alignment, padding, background and text colour, and visibility (hidden, not on mobile, mobile only). Area settings sit above the canvas: sticky header or sidebar, 1–4 footer columns plus a bottom bar, avatars, nested replies, comment order and comments per page, sidebar left/right/hidden, and numbered, newer/older or load-more pagination. Blocks include the logo, navigation menu, search bar, header action buttons (register, log in and plugin buttons such as the cart), social links, Custom HTML, text, copyright, menu links, recent posts, categories, login, widget areas (the widgets from Menus → Sidebar & Widgets), comments list, comment form, comments pagination, discussion rules, hero, post feed and pagination.
+- **Code**: the area's raw code, plus its layout as JSON. The Header tab has `<head>` code and Header HTML, Footer has Footer HTML and Footer scripts, Sidebar has Sidebar HTML, Comments has Comments CSS. **Validate code** reports unclosed or stray tags, unbalanced CSS braces and unterminated comments or strings (with line numbers in the gutter), and lists what the sanitisers will remove. Save runs the same checks and refuses to save while there are errors.
+
+One draft covers every tab. The sticky bar has Undo/Redo (Ctrl+Z, Ctrl+Shift+Z), **Reset … to theme default** for the current tab, **Live preview** and **Save changes** (Ctrl+S). Live preview opens the site in another tab showing the unsaved draft and updates as you edit. The draft is kept in this browser's `localStorage`, so nobody else sees it, and the preview never runs `<head>` code or footer scripts.
+
+**How it is stored.** One row in `public.theme_settings`: `layout_structure` (JSON), `custom_header_code`, `custom_header_html`, `custom_footer_code`, `custom_footer_html`, `custom_sidebar_code`, `custom_comments_css` and `custom_css`. The HTML columns are separate from the script columns because they are sanitised differently. The row is readable by anyone, since all of it is rendered into public pages, and writable only with `manage_options`: the code runs in every visitor's browser, including an administrator's. Saves are conditional on `updated_at`, which a trigger sets, so two administrators editing at once get a conflict message instead of silently overwriting each other.
+
+**How it renders.** The default layout reproduces the header, footer, sidebar, comments and home page as they were, so nothing changes until you save. `ThemeLayoutRenderer` renders every block inside its own error boundary: a block that throws disappears (the preview says why) instead of breaking the page. HTML goes through `ContentRenderer`, so shortcodes work and `<script>`, `<style>`, `<iframe>` and event handlers are removed. `<head>` code and footer scripts go through the same allowlist as the SEO tracking scripts. Layout JSON is normalised on load: unknown blocks, settings and containers are dropped, colours must be colours, and links must be `http(s)`, site-relative, `mailto:` or `tel:`.
+
+On `npm start`, `server/seo.mjs` writes Custom CSS (plus Comments CSS), the `<head>` code and the footer scripts into the HTML, with `<meta name="rwp-theme">` so the browser does not add the scripts again. The CSS goes just before `</head>`, after the app's stylesheet, so your rules win at equal specificity. On Vercel and `npm run dev` the browser adds them after loading. None of it runs on `/admin` or `/builder/…`.
+
+**Targeting things with CSS.** A component's own classes come from a CSS Module, and the name is readable and build-stable rather than hashed: `.rwp-<module>-<class name>`, so `src/components/PublicHome.module.css`'s `.containerFull` renders as `.rwp-public-home-containerFull` and the builder's admin as `.rwp-page-builder-admin-*` ([`vite.cssModules.mjs`](./vite.cssModules.mjs), `npm run check:css` proves no two modules collide). That makes the devtools inspector say where a class came from, but it is still private — the class can be renamed with the component — so Custom CSS should use the stable hooks: `.rwp-site`, `.rwp-header`, `.rwp-nav`, `.rwp-brand`, `.rwp-header-actions`, `.rwp-footer`, `.rwp-footer-columns`, `.rwp-sidebar`, `.rwp-index`, `.rwp-hero`, `.rwp-posts-feed`, `.rwp-post-card`, `.rwp-comments`, `.rwp-comment`, and `.rwpt-block-<block type>` on every block.
+
+**Deliberately not included.** Sidebar code is HTML, not JSX: saved text cannot run React components without shipping a compiler to every visitor and executing arbitrary code, but shortcodes provide the same thing safely. Comments CSS can restyle comments, but there is no HTML template for them. Comment text is written by visitors, and saved HTML wrapped around it would be an unescaped template.
+
+### Languages, text direction and hook slots
+
+The `pages` columns this needs (`locale`, `translation_group_id`, `builder_data_i18n`) come from [`supabase/schema.sql`](./supabase/schema.sql). The language settings themselves work without them; the per-language Page Builder layouts do not.
+
+**Settings → Languages** chooses which languages the site offers, the default for visitors, a separate default for the admin dashboard, and whether the public language switcher is shown. They are four rows in the public `options` table (`default_site_language`, `default_admin_language`, `show_header_language_switcher`, `supported_languages`), not part of the `rwp_app_settings` document, because the public site has to read them before anything else loads.
+
+**Picking a language.** `?lang=fa` in the URL wins, then the visitor's stored choice, then the first of their browser languages the site offers, then the site default. The choice is kept in `localStorage`, per browser, and the admin keeps its own — so you can work in English on a Persian site. Switching does not reload the page.
+
+**Direction and fonts.** [`src/lib/i18n.ts`](./src/lib/i18n.ts) writes `lang`, `dir`, `.rwp-rtl`/`.rwp-ltr` and `--rwp-font-family` onto `<html>`, and loads the locale's web font (Vazirmatn for Persian, Noto Naskh Arabic for Arabic, Inter for the Latin locales). This happens before the first render — `App.tsx` awaits `initI18n()` next to `preloadSiteTemplates()` — so an RTL site never paints left-to-right first. A language code with no definition of its own still gets the right direction: `fa-IR`, `ckb` and the other RTL prefixes are recognised. The layout is written with CSS logical properties (`inset-inline-start`, `padding-inline-start`, `text-align: start`), so there is no second RTL stylesheet; sides that are an explicit design choice (`.rwpb-icon-box-left`, `.rwpb-ribbon-right`, an offcanvas panel's side) stay physical on purpose.
+
+**Translating.** `t('header.login', 'Log in')` resolves against the active locale, then the site default, then English, then the fallback you passed, then the key itself. Core's strings are in [`src/lib/locales/`](./src/lib/locales); a plugin ships its own with `registerPluginTranslations('my-plugin', { fa: { 'my.key': '…' } })`, and a single string can be overridden through the `i18n_translate_key` filter without a dictionary at all.
+
+**Settings → Translations** (needs the `rwp_translations` table from [`supabase/schema.sql`](./supabase/schema.sql)) lists every key core and the active plugins ship, one language at a time, and saves your own wording in `public.rwp_translations`, one row per key and language. Within each language a saved string beats the bundled one, so the lookup order becomes: saved in the active language, bundled in the active language, then the same two for the site default and for English, then the fallback. It is a data source for the same `t()`, not a second system, so everything already using `t()` (the public site, shortcodes, Page Builder widgets, plugins) picks it up, and `i18n_translate_key` still runs last. The strings for the active language, the site default and English are loaded before the first render, like the locale itself, and again on a language switch; a failed request falls back to the copy the browser saved last time. Category names and descriptions are keys too: `translateTerm('category', category)` looks up `category.<slug>.name` (the id when the slug is not ASCII) and falls back to the stored name.
+
+- **Export / import.** JSON or CSV, for a translator: the export has the original text and the bundled default beside each value, and only the value column is read back. Import fills only keys without a translation unless you tick "replace", and never blanks one with an empty cell. A `{ "fa": { "header.login": "…" } }` file (the `registerPluginTranslations` shape, nested objects allowed) is accepted too. The CSV is written with a BOM so Excel opens Persian and Arabic correctly.
+- **Finding untranslated text.** Off by default. When on, browsers report keys they had to show in a fallback language through `rwp_report_missing_translations`, and they appear as rows with an empty value. Such rows are never applied, so turning this on changes nothing visitors see. The function is callable by `anon` on purpose — visitors are the ones who hit the gaps — and bounds itself: it checks the option itself, accepts only languages the site offers and well-formed keys, at most 50 per call, never updates a row, and stops at 2,000 untranslated rows.
+- **Who may edit.** `manage_options`, like the rest of Settings. Translations are rendered as text by React, never as HTML.
+
+**Per-language layouts.** A page's own language is `pages.locale` and its layout stays in `pages.builder_data`; layouts for the other languages go in `pages.builder_data_i18n`, keyed by locale. The page builder's language button swaps which one is on the canvas (the canvas gets that language's `dir`, while the editor's own panels stay in the admin language), and a language with no layout yet starts as a copy of the one on screen. Undo history is per language. A visitor reading in a language the page has no layout for sees the default one. `pages.translation_group_id` links separate rows that are translations of each other; `rwp_link_translation(page, translation_of)` sets it up and refuses two rows in the same language.
+
+**Hook slots.** `<HookSlot name="…" />` renders whatever plugins have added to a layout zone. Core provides `before_header`, `after_header`, `before_footer`, `after_footer` (`PublicLayout`), `sidebar_widgets` (`PublicSidebar`), `comment_form_before` / `comment_form_after` (`CommentSection`), `admin_before_content` / `admin_after_content` (`App`), and `builder_sidebar_tabs` / `builder_sidebar_panel` (the page builder). A slot is a filter over an array, so `addSlotContent(name, id, render, priority)` adds to it and an ordinary `addFilter` on the same name can reorder or remove what others added. A contribution that throws is caught and dropped rather than taking the page down. Content itself runs through `the_content`, and the page builder's widget list through `builder_widgets` (with `builder_widget_register` for one widget at a time).
+
+### Persian Origins: bilingual content (the `persian-origins` plugin)
+
+A port of the WordPress plugin of the same name. Activating it installs [`plugins/persian-origins/schema.sql`](./plugins/persian-origins/schema.sql) (on `npm start`; elsewhere run the file by hand). Both languages must be offered under **Settings → Languages**; the Dashboard checklist says so if one is missing.
+
+**One language state, core's.** The switch calls core's `setLocale()`, so `dir`/`lang` on `<html>`, `t()`, the header switcher, `?lang=` and the Page Builder's per-language layouts all move together. The plugin mirrors the result into body classes (`po-lang-fa`, `po-dir-rtl`, `po-theme-dark`, `po-font-fa-vazirmatn`), the `po_preferred_language` cookie and a `poLangChange` event on `document` (`detail: { lang, previous, dir }`).
+
+**Both languages are in the page.** `PublicContent` and `PublicHome` do not re-render on a language change, so a translated title, excerpt or body is rendered in every language at once (`.po-text.po-text--en` / `--fa`, the base one also `--base`) and the body class hides the others. Switching needs no request. A language without a translation shows the original. The title and excerpt filters return a component that fetches the feed's translations in one batch; the body is marked by `rwp_page_content` and expanded in `the_content`, which re-runs through `refreshFilters()` once the translation arrives. Shortcodes inside a translated body run once per language.
+
+**Where things are stored.** A page's translation: `po_content_translations` (one row per page and language, visible and editable exactly like the page itself). Category names and descriptions: core translation keys (`category.<slug>.name`), so core's Categories widget and archive titles show them too. Category images and order: `po_category_meta`. A signed-in visitor's theme, fonts, text size and language: `po_user_preferences`, owner-only; guests keep them in cookies and `localStorage`. Settings: the `po_settings` option.
+
+**Shortcodes.** `[language_switch mode="inline|floating"]`, `[site_settings mode="full|panel"]` (theme, a font per language, text size A− / A+ / Reset via `--po-font-size` on `<html>`), `[po_categories columns="3" …]`, `[continue_reading category="slug"]` (the first unread post, oldest first; back to the first when all are read) and `[po_text en="…" fa="…"]`. Persian Origins → Appearance can put the switch and the settings button on every page instead.
+
+**Fonts.** Files in `plugins/persian-origins/assets/fonts/<language>/<family>/` are found by `import.meta.glob` at build time (a browser cannot list a folder), with weight and style read from the file name, and declared with `font-display: swap`. Hosted Google Fonts are offered as well. The chosen font replaces `--rwp-font-family` for its language.
+
+**Site text: every other word on the page.** Menus, the site title, header, footer, sidebar widgets, buttons, forms, error messages, Theme Editor blocks and builder widgets are translated by their rendered text, the way TranslatePress does it for WordPress ([`lib/pageTranslator.ts`](./plugins/persian-origins/lib/pageTranslator.ts)). Each text node and translatable attribute (placeholder, title, aria-label, alt, a button's value) keeps its original; on a language switch it is rewritten from that original, so switching back restores the exact English. Text is changed in place (`nodeValue`, `setAttribute`), never by replacing nodes, so React's references stay valid, and a value React writes later simply becomes the new original. The MutationObserver runs before the browser paints, so visitors never see the English first.
+
+- **Phrases are core translation keys**, `phrase.<hash of the text>`, with the original in `source_text`. They load before the first render with core's other strings, and are listed, imported and exported under Settings → Translations (group `phrases`). One translation covers every place the same words appear.
+- **Built in:** Farsi for the interface text of core, the default theme, the Page Builder's public widgets and the shop (`lib/phrases.fa.ts`), plus every core key that has both English and Persian. Text with values in it (`Posts by {name}`) uses patterns. Dates become Solar Hijri, and standalone numbers get Persian digits (not in emails, codes or versions).
+- **Your own text** is collected while an administrator browses the site and listed under **Persian Origins → Site text**. Or press **Translate this page** (bottom left, administrators only) and click any text to translate it in place.
+- **Never touched:** comments (`data-rwp-user-content`), form values, code, and anything marked `translate="no"`, `.notranslate` or `data-po-skip`. Translated page bodies (`.po-text`) are edited under Pages & posts.
+
+**Dark theme.** It recolours the default theme through its stable classes (`rwp-site`, `rwp-header`, `rwp-post-card`…); Page Builder sections and Theme Editor blocks keep their own colours. Only the public site is restyled, never the admin.
+
+### Code snippets and the AI developer assistant (the `rwp-code-snippets` plugin)
+
+Activate the plugin first: it installs `plugins/rwp-code-snippets/schema.sql` (`public.code_snippets`). **the Code Snippets screen** then adds CSS, JavaScript, HTML and React hooks to a running site without touching a file — what WordPress's Code Snippets plugin is for, and what the Theme Editor's code areas cannot do, because those are one shared blob per area rather than separate, switchable, searchable pieces.
+
+**The four kinds.** A `css` snippet becomes a `<style>` in `<head>`. A `javascript` snippet becomes a `<script>` whose code runs inside its own IIFE with a `try`/`catch` around it, so two snippets can both declare `const items` and a thrown error names the snippet instead of a line number in a bundle. An `html` snippet is inserted as written — inline `<script>` in it is re-created so that it actually runs, because silently dropping it would look like the snippet had been ignored. A `hook` snippet is evaluated with `new Function` and receives the hook registry as `rwp`: `rwp.addAction`, `rwp.addFilter`, `rwp.addSlotContent`, `rwp.applyFilters`, `rwp.doAction` and `rwp.React` (there is no JSX in an evaluated snippet, so markup is `rwp.React.createElement`).
+
+**Switching one off really switches it off.** [`src/core/SnippetInjector.tsx`](./src/core/SnippetInjector.tsx) keeps the cleanup for every snippet it applied — the element it inserted, and the remover each `addFilter`/`addAction` returned — so toggling a snippet, saving an edit or deactivating the plugin undoes it in the open tab without a reload. What a JavaScript snippet has already *done* (a request it sent, an element it removed) is not undone; that still needs a reload, and the editor says so. Each snippet is applied inside its own `try`/`catch`, and the failures are listed under **Code Snippets → Status** rather than being left in the console.
+
+**Who may write them.** Only `manage_options` (Administrator), enforced by RLS, for the same reason the Theme Editor's code fields are: an active snippet runs in every visitor's browser, including a signed-in administrator's, so a lower role able to save a `<script>` here could take over an admin session. Everyone, including `anon`, may read the **active** rows — the public site has to load them before anyone signs in — and only managers can see inactive ones.
+
+**The AI assistant.** With an AI key saved on **Settings → Integrations → AI** (server-only; see the section above), the editor gets a "Generate" and "Refine this code" bar, and the drawer opens a chat that has been told how this CMS actually works: the real hook names, the tables, the global `rwp-`/`rwpt-`/`rwpb-` class names, and that there is no Tailwind here. That system prompt lives in [`plugins/rwp-code-snippets/serverAi.mjs`](./plugins/rwp-code-snippets/serverAi.mjs), on the server, along with the key — a `VITE_` key would be compiled into the JavaScript every visitor downloads. Answers are suggestions: "Insert into editor" only fills the editor, and a snippet still has to be saved and switched on.
+
+**Backup and restore.** "Backup & Restore" exports every snippet, active and inactive, as one `react-wp-snippets-backup-YYYY-MM-DD.json` file, and reads such a file back on any React-WP site — either as new snippets ("keep both") or replacing rows with the same id ("overwrite existing"). Imported snippets arrive switched off unless you tick the box, because a backup from another site can contain JavaScript that assumes markup this one does not have.
+
+### Chat and the AI assistant (the `rwp-chat` plugin)
+
+A floating chat widget with an AI assistant, lead capture, file attachments, and handover
+to a human by internal inbox, Telegram, or WhatsApp — with shop-aware product cards and order
+tracking when `rwp-shop` is active. Self-contained: it has no reference to any other plugin's
+tables and everything it can't do (no key, no shop, no server) degrades to "wait for a person"
+instead of breaking.
+
+#### Features
+
+- **Floating launcher** on every public page (`after_footer` slot), plus `[rwp_chat_box]` to place
+  it on specific pages and `[rwp_inline_chat]` for a whole conversation embedded in a page — both
+  also exist as Page Builder widgets.
+- **AI assistant** on the provider you choose on **Settings → Integrations → AI** (Gemini, OpenAI,
+  Anthropic, or any OpenAI-compatible service), answering from the site's own published pages and,
+  on a product page, the product's real title/price/stock. It never invents a price, a policy, or
+  a delivery promise, and never asks for payment details.
+- **Pre-chat lead form** — name, email and phone, configurably required — so a lead is captured
+  even if the visitor leaves right after.
+- **File attachments** (images, PDFs, text; 8 MB limit), stored in their own Media Library folder
+  so support screenshots don't clutter the main library.
+- **Proactive invitations** — a speech bubble after N seconds on the page, or on exit intent —
+  shown at most once per visit.
+- **Live agent handover**, four ways: an internal admin inbox (free, always available), a free
+  Telegram bot notification, a free `wa.me` deep link, or a paid WhatsApp Business API push
+  (UltraMsg / Twilio / 360dialog style). The visitor's request is recorded first regardless of
+  channel, so a failed notification never loses the request itself.
+- **Admin inbox & CRM** (`Chat → Inbox`) — every conversation, filterable by lead email/phone or
+  status, with a reply box, canned responses (`/shortcut` expansion), claim/close/delete, and the
+  pending agent-request queue.
+- **Shop integration**, opt-in and dependency-free: an in-chat product card with a real price and
+  an "Add to cart" button, and a "Track my order" flow that needs the order number *and* the email
+  it was placed with (never the number alone — that's in every confirmation email).
+- **Full transcript logging** for every message — visitor, bot and agent — including which model
+  answered each bot reply, for auditing AI quality over time.
+
+#### Setup
+
+1. Save an AI key on **Settings → Integrations → AI** if you want the AI assistant: choose Google Gemini
+   (free from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), OpenAI, Anthropic, or
+   **Custom (OpenAI-compatible)** for any other service — Groq, Mistral, DeepSeek, OpenRouter, xAI,
+   Ollama and the like — and enter its base URL, key and model. Then pick a model and save. One key on
+   that card is used by the chat assistant, AI Section Refine, the page builder's AI page generator, the
+   Custom HTML code assistant and the snippets assistant alike. It stays on the server: never a `VITE_`
+   key, which would be compiled into the public bundle.
+2. Activate **rwp-chat** under **Plugins**. It installs
+   [`plugins/rwp-chat/schema.sql`](./plugins/rwp-chat/schema.sql) on its own.
+3. On a shop site, reinstall the shop's schema
+   ([`plugins/rwp-shop/schema.sql`](./plugins/rwp-shop/schema.sql)) to get the product card and
+   order tracker.
+4. Configure the widget and, if wanted, a live-agent channel under **Chat → General & AI** /
+   **Chat → Live agent** (see below). Nothing beyond step 1–2 is required — the chat works with the
+   AI off and the channel left on the default "Internal".
+
+#### Admin settings (`Chat` in the sidebar)
+
+| Tab | What it controls |
+| --- | --- |
+| **General & AI** | Bot name/avatar/welcome message, launcher position & theme, whether the AI answers, pre-chat form fields, attachments on/off, proactive invitation timing and wording. |
+| **Live agent** | Which channel "Talk to a person" uses, its button label, the public WhatsApp number (for the free link), and the Telegram / WhatsApp API credentials. |
+| **Products & orders** | Whether a product card and "Track my order" appear, and the cart/product-page nudge timing and wording. Inert without `rwp-shop`. |
+| **Inbox** | The live queue and transcripts — reply, claim, close or delete a conversation, and manage canned responses. Needs `moderate_comments`; the other tabs need `manage_options`. |
+
+**Configuring a live-agent channel**, from **Chat → Live agent**:
+
+- *Internal* (default) — nothing to configure. Requests wait in **Chat → Inbox** for a signed-in
+  staff member to answer.
+- *Telegram* — create a bot with [@BotFather](https://t.me/BotFather), copy its token, send the
+  bot a message (or add it to your team's group), then read the chat id from
+  `https://api.telegram.org/bot<token>/getUpdates`. Paste both in.
+- *WhatsApp link* — set your WhatsApp number (digits only, country code, no `+`). Free; the visitor
+  is redirected to `wa.me` with their question pre-filled.
+- *WhatsApp API* — set the provider endpoint, API token, optional instance id, and the number to
+  notify. Requires a paid WhatsApp Business API provider.
+
+#### How it works
+
+**Nobody can read anyone else's conversation.** Most visitors are anonymous, so there is no
+`auth.uid()` to write a policy against, and RLS therefore refuses `anon` everything on all five
+tables — including `select`, because a readable `chat_sessions` row is a list of every lead's email
+address and phone number. A visitor reaches their own conversation through `rwp_chat_start`,
+`rwp_chat_post`, `rwp_chat_history` and friends, each of which re-checks the session's own
+64-character token. The token is handed over once, at creation, and kept in `localStorage`; losing
+it starts a new conversation and nothing more. Staff read and write through ordinary RLS:
+`moderate_comments` for the inbox, `manage_options` to delete a transcript or curate canned
+responses.
+
+**The AI is on the server, and so is the transcript it reads.** The browser asks
+`POST /api/plugins/rwp-chat/ai/reply` with nothing but a session id and its token. The server loads
+the messages itself with the secret key, calls the provider you chose on Settings → Integrations → AI,
+and writes the answer back as an ordinary
+`chat_messages` row with the model on it. So a visitor cannot forge what the assistant "said" by
+editing the history they send, and **Chat → Inbox** shows a complete, auditable log of which half
+answered what. The system prompt in
+[`plugins/rwp-chat/serverAi.mjs`](./plugins/rwp-chat/serverAi.mjs) forbids inventing a price, a
+delivery time or a policy, and forbids asking for a card number. Without a key the chat still
+works — every message simply waits for a person.
+
+**Credentials never reach the browser.** The Telegram bot token and the WhatsApp API token live in
+`chat_secrets`, which **no browser can read, including the settings screen** — it shows only
+whether each one is set, because `options` is world-readable (the public site reads `site_title`
+before anyone signs in) and a token there would be downloadable by every visitor.
+
+**On a shop.** The chat shows a card for the product being viewed, with the price from the same
+SQL the catalogue uses, so it can never quote one checkout would refuse; "Add to cart" works
+without leaving the conversation; and **Track my order** answers "where is my order?" given the
+order number *and* the email it was placed with — both, because an order number appears in
+confirmation emails and browser history and is not a password. None of this is a dependency: the
+chatbot has no reference to a shop table anywhere, and looks these up by name at run time
+(`rwp_chat_card_product`, `rwp_chat_order_status`), so the buttons simply hide themselves on a
+site with no shop.
+
+**Attachments have their own folder.** A file goes to Cloudinary under
+`plugins/rwp-chat/chat_media` and is recorded in the Media Library as folder `chat_media` — by the
+server, since `public.media` only accepts inserts from someone with `upload_files` and most
+visitors have no account at all. The Media Library keeps `chat_media` out of **All media** and
+shows it only when you click **💬 Chatbot media** in the folder sidebar.
+
+**Attachments have their own folder.** A file goes to Cloudinary under `plugins/rwp-chat/chat_media` and is recorded in the Media Library as `chat_media` — by the server, because `public.media` only accepts inserts from someone with `upload_files` and most visitors have no account at all. The Media Library keeps `chat_media` out of **All media** and shows it only when you click **💬 Chatbot media** in the folder sidebar, so a support inbox full of screenshots does not bury the site's own pictures.
+
+### The editor
+
+The content editor is built on [TipTap](https://tiptap.dev) (ProseMirror). It replaced a hand-rolled `contentEditable` implementation that reassigned `innerHTML` from a React effect on every keystroke, which moved the caret back to the start of the document mid-sentence. TipTap owns its DOM, and external values are only applied while the editor is unfocused, so that class of bug cannot recur.
+
+### Installing a personal copy
+
+The repository contains only placeholders. Each person can download or clone the project and install it against their own Supabase project:
+
+1. Copy the project to their computer or Node.js host.
+2. Run `npm install`, `npm run build`, and `npm start`.
+3. Open the site and enter their own Supabase URL, publishable/anon key, database password, and (when needed) Session pooler connection string.
+4. Complete the administrator setup.
+
+The installer creates `data/react-wp-config.json` locally on that installation. The file is intentionally ignored by Git, so it is not uploaded to GitHub. It contains only the public Supabase URL/key used by browsers; database passwords and PostgreSQL connection strings are used by the server during installation and are not written to that file.
+
+Never commit `.env`, `.env.local`, database dumps, connection strings, database passwords, secret keys, or service-role keys. The tracked [`react-wp.config.example.json`](./react-wp.config.example.json) contains placeholders only.

@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Local Environment Variables (API keys, secrets)
+.env
+.env.local
+.env.*.local
+
+# Production Build Output
+dist
+dist-ssr
+build
+
+# Bundled Vercel API function (npm run build:api; imported by api/index.ts)
+src/server-dist
+
+# Editor and System Files
+.DS_Store
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite / Cache
+.vite
+.vercel
+.env*
+data/
+
+# Plugin uploads being unpacked (server/pluginInstaller.mjs)
+.rwp-tmp/
+server/.plugins.*.mjs
+
+# React-WP server installation/configuration files
+react-wp.config.json
+react-wp.config.*.json
+**/react-wp-config.json
+**/react-wp-config.*.json
+
+# Database dumps and private key material
+*.sql.gz
+*.dump
+*.pem
+*.key

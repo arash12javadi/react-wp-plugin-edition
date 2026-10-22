@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src",
+    "plugins",
+    "api",
+    "server",
+    "declarations.d.ts"
+  ]
+}

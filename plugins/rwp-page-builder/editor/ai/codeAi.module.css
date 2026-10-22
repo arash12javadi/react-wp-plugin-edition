@@ -1,0 +1,68 @@
+/* AI code assistant for the Custom HTML widget. Rendered in a portal on document.body, so colours are literal. */
+
+.layout { display: grid; gap: 14px; }
+.meta { margin: 0; color: #64748b; font-size: 12px; }
+
+.card { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.cardHead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.kind { padding: 2px 9px; border-radius: 999px; color: #fff; background: linear-gradient(90deg, #7c3aed, #db2777); font-size: 12px; font-weight: 700; }
+
+.field { display: grid; gap: 5px; color: #334155; font-size: 12.5px; font-weight: 600; }
+.field textarea { font-weight: 400; resize: vertical; }
+
+.quickPrompts { display: flex; flex-wrap: wrap; gap: 6px; }
+.quickPrompt {
+  padding: 5px 10px; border: 1px solid #ddd6fe; border-radius: 999px; color: #5b21b6;
+  background: #f5f3ff; font-size: 11.5px; cursor: pointer;
+}
+.quickPrompt:hover:not(:disabled) { border-color: #a78bfa; background: #ede9fe; }
+.quickPrompt:disabled { opacity: .5; cursor: default; }
+.quickPrompt:focus-visible { outline: 2px solid #a78bfa; outline-offset: 1px; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.actions button { display: inline-flex; align-items: center; gap: 6px; }
+
+.loading { margin: 0; padding: 10px 12px; border-radius: 8px; color: #5b21b6; background: #f5f3ff; font-size: 12.5px; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .6; } }
+@media (prefers-reduced-motion: reduce) { .loading { animation: none; } }
+
+.results { display: grid; gap: 10px; }
+.resultsHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.resultsHead strong { font-size: 13px; }
+.selectButtons { display: flex; gap: 4px; }
+.selectButtons button { padding: 4px 9px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; background: #fff; font-size: 12px; cursor: pointer; }
+
+.changeList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.change, .changeChosen { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; }
+.change { opacity: .6; }
+.changeChosen { border-color: #c4b5fd; }
+.changeHead { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.changeHead input { accent-color: #7c3aed; }
+.changeHead span { font-size: 12.5px; font-weight: 700; }
+.changeHead small { margin-left: auto; color: #64748b; font-size: 11.5px; }
+
+.diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.diffColumn { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 8px; border-radius: 8px; background: #f8fafc; }
+.diffLabel { color: #64748b; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.code {
+  margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; border-radius: 6px;
+  color: #e2e8f0; background: #0f172a; font: 11.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+.lineAdded { background: rgb(34 197 94 / 22%); }
+.lineRemoved { background: rgb(248 113 113 / 20%); }
+.emptyCode { margin: 0; padding: 8px 10px; border-radius: 6px; color: #94a3b8; background: #0f172a; font-size: 11.5px; }
+
+.applyBar {
+  position: sticky; bottom: -18px; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px;
+  margin: 0 -18px -18px; padding: 12px 18px; border-top: 1px solid #e2e8f0; background: #fff;
+}
+.applyBar .meta { margin-right: auto; }
+
+.appliedBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; border: 1px solid #bbf7d0; border-radius: 10px; background: #f0fdf4; }
+.appliedBar > div { display: grid; flex: 1 1 240px; gap: 2px; }
+.appliedBar strong { color: #166534; font-size: 12.5px; }
+
+@media (width <= 720px) {
+  .diff { grid-template-columns: 1fr; }
+}
