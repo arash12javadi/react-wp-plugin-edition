@@ -32,6 +32,7 @@ import { pluginsRouter } from './routes/plugins';
 import { pluginSchemaRouter } from './routes/pluginSchema';
 import { registerIntegrationRoutes } from './integrations';
 import { registerAiAssistRoutes } from './aiAssist';
+import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
 
 export const app = new Hono();
 
@@ -485,6 +486,11 @@ async function installSupabase(
       return c.json({ error: 'This site is already installed. The installer is locked. To start over, use Settings → Advanced → Reset Website.' }, 409);
     }
     await client.query(await supabaseSchemaSql());
+    // Before the options seed, because a site whose `anon` role has no grant on `public.options`
+    // installs "successfully" and then shows the Setup Wizard to every visitor (`permission denied
+    // for table options`, SQLSTATE 42501). The grants also set the default privileges the plugin
+    // schemas inherit, so a table added by the shop or the chat never reintroduces it.
+    await applySchemaPrivileges(client);
 
     // Persist the non-boot configuration to `system_settings` (this direct connection bypasses RLS),
     // so the wizard no longer has to emit RWP_STORAGE/S3_* environment variables.
@@ -690,7 +696,7 @@ app.route('/api/admin/plugins', pluginsRouter);
 app.route('/api/admin/plugins', pluginSchemaRouter);
 
 // -- Settings → Integrations ---------------------------------------------------
-// The status read and the two credential tests, at the paths the shared module owns.
+// The status read and the three credential tests, at the paths the shared module owns.
 registerIntegrationRoutes(app);
 
 // -- The core AI assistant -----------------------------------------------------

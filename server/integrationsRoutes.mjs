@@ -1,16 +1,18 @@
 /**
- * Settings → Integrations: the status the screen asks for on mount, and the two credential probes.
+ * Settings → Integrations: the status the screen asks for on mount, and the three credential probes.
  *
  *   GET  /api/integrations/status        what this site is set up to do: which credentials are saved
  *   POST /api/integrations/ai/test       one call to the chosen AI provider, to prove the saved key
  *   POST /api/integrations/email/test    one message through the saved mail configuration
+ *   POST /api/integrations/deploy/test   one POST to the saved deploy hook, so the next plugin upload
+ *                                        is not the first time it is used
  *
  * Every credential these answers depend on lives in `system_settings`, written by the signed-in
  * administrator's browser. Each request therefore begins by reading those rows
  * (`server/integrationSettings.mjs` explains the four ways it can do that) and normalising them
  * (`server/integrationConfig.mjs`), and nothing here reads `process.env` for a provider's key.
  *
- * The two POSTs are the only routes on this server that borrow a credential to make an outbound call,
+ * The three POSTs are the only routes on this server that borrow a credential to make an outbound call,
  * so they are the only ones that check who is asking: `authorize` is supplied by the engine (its own
  * authenticated adapter on the universal engine, `user_has_cap('manage_options')` on the classic one).
  * The status read stays public — it describes presence, never a value.
@@ -27,11 +29,14 @@
  */
 import {
   AI_CONFIG_KEY,
+  DEPLOY_CONFIG_KEY,
   EMAIL_CONFIG_KEY,
   GITHUB_CONFIG_KEY,
   INTEGRATION_CONFIG_KEYS,
   MEDIA_STORAGE_CONFIG_KEY,
   aiConfigFrom,
+  deployHookFrom,
+  deployStatusFrom,
   describeIntegrations,
   emailConfigFrom,
   githubStatusFrom,
@@ -40,14 +45,16 @@ import {
   testAiConnection,
 } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
+import { triggerDeployHook } from './pluginInstaller.mjs';
 
 const STATUS_PATH = '/api/integrations/status';
 const AI_TEST_PATH = '/api/integrations/ai/test';
 const EMAIL_TEST_PATH = '/api/integrations/email/test';
+const DEPLOY_TEST_PATH = '/api/integrations/deploy/test';
 
 /** The paths this module answers, so `server.mjs` can skip the call without repeating the list. */
 export const ownsIntegrationPath = (pathname) =>
-  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH;
+  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH || pathname === DEPLOY_TEST_PATH;
 
 
 /**
@@ -60,6 +67,10 @@ const loadHubSettings = async (reader) => {
   const rows = await readIntegrationRows(INTEGRATION_CONFIG_KEYS, reader);
   return {
     github: githubStatusFrom(rows.settings[GITHUB_CONFIG_KEY]),
+    deploy: deployStatusFrom(rows.settings[DEPLOY_CONFIG_KEY]),
+    // The one value read here rather than summarised: the server is what calls a deploy hook, so it is
+    // the only client that can spend one. It travels no further than `triggerDeployHook`.
+    deployHook: deployHookFrom(rows.settings[DEPLOY_CONFIG_KEY]),
     ai: aiConfigFrom(rows.settings[AI_CONFIG_KEY]),
     media: mediaStorageConfigFrom(rows.settings[MEDIA_STORAGE_CONFIG_KEY]),
     email: emailConfigFrom(rows.settings[EMAIL_CONFIG_KEY]),
@@ -75,15 +86,15 @@ const bearerToken = (headers = {}) =>
 const json = (status, payload) => ({ status, body: { success: status < 400, ok: status < 400, ...payload } });
 
 /**
- * The two POSTs spend a saved credential on an outbound call, so they are the only routes here that
- * check who is asking. An engine that cannot authorize says so rather than quietly skipping the check.
+ * The POSTs spend a saved credential on an outbound call, so they are the only routes here that check
+ * who is asking. An engine that cannot authorize says so rather than quietly skipping the check.
  */
 const authorize = async ({ authorize: check, headers }) => {
   if (typeof check !== 'function') {
     return {
       ok: false,
       status: 501,
-      error: 'This host cannot authorize integration tests. Test AI and email on a host running the Node server.',
+      error: 'This host cannot authorize integration tests. Test AI, email and deploys on a host running the Node server.',
     };
   }
   return check(bearerToken(headers));
@@ -94,7 +105,7 @@ const authorize = async ({ authorize: check, headers }) => {
  * @param {string} options.method     HTTP method, straight from the request
  * @param {string} options.pathname   the path, without the query string
  * @param {object} options.headers    lowercased request headers; only `authorization` is read, by `authorize`
- * @param {object} options.body       the parsed JSON body, for the two POSTs
+ * @param {object} options.body       the parsed JSON body, for the three POSTs
  * @param {string} options.storage    the resolved storage driver, reported next to the media card
  * @param {object} options.config     the runtime config: `databaseUrl`, `dbType`, `supabaseUrl`, `supabasePublishableKey`
  * @param {object} options.env        the server environment, for the connection and service keys
@@ -121,6 +132,7 @@ export async function handleIntegrationsRequest(options) {
     const settings = await loadHubSettings(reader);
     return json(200, describeIntegrations({
       github: settings.github,
+      deploy: settings.deploy,
       ai: settings.ai,
       media: settings.media,
       email: settings.email,
@@ -156,6 +168,24 @@ export async function handleIntegrationsRequest(options) {
       siteTitle: String(env.SITE_NAME || '').trim() || 'this site',
     });
     return json(result.ok ? 200 : 400, result.ok ? { message: result.message } : { error: result.error });
+  }
+
+  if (pathname === DEPLOY_TEST_PATH && method === 'POST') {
+    const permission = await authorize(options);
+    if (!permission.ok) return json(permission.status || 403, { error: permission.error });
+    const settings = await loadHubSettings(reader);
+    // Only what is stored, and only what a plugin upload would call: the point of the button is to prove
+    // that the hook behind the next install works, not to test a URL the browser has not saved yet.
+    if (!settings.deployHook) {
+      return json(400, { error: 'No deploy hook is saved yet. Paste one under Settings → Integrations → Deployments, then test it.' });
+    }
+    const result = await triggerDeployHook(settings.deployHook);
+    if (result.triggered) {
+      return json(200, {
+        message: `The deploy hook answered HTTP ${result.status}. A new build is on its way — the URL it is served from is on the platform's own dashboard.`,
+      });
+    }
+    return json(400, { error: result.error || 'The deploy hook did not answer.' });
   }
 
   // Ours, wrong verb: a null the engine turns into a 405 with an Allow header. A path that is not ours

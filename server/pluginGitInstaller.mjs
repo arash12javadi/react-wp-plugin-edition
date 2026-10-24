@@ -7,7 +7,8 @@
  * ZIP is checked by the very same functions — but the file work happens on the repository instead:
  * one commit adds `plugins/<id>/`, removes what a previous version left behind, and registers the
  * plugin's `server.mjs` in `server/plugins.mjs`, and then the platform is asked to rebuild from that
- * commit (`triggerDeployHook`, i.e. `VERCEL_DEPLOY_HOOK_URL`).
+ * commit (`triggerDeployHook`, with the hook saved on Settings → Integrations → Deployments, or
+ * `VERCEL_DEPLOY_HOOK_URL` where the host has no hub in front of it).
  *
  * Everything the classic installer reports is still reported: the SQL files to run, the npm packages
  * the build would miss, the `rwp_active_plugins` pinning that keeps a new plugin inactive, and the
@@ -57,10 +58,11 @@ function pluginFolderIds(paths) {
  * `source` is `{ zip }` (uploaded) or `{ url }` (fetched), exactly as the classic installer takes it,
  * because the dialog offers both. `target` is `githubTargetFrom(row)` on the stored `github_config`
  * row. `onStep` receives the step ids `PluginUploadModal` renders, in the order it expects them;
- * `optionStore` is the engine's database adapter, used only to pin `rwp_active_plugins`. The return
- * value is the shape that dialog renders.
+ * `optionStore` is the engine's database adapter, used only to pin `rwp_active_plugins`; `deployHook` is
+ * the URL saved on Settings → Integrations → Deployments, resolved by the caller. The return value is the
+ * shape that dialog renders.
  */
-export async function installPluginFromGit({ source, target, optionStore, onStep = () => {} }) {
+export async function installPluginFromGit({ source, target, optionStore, deployHook, onStep = () => {} }) {
   if (installing) throw new InstallError('Another plugin is being installed right now. Wait for it to finish, then try again.', 409);
   installing = true;
   try {
@@ -131,9 +133,9 @@ export async function installPluginFromGit({ source, target, optionStore, onStep
     if (pinWarning) warnings.push(pinWarning);
 
     onStep('triggering-rebuild');
-    const deploy = await triggerDeployHook();
+    const deploy = await triggerDeployHook(deployHook);
     if (!deploy.configured) {
-      warnings.push('No rebuild was triggered: this deployment has no VERCEL_DEPLOY_HOOK_URL. The plugin is in the repository already, so building or redeploying from there installs it. Create a deploy hook (Vercel → the project → Settings → Git → Deploy Hooks) and set VERCEL_DEPLOY_HOOK_URL to have uploads redeploy themselves.');
+      warnings.push('No rebuild was triggered: this deployment has no deploy hook, so a platform that builds from the repository does not know this commit exists. The plugin is in the repository already, so building or redeploying from there installs it. Create one (Vercel → the project → Settings → Git → Deploy Hooks) and paste it under Settings → Integrations → Deployments to have uploads redeploy themselves.');
     }
 
     return {

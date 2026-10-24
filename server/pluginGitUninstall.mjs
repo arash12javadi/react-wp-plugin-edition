@@ -5,7 +5,8 @@
  * (`EROFS`) — and a plugin folder only leaves the site after a build anyway. So the same decisions
  * are made against the repository instead: every file of the folder is deleted and the plugin's
  * `server.mjs` import is removed from `server/plugins.mjs`, both in ONE commit, after which the
- * platform is asked to rebuild (`triggerDeployHook`, i.e. `VERCEL_DEPLOY_HOOK_URL`). The database half
+ * platform is asked to rebuild (`triggerDeployHook`, with the hook saved under Settings → Integrations →
+ * Deployments or `VERCEL_DEPLOY_HOOK_URL`). The database half
  * of an uninstall — export, media, drop — runs exactly as it does on a host with a disk, because it
  * needs a connection and not a filesystem.
  *
@@ -32,11 +33,12 @@ let uninstalling = false;
 /**
  * `target` is `githubTargetFrom(row)` on the stored `github_config` row, `plugin` is the plugin as the
  * catalogue knows it (`{ id, folder, name, version }`), `activeIds` is `rwp_active_plugins` (`null`
- * when the option is missing) and `importers` is the build's list of plugins importing this one.
+ * when the option is missing), `importers` is the build's list of plugins importing this one, and
+ * `deployHook` is the URL saved under Settings → Integrations → Deployments.
  *
  * Returns `{ serverImportRemoved, commit, warnings }`.
  */
-export async function uninstallPluginFromGit({ target, plugin, activeIds = null, importers = [] }) {
+export async function uninstallPluginFromGit({ target, plugin, activeIds = null, importers = [], deployHook = '' }) {
   if (uninstalling) throw new InstallError('Another plugin is being uninstalled right now. Wait for it to finish, then try again.', 409);
   uninstalling = true;
   try {
@@ -104,9 +106,9 @@ export async function uninstallPluginFromGit({ target, plugin, activeIds = null,
       warnings.push(`GitHub did not accept the deletion of ${commit.deletionsSkipped.length} file(s) (${commit.deletionsSkipped.slice(0, 3).join(', ')}${commit.deletionsSkipped.length > 3 ? ', …' : ''}). They are still in plugins/${plugin.folder}/ and may end up in the build; delete them on GitHub.`);
     }
 
-    const deploy = await triggerDeployHook();
+    const deploy = await triggerDeployHook(deployHook);
     if (!deploy.configured) {
-      warnings.push('No rebuild was triggered: this deployment has no VERCEL_DEPLOY_HOOK_URL. The repository no longer holds the plugin, so building or redeploying from there leaves it out. Create a deploy hook (Vercel → the project → Settings → Git → Deploy Hooks) and set VERCEL_DEPLOY_HOOK_URL to have uninstalls redeploy themselves.');
+      warnings.push('No rebuild was triggered: this deployment has no deploy hook. The repository no longer holds the plugin, so building or redeploying from there leaves it out. Create a hook (Vercel → the project → Settings → Git → Deploy Hooks) and paste it under Settings → Integrations → Deployments to have uninstalls redeploy themselves.');
     }
 
     return {
@@ -132,16 +134,25 @@ export async function uninstallPluginFromGit({ target, plugin, activeIds = null,
  * `resolveTarget` is a function rather than the connection, and that is the point of it: reading the
  * stored `github_config` row can fail — it is `githubTarget`'s 501, "the connection is stored but
  * cannot be read" — and asking for it before the database half ran would fail an uninstall whose
- * tables are already dropped over a missing credential.
+ * tables are already dropped over a missing credential. `resolveDeployHook` is a function for the same
+ * reason, and one that answers '' on a failed read: the deploy hook is an optional last step, and an
+ * uninstall that has already dropped a plugin's tables must not be reported as failed over it.
  */
-export function pluginFolderRemover({ resolveTarget }) {
+export function pluginFolderRemover({ resolveTarget, resolveDeployHook = async () => '' }) {
   return async ({ plugin, importers = [], readActiveIds }) => {
     try {
+      let deployHook = '';
+      try {
+        deployHook = await resolveDeployHook();
+      } catch {
+        // Reported as "no deploy hook" in the warnings, which is what the administrator has to fix.
+      }
       const result = await uninstallPluginFromGit({
         target: await resolveTarget(),
         plugin,
         activeIds: await readActiveIds(),
         importers,
+        deployHook,
       });
       return {
         // A commit means the branch no longer holds the plugin; this deployment keeps it until that

@@ -191,7 +191,7 @@ function Chrome({ node }: { node: BuilderNode }) {
           <DragHandle node={node} className={styles.tabHandle}><GripVertical size={13} /></DragHandle>
           <button type="button" title="Edit section" aria-label="Edit section" onClick={stop(() => actions.select(node.id))}><Pencil size={12} /></button>
           <button type="button" className={`${styles.sectionAiButton} section-ai-btn`} title="Optimize section with AI"
-            onClick={stop(() => { actions.select(node.id); actions.openSectionAi(node.id); })}>
+            onClick={stop(() => { actions.select(node.id); actions.openCopyAi({ kind: 'section', nodeId: node.id }); })}>
             <Sparkles size={12} aria-hidden="true" /> AI Section Refine
           </button>
           <button type="button" title="Copy section (Ctrl+C)" aria-label="Copy section" onClick={stop(() => actions.copy(node.id))}><ClipboardCopy size={12} /></button>

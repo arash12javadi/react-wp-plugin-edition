@@ -33,6 +33,7 @@ pnpm-debug.log*
 .vercel
 .env*
 data/
+data/react-wp-config.json
 
 # Plugin uploads being unpacked (server/pluginInstaller.mjs)
 .rwp-tmp/
@@ -49,3 +50,7 @@ react-wp.config.*.json
 *.dump
 *.pem
 *.key
+
+#No needed plugins for User Edition
+plugins/rwp-ai-factory
+plugins/rwp-saas-installer

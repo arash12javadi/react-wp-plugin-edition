@@ -293,7 +293,7 @@ const SETTINGS_MESSAGES = {
  * asks, so a role granted a capability under Settings → Roles is recognised.
  *
  * The capability is a parameter because more than one route now borrows a saved credential on a
- * caller's behalf: the two integration probes want `manage_options` (they are the settings screen),
+ * caller's behalf: the three integration probes want `manage_options` (they are the settings screen),
  * while the core AI assistant wants `edit_posts` (writing a draft is not administering the site).
  * Both sentences and status codes are the ones this server has always answered with, so a caller
  * cannot tell which helper a route went through.

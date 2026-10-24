@@ -172,6 +172,14 @@
 .inspectorActions button:hover { color: var(--ed-text); background: var(--ed-bg); }
 .inspectorActions button:disabled { opacity: .4; cursor: default; }
 .inspectorActions button:disabled:hover { color: var(--ed-muted); background: none; }
+/* AI Refine: widget-level in the header, field-level beside a control's label. */
+.inspectorActions .aiButton { color: var(--ed-accent); }
+.inspectorActions .aiButton:hover { color: #fff; background: linear-gradient(90deg, #7c3aed, #db2777); }
+.fieldAiButton {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 4px; color: var(--ed-accent); background: none; cursor: pointer;
+}
+.fieldAiButton:hover { color: #fff; background: linear-gradient(90deg, #7c3aed, #db2777); }
 .inspector > .warning { margin: 0 14px 10px; }
 
 .tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border-bottom: 1px solid var(--ed-border); }

@@ -10,6 +10,8 @@ import {
   aiProviderLabels,
   aiProviderModels,
   aiProviders,
+  deployConfigFrom,
+  deployConfigKey,
   emailConfigFrom,
   emailConfigKey,
   emailProviderLabels,
@@ -23,6 +25,8 @@ import {
   githubScopes,
   githubTokenPageUrl,
   isAiConfigured,
+  isDeployConfigured,
+  isDeployHookUrl,
   isGithubConnected,
   mediaStorageConfigFrom,
   mediaStorageConfigKey,
@@ -306,9 +310,9 @@ function AiCard({ onChanged }: { onChanged: () => void }) {
 /**
  * One `system_settings` row, loaded once and written back on demand.
  *
- * All four cards are the same shape — read a row, edit it, save it, offer to reload it — so the
+ * The cards are all the same shape — read a row, edit it, save it, offer to reload it — so the
  * reading, the "saved" copy a save button compares against, and the busy/error/notice state live here
- * once instead of four times. `normalize` turns whatever the row holds into a full configuration, so a
+ * once instead of in every card. `normalize` turns whatever the row holds into a full configuration, so a
  * card never has to test for a missing field.
  */
 function useStoredConfig<T>(key: string, normalize: (value: unknown) => T) {
@@ -964,10 +968,10 @@ function PluginCard({ card }: { card: RwpIntegrationCard }) {
 /**
  * Settings → Integrations.
  *
- * A hub rather than a single screen: four cards this build owns — GitHub, AI, Media & storage, Email —
- * and any a plugin adds through `registerIntegrationCard`. Everything an integration needs is here,
- * because that is the promise the screen makes: no credential for a service is read from the server's
- * environment, and none has to be pasted into a file.
+ * A hub rather than a single screen: five cards this build owns — GitHub, Deployments, AI, Media &
+ * storage, Email — and any a plugin adds through `registerIntegrationCard`. Everything an integration
+ * needs is here, because that is the promise the screen makes: no credential for a service is read from
+ * the server's environment, and none has to be pasted into a file.
  *
  * What this component does is small on purpose: it fetches `GET /api/integrations/status` (presence
  * only) and hands it to the cards, which each read and write their own row. Two things are worth
@@ -1011,12 +1015,14 @@ export default function IntegrationsHub() {
         <p className={styles.warning}>
           <strong>This server cannot read these settings yet.</strong> {status.credentials.error}{' '}
           The cards below still show what is saved, because they read the database through your own
-          admin session — but connecting GitHub, testing a key, sending a test email and deleting media
-          at its provider all happen on the server, and will keep failing until it can read them too.
+          admin session — but connecting GitHub, testing a key, sending a test email, triggering a
+          deploy hook and deleting media at its provider all happen on the server, and will keep failing
+          until it can read them too.
         </p>
       ) : null}
 
       <GithubCard status={status} onChanged={() => void refresh()} />
+      <DeployCard status={status} onChanged={() => void refresh()} />
       <AiCard onChanged={() => void refresh()} />
       <MediaCard status={status} onChanged={() => void refresh()} />
       <EmailCard status={status} onChanged={() => void refresh()} />
@@ -1357,3 +1363,187 @@ function GithubCard({ status, onChanged }: { status: IntegrationStatus | null; o
     </Card>
   );
 }
+
+/**
+ * Deployments: the hook a plugin upload or uninstall calls to rebuild this site.
+ *
+ * On a host that builds from a repository, an upload does not install anything by itself — it commits
+ * `plugins/<id>/` and the site only carries the plugin after the next build. Every warning the install
+ * leaves behind ends with the same sentence, "create a deploy hook", and this is where that hook goes:
+ * one URL, called by the server (`triggerDeployHook`) once the commit is in.
+ *
+ * The URL is a secret in the way a token is — anyone holding it can spend builds — so the saved value
+ * is never rendered back. The field takes a pasted replacement ("Remove" empties it), and the card says
+ * whether something is stored rather than what it is. `https://` is checked here as well as on the
+ * server because a hook saved as `http://` would look configured on this screen and then quietly never
+ * be called; the server still tolerates such a row (it counts as saved but unusable), so the two agree.
+ *
+ * Only one hook, deliberately: the installers call whatever is stored, and a list would have to choose
+ * between rebuild targets on a screen that has no way to know which one produced this site.
+ */
+function DeployCard({ status, onChanged }: { status: IntegrationStatus | null; onChanged: () => void }) {
+  const { config, loading, busy, error, setError, notice, setNotice, save } =
+    useStoredConfig(deployConfigKey, deployConfigFrom);
+  const hook = useSecret(config.deploy_hook);
+  const [testing, setTesting] = useState(false);
+
+  // The server's answer covers rows this screen cannot read, but a hook saved a moment ago is not in it
+  // yet — so the row just written counts immediately, as it does on the GitHub card.
+  const configured = isDeployConfigured(config) || status?.deploy.configured === true;
+  /** Something is stored that the server would refuse to call — a hand-written row, or an old `http://`. */
+  const unusable = Boolean(config.deploy_hook) && !isDeployConfigured(config);
+
+  /**
+   * Saves the pasted hook.
+   *
+   * A non-empty value that is not an `https://` URL is refused here rather than stored: the server only
+   * calls an `https://` address, so saving it would produce a card that says "saved" and an install that
+   * never rebuilds — the failure this screen exists to prevent.
+   */
+  const saveHook = async (): Promise<void> => {
+    const next = hook.resolve();
+    if (next && !isDeployHookUrl(next)) {
+      setError('A deploy hook has to be the full https:// URL the platform gave you. Copy it again, including https://, then save.');
+      return;
+    }
+    const saved = await save(
+      { deploy_hook: next },
+      next
+        ? 'Saved. The next plugin upload or uninstall will ask this hook to rebuild the site.'
+        : 'Saved without a hook. Plugin uploads and uninstalls will say no rebuild was triggered.',
+    );
+    if (saved) {
+      hook.keep();
+      onChanged();
+    }
+  };
+
+  const removeHook = async (): Promise<void> => {
+    hook.clear();
+    const saved = await save(
+      { deploy_hook: '' },
+      'The deploy hook was removed. Plugin uploads and uninstalls will no longer ask this site to rebuild.',
+    );
+    if (saved) {
+      hook.keep();
+      onChanged();
+    }
+  };
+
+  /**
+   * Spends the saved hook once.
+   *
+   * The server answers from the stored row and not from the field, because the field holds a draft the
+   * next upload would not use: a test that proves nothing about the next upload is worse than no test.
+   * `Authorization` is the same access token the AI and email tests send, so the route's own
+   * `manage_options` check sees a session rather than an anonymous caller.
+   */
+  const testHook = async (): Promise<void> => {
+    setTesting(true);
+    setError('');
+    setNotice('');
+    try {
+      const { data } = await client.auth.getSession();
+      const response = await fetch('/api/integrations/deploy/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${data.session?.access_token || ''}`,
+        },
+      });
+      const payload = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
+      if (!response.ok) throw new Error(payload?.error || `The deploy hook could not be reached (HTTP ${response.status}).`);
+      setNotice(payload?.message || 'The deploy hook accepted the request.');
+    } catch (testError: unknown) {
+      setError(messageOf(testError, 'The deploy hook could not be reached.'));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <Card
+      id="integration-deploy"
+      title="Deployments"
+      meta="Rebuilds this site after a plugin is uploaded or uninstalled, so the change is live without a manual redeploy."
+      pill={configured ? <Pill tone="on">Hook saved</Pill> : <Pill tone="off">Not configured</Pill>}
+    >
+      <Feedback error={error} notice={notice} />
+
+      {loading ? <p className={styles.targetNote} role="status">Reading the saved deploy hook…</p> : (
+        <>
+          <p className={styles.targetNote}>
+            A host that builds from a repository commits an uploaded plugin there and then calls this URL to
+            rebuild, because the running deployment cannot see a folder it did not build. Vercel&apos;s hooks are on
+            the project — <strong>Settings → Git → Deploy Hooks</strong> — and any host that rebuilds on a plain
+            POST to an <code>https://</code> address works the same way.
+          </p>
+
+          <div className={styles.fields}>
+            <Field
+              label="Deploy hook URL"
+              help={hook.saved
+                ? 'A hook is saved and is not shown again. Paste a new URL to replace it, or remove it below.'
+                : 'The URL the server calls after a plugin upload or uninstall. Nothing else is rebuilt by it.'}
+            >
+              <input
+                type="password"
+                value={hook.input}
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder={hook.saved ? 'https://… (a hook is saved)' : 'https://api.vercel.com/v1/integrations/deploy/…'}
+                onChange={(event) => hook.onChange(event.target.value)}
+                disabled={busy || testing}
+              />
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.primary}
+              onClick={() => void saveHook()}
+              disabled={busy || testing || (!hook.dirty && !hook.clearing)}
+            >
+              {busy ? 'Saving…' : hook.saved ? 'Replace hook' : 'Save hook'}
+            </button>
+            {hook.dirty || hook.clearing ? (
+              <button type="button" className={styles.secondary} onClick={hook.keep} disabled={busy || testing}>
+                Undo changes
+              </button>
+            ) : null}
+            {hook.saved ? (
+              <button type="button" className={styles.secondary} onClick={() => void removeHook()} disabled={busy || testing}>
+                Remove hook
+              </button>
+            ) : null}
+          </div>
+
+          <div className={styles.actions}>
+            <button
+              type="button"
+              className={styles.secondary}
+              onClick={() => void testHook()}
+              disabled={busy || testing || !configured}
+            >
+              {testing ? 'Asking for a build…' : 'Test deploy hook'}
+            </button>
+            <span className={styles.hint}>
+              Calls the saved hook once, so the next upload is not the first time it is used. Save a new URL
+              before testing it. The build appears on the platform&apos;s own dashboard.
+            </span>
+          </div>
+
+          {unusable ? (
+            <p className={styles.setupNote}>
+              What is stored is not an <code>https://</code> address, so plugin uploads will not rebuild this
+              site. Paste the complete hook URL to replace it.
+            </p>
+          ) : null}
+        </>
+      )}
+    </Card>
+  );
+}
+
+

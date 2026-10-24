@@ -59,10 +59,15 @@ export interface PluginGitInstallResult {
  * `target` is `githubTargetFrom(row)` on the stored `github_config` row. `onStep` receives the step ids
  * the dialog renders, in the order it expects them. Only one install runs at a time: a second call while
  * one is in flight throws an `InstallError` with status 409 rather than interleaving two commits.
+ *
+ * `deployHook` is the saved hook (`deploy_config`, Settings → Integrations → Deployments) the commit is
+ * followed by. It is a secret the caller reads and hands over — the installer only spends it — and an
+ * empty one means the site has no rebuild target yet, which the warning in the result says out loud.
  */
 export function installPluginFromGit(options: {
   source: PluginInstallSource;
   target: GithubCommitTarget;
   optionStore?: PluginInstallOptionStore;
+  deployHook?: string;
   onStep?: (step: PluginInstallStep) => void;
 }): Promise<PluginGitInstallResult>;

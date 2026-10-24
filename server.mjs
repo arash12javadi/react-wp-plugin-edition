@@ -9,8 +9,10 @@ import { publicConfig, writeConfig } from './server/config.mjs';
 import { ensureSiteInstalled, resolveSiteConfig } from './server/autoSetup.mjs';
 import { buildEnvString } from './server/installEnv.mjs';
 import { authorizeImageKitUpload, authorizeMediaDelete, deleteFromProvider } from './server/media.mjs';
-import { describeDeleteSupport } from './server/integrationConfig.mjs';
-import { authorizeCapabilityOnSupabase, authorizeSettingsManager, readMediaStorageSettings } from './server/integrationSettings.mjs';
+import { describeDeleteSupport, DEPLOY_CONFIG_KEY, deployHookFrom } from './server/integrationConfig.mjs';
+import {
+  authorizeCapabilityOnSupabase, authorizeSettingsManager, readIntegrationRows, readMediaStorageSettings,
+} from './server/integrationSettings.mjs';
 import { renderDocumentInjections, renderEditorInjections } from './server/seo.mjs';
 import { handlePluginRequest, resolveOrigin } from './server/plugins.mjs';
 import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActivePluginIds } from './server/pluginFiles.mjs';
@@ -30,6 +32,7 @@ import {
   clearAssetCompressionCache, compressedAsset, compressForResponse, compressibleContentType, negotiateEncoding,
 } from './server/middleware/compression.mjs';
 import { describeDbError, projectRefFromUrl, resolveConnectionString, withClient } from './server/db.mjs';
+import { applySchemaPrivileges } from './server/schemaPrivileges.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const root = path.resolve('dist');
@@ -135,6 +138,34 @@ const currentMedia = async () => {
   });
 };
 
+/**
+ * The deploy hook a plugin install on this engine calls, or `''` when none is saved.
+ *
+ * This engine installs into `plugins/<id>/` on its own disk and asks for a restart, so a rebuild is not
+ * how the plugin arrives *here* — but the same install on the host this site is built on needs one, and
+ * `VERCEL_DEPLOY_HOOK_URL` was the only way to say so before Settings → Integrations had a Deployments
+ * card. Passing the saved row keeps the card's promise on this engine too, and `triggerDeployHook` still
+ * falls back to the environment variable when the row is empty.
+ *
+ * Never throws and never logs the URL: an unreadable row means "no hook", because a plugin that installed
+ * fine must not be reported as failed over a credential the administrator can paste again.
+ */
+const currentDeployHook = async () => {
+  try {
+    const file = await readConfig();
+    const rows = await readIntegrationRows([DEPLOY_CONFIG_KEY], {
+      databaseUrl: file?.databaseUrl,
+      dbType: file?.dbType,
+      supabaseUrl: file?.supabaseUrl,
+      supabaseKey: file?.supabasePublishableKey,
+      env: process.env,
+    });
+    return deployHookFrom(rows.settings[DEPLOY_CONFIG_KEY]);
+  } catch {
+    return '';
+  }
+};
+
 // Installs the CORE schema only. Plugin tables are installed per plugin from the Plugins screen
 // (POST /api/admin/plugins/install-schema), so a site that never enables the shop never gets
 // twenty shop_* tables it will not use.
@@ -175,6 +206,12 @@ const install = async (body) => {
 
   return withClient(resolved.url, async (client) => {
     await client.query(schema);
+    // Immediately after the DDL, before anything reads the site back: `anon` needs a grant on
+    // `public.options` for the homepage to load at all. The schema's own `Privileges` section does
+    // this too; running it here as well is what makes a checkout whose file predates that section
+    // install a working site. server/schemaPrivileges.mjs explains the failure it prevents — the
+    // `permission denied for table options (42501)` that shows the Setup Wizard on a provisioned site.
+    await applySchemaPrivileges(client);
     await client.query(
       `insert into public.options (option_name, option_value)
        values ($1, $2), ($3, $4), ($5, $6)
@@ -536,13 +573,13 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    // Settings → Integrations: the status the screen asks for on mount, and the two credential tests it
-    // spends a saved key on. Handled by the shared module, so this server and the Hono app answer with
-    // the very same routes.
+    // Settings → Integrations: the status the screen asks for on mount, and the three credential probes
+    // it spends a saved value on (AI, email, and the deploy hook a plugin upload will call). Handled by
+    // the shared module, so this server and the Hono app answer with the very same routes.
     if (ownsIntegrationPath(url.pathname)) {
       // Every credential these routes use is in `system_settings`, so the runtime config (for the
       // connection the reader needs) and the environment (for that connection's optional overrides) go
-      // with the request. `authorize` is what the two POSTs check the caller with.
+      // with the request. `authorize` is what the three POSTs check the caller with.
       const siteConfig = await currentConfig();
       const file = await readConfig();
       const result = await handleIntegrationsRequest({
@@ -799,7 +836,15 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       const send = (event) => response.write(`${JSON.stringify(event)}\n`);
       try {
-        const result = await installPlugin(source, auth, (step) => send({ type: 'step', step, mode: 'local' }));
+        const result = await installPlugin(
+          source,
+          auth,
+          (step) => send({ type: 'step', step, mode: 'local' }),
+          // The hook saved on Settings → Integrations → Deployments; `''` falls back to
+          // `VERCEL_DEPLOY_HOOK_URL` inside `triggerDeployHook`. Read per request, so a hook saved a
+          // minute ago is the one the next upload uses.
+          { deployHook: await currentDeployHook() },
+        );
         send({ type: 'result', result: { ...result, mode: 'local' } });
       } catch (error) {
         if (!(error instanceof InstallError)) console.error('Plugin installation failed:', error);

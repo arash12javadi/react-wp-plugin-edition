@@ -361,11 +361,14 @@ PAYPAL_CLIENT_ID=...
 PAYPAL_CLIENT_SECRET=...
 PAYPAL_MODE=sandbox
 
-# Everything else the site integrates with — GitHub, AI (Gemini / OpenAI / Anthropic /
-# OpenAI-compatible), media storage (Cloudinary/ImageKit/S3) and email (Resend/SendGrid/SMTP) — is
-# configured in the admin under Settings → Integrations, and stored in `system_settings`. There are
-# no SMTP_*, GEMINI_*, CLOUDINARY_*, IMAGEKIT_* or GITHUB_* variables any more: GitHub is a personal
-# access token pasted into its card, and the other three are keys pasted into theirs.
+# Everything else the site integrates with — GitHub, the deploy hook a plugin upload or uninstall
+# calls, AI (Gemini / OpenAI / Anthropic / OpenAI-compatible), media storage
+# (Cloudinary/ImageKit/S3) and email (Resend/SendGrid/SMTP) — is configured in the admin under
+# Settings → Integrations, and stored in `system_settings`. There are no SMTP_*, GEMINI_*,
+# CLOUDINARY_*, IMAGEKIT_*, GITHUB_* or VERCEL_DEPLOY_HOOK_URL variables any more: GitHub is a
+# personal access token pasted into its card, the hook is a URL pasted into the Deployments card, and
+# the rest are keys pasted into theirs. (VERCEL_DEPLOY_HOOK_URL is still read as a fallback for a host
+# whose saved card is empty.)
 
 # Security engine (all optional)
 ANTI_BOT_SECRET_KEY=
@@ -711,9 +714,9 @@ Plugin source folders belong in [`plugins/`](./plugins). Each plugin folder shou
 
 Plugins behave like WordPress: a plugin is installed while its folder exists. A folder added to `plugins/` appears as **inactive** (under `npm run dev` after a page reload; under `npm start` after a restart, because the browser bundle is built at startup; the Plugins screen says so when it finds a folder the running build lacks). **Delete** is only allowed for inactive plugins and removes the folder from disk through `POST /api/plugin-files/delete` (`server/pluginFiles.mjs`, `activate_plugins` capability). It refuses a plugin whose code another plugin imports (e.g. `rwp-page-builder`, used by `rwp-shop`), since the next build would fail. On Vercel there is no writable disk: remove the folder from the repository and redeploy. The old `rwp_deleted_plugins` option is no longer read.
 
-**Upload Plugin** (Plugins screen) installs a `.zip` file, or one downloaded from an `https://` URL, through `POST /api/admin/plugins/upload` (`server/pluginInstaller.mjs` where the site's own filesystem can be written to, `server/pluginGitInstaller.mjs` where it cannot, `activate_plugins` capability). Which of the two runs is decided per request by `src/server/pluginHostMode.ts`, before the body is read: a host that sets no serverless marker (`VERCEL`, `NOW_BUILDER`, `AWS_LAMBDA_FUNCTION_NAME`, `NETLIFY`, `CF_PAGES`, `DENO_DEPLOYMENT_ID`) and in which a probe file can be created and removed under `plugins/` and `.rwp-tmp/` is a host where `plugins/<id>/` survives — so `npm run start:hono` on a server of your own installs to disk exactly as `npm start` does, and the GitHub connection below is asked of only the hosts that cannot write a disk of their own. Every progress step carries the mode it belongs to (`local` or `github`), and so does the result, which is what the dialog labels its list with. The ZIP may hold the plugin at its root or inside one top-level folder (a GitHub "Download ZIP" works). It is limited to 25 MB, 150 MB unpacked and 5,000 files, and is refused if any path escapes the plugin folder or the plugin id is already installed. Files are unpacked into the git-ignored `.rwp-tmp/` and moved into `plugins/<id>/` only after validation — the destination is cleared, then one `rename`, then a copy-and-delete when Windows refuses that rename (a folder antivirus, the Vite watcher or an editor is holding open, or a `.rwp-tmp/` on another mount), so a locked folder no longer fails the upload. A `server.mjs` gets its import added between the `rwp:server-plugin-imports` markers in `server/plugins.mjs` (`server/serverPluginImports.mjs`, which syntax-checks the result and refuses if the region was hand-edited; a failure rolls the install back). Nothing is executed during install: `.sql` files are shown for you to run in the Supabase SQL Editor, and imported npm packages missing from `package.json` or `node_modules` are listed with an `npm install` command. The response streams progress as NDJSON — one `{ "type": "step" }` event per step, then `{ "type": "result" }` — and every host answers in that shape, which is why the upload dialog is one dialog. Afterwards restart `npm start` (it rebuilds, and server routes load at startup), then activate the plugin. `VERCEL_DEPLOY_HOOK_URL` is called as the last step on either host, but a Vercel deploy builds from Git, so on a self-hosted server that rebuild does *not* include the new plugin — the next paragraph is what does.
+**Upload Plugin** (Plugins screen) installs a `.zip` file, or one downloaded from an `https://` URL, through `POST /api/admin/plugins/upload` (`server/pluginInstaller.mjs` where the site's own filesystem can be written to, `server/pluginGitInstaller.mjs` where it cannot, `activate_plugins` capability). Which of the two runs is decided per request by `src/server/pluginHostMode.ts`, before the body is read: a host that sets no serverless marker (`VERCEL`, `NOW_BUILDER`, `AWS_LAMBDA_FUNCTION_NAME`, `NETLIFY`, `CF_PAGES`, `DENO_DEPLOYMENT_ID`) and in which a probe file can be created and removed under `plugins/` and `.rwp-tmp/` is a host where `plugins/<id>/` survives — so `npm run start:hono` on a server of your own installs to disk exactly as `npm start` does, and the GitHub connection below is asked of only the hosts that cannot write a disk of their own. Every progress step carries the mode it belongs to (`local` or `github`), and so does the result, which is what the dialog labels its list with. The ZIP may hold the plugin at its root or inside one top-level folder (a GitHub "Download ZIP" works). It is limited to 25 MB, 150 MB unpacked and 5,000 files, and is refused if any path escapes the plugin folder or the plugin id is already installed. Files are unpacked into the git-ignored `.rwp-tmp/` and moved into `plugins/<id>/` only after validation — the destination is cleared, then one `rename`, then a copy-and-delete when Windows refuses that rename (a folder antivirus, the Vite watcher or an editor is holding open, or a `.rwp-tmp/` on another mount), so a locked folder no longer fails the upload. A `server.mjs` gets its import added between the `rwp:server-plugin-imports` markers in `server/plugins.mjs` (`server/serverPluginImports.mjs`, which syntax-checks the result and refuses if the region was hand-edited; a failure rolls the install back). Nothing is executed during install: `.sql` files are shown for you to run in the Supabase SQL Editor, and imported npm packages missing from `package.json` or `node_modules` are listed with an `npm install` command. The response streams progress as NDJSON — one `{ "type": "step" }` event per step, then `{ "type": "result" }` — and every host answers in that shape, which is why the upload dialog is one dialog. Afterwards restart `npm start` (it rebuilds, and server routes load at startup), then activate the plugin. The deploy hook saved under **Settings → Integrations → Deployments** (`deploy_config` in `system_settings`) — or `VERCEL_DEPLOY_HOOK_URL` when nothing is saved — is called as the last step on either host, and a **Test deploy hook** button on that card spends it once so the next upload is not the first time it is used. But a Vercel deploy builds from Git, so on a self-hosted server that rebuild does *not* include the new plugin — the next paragraph is what does.
 
-**On Vercel — or any host whose filesystem is read-only — the same upload commits to Git instead.** There `server/pluginInstaller.mjs` would fail with `EROFS`, so the route hands the ZIP to `server/pluginGitInstaller.mjs`, which applies the same checks with the same functions — the same limits, the same refusal of a path outside the plugin folder, the same manifest validation — and then writes the plugin into the repository the deployment is built from in **one commit**, through GitHub's Git Data API (`server/pluginGitPush.mjs`): a tree built on the branch's current tree — the text of every file travels inside that one call, so a blob is uploaded only for a file that is not text, an empty one, or one past 8 MB — a commit, and the branch ref updated last, so a failure anywhere before that leaves the branch exactly as it was. The writes are serial and a second apart, because GitHub counts content-generating requests against a secondary rate limit that answers a burst with `HTTP 403`: a tree, a commit and a ref update are what an install makes. Files a previous version of the plugin left in `plugins/<id>/` are deleted in that commit too, and a plugin shipping a `server.mjs` has its import added to `server/plugins.mjs` in the same commit — the one path the installer may write outside `plugins/<id>/`. The credential is the stored **GitHub** connection from Settings → Integrations (`github_config`); an empty card is answered with `501` and the sentence that says so, because a host with no disk of its own has no other way in. Because the plugin arrives with a build, the dialog reports no restart: the platform rebuilds when it builds the commit, which is what `VERCEL_DEPLOY_HOOK_URL` above is for. Committing the folder yourself still works, and is exactly what the upload does for you.
+**On Vercel — or any host whose filesystem is read-only — the same upload commits to Git instead.** There `server/pluginInstaller.mjs` would fail with `EROFS`, so the route hands the ZIP to `server/pluginGitInstaller.mjs`, which applies the same checks with the same functions — the same limits, the same refusal of a path outside the plugin folder, the same manifest validation — and then writes the plugin into the repository the deployment is built from in **one commit**, through GitHub's Git Data API (`server/pluginGitPush.mjs`): a tree built on the branch's current tree — the text of every file travels inside that one call, so a blob is uploaded only for a file that is not text, an empty one, or one past 8 MB — a commit, and the branch ref updated last, so a failure anywhere before that leaves the branch exactly as it was. The writes are serial and a second apart, because GitHub counts content-generating requests against a secondary rate limit that answers a burst with `HTTP 403`: a tree, a commit and a ref update are what an install makes. Files a previous version of the plugin left in `plugins/<id>/` are deleted in that commit too, and a plugin shipping a `server.mjs` has its import added to `server/plugins.mjs` in the same commit — the one path the installer may write outside `plugins/<id>/`. The credential is the stored **GitHub** connection from Settings → Integrations (`github_config`); an empty card is answered with `501` and the sentence that says so, because a host with no disk of its own has no other way in. Because the plugin arrives with a build, the dialog reports no restart: the platform rebuilds when it builds the commit, which is what the **Deployments** card's saved hook (or `VERCEL_DEPLOY_HOOK_URL`) above is for. Committing the folder yourself still works, and is exactly what the upload does for you.
 
 ### Per-plugin database tables
 
@@ -750,6 +753,8 @@ A wipe also deletes the plugin's **uploaded files**. Uploads are namespaced at t
 Note that this applies to files uploaded *after* this convention existed. Shop product images chosen from the Media Library before it are Library assets at the old un-namespaced paths, and are deliberately left alone.
 
 Both wiping options require typing `DELETE`, which the server checks too. The order on the server is fixed — export, then drop, then remove the folder — so nobody ends up with wiped tables and no backup file. Dropping runs the plugin's `uninstall.sql` in one transaction and then verifies the declared tables are actually gone; if any survived, the whole thing rolls back. Each `uninstall.sql` documents what it deliberately keeps, such as saved page layouts (core columns) and the shop's site templates (ordinary pages an administrator may have hand-edited).
+
+Where the site is built from a repository, removing the code is a commit rather than a `rm` (`server/pluginGitUninstall.mjs`): the folder leaves `plugins/<id>/` on the branch in one commit, and the saved deploy hook is then called, exactly as it is after an upload — so the plugin is gone from the deployed build rather than only from the branch. A host with its own disk removes the folder and rebuilds nothing, because the folder *is* the install.
 
 ### Settings → Advanced → Reset Website
 
@@ -790,11 +795,12 @@ Administrators can view every user and change roles under the **Users** admin se
 | Card | Row | What it holds | Test button |
 | --- | --- | --- | --- |
 | GitHub | `github_config` | Personal access token, the account it belongs to, its scopes, and the repository and branch to publish to | — (the token is validated against GitHub as it is saved) |
+| Deployments | `deploy_config` | The deploy hook URL a plugin upload or uninstall calls, on Vercel **Settings → Git → Deploy Hooks** or any host that rebuilds on a plain `https://` POST | **Test deploy hook** — one call to the *saved* hook, so the next upload is not the first one to use it |
 | AI | `ai_config` | Provider (Gemini / OpenAI / Anthropic / OpenAI-compatible), API key, model, and for a custom provider its base URL | **Test connection** — one authenticated call with the values on screen, reported in the provider's own words |
 | Media & storage | `media_storage_config` | Active provider, and Cloudinary / ImageKit / S3 credentials | — (the Media screen's own upload and delete are the test) |
 | Email | `email_config` | Provider (Resend / SendGrid / Custom SMTP), key, From address and name | **Send test email** — one short message through the *saved* configuration |
 
-Anything with a key is stored, never echoed: `GET /api/integrations/status` answers with presence only (`configured`, which provider, which fields are still missing), and a test route returns the provider's sentence rather than the credential. The two test routes are the only ones here that borrow a credential for an outbound call, so they are the only ones that authorize the caller (`manage_options`).
+Anything with a key is stored, never echoed: `GET /api/integrations/status` answers with presence only (`configured`, which provider, which fields are still missing), and a test route returns the provider's sentence rather than the credential. The deploy hook is treated the same way — the status says `configured` and `hookConfigured`, never the URL, and a saved hook is replaced by pasting a new one rather than read back. The three test routes are the only ones here that borrow a credential for an outbound call, so they are the only ones that authorize the caller (`manage_options`).
 
 **The GitHub card asks for a personal access token, not an OAuth app.** Create one under **GitHub → Settings → Developer settings → Personal access tokens** — a classic token with the `repo` scope, which is what writing to a repository (private ones included) takes, or a fine-grained token with **Contents: Read and write** on the repository this site publishes to. Paste it in and press **Save token**: the browser sends it to `api.github.com` once, reads back the account it belongs to and the repositories it can see, and only then stores the row — so a typo can never leave a token behind for the server to push with. Two things follow from the token being yours rather than the site's: publishing no longer shares one rate limit across every user of the site, which is what an OAuth app's token did, and there is no callback URL to register, so a site hosted where you do not control the domain can still publish. Nothing about the token is read from the environment, and `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` no longer exist.
 
@@ -1232,6 +1238,11 @@ instead of breaking.
   Anthropic, or any OpenAI-compatible service), answering from the site's own published pages and,
   on a product page, the product's real title/price/stock. It never invents a price, a policy, or
   a delivery promise, and never asks for payment details.
+- **Knowledge library** (`Chat → Knowledge`) — every published page and post copied into a
+  searchable store, alongside entries written by hand and text pulled out of an uploaded `.docx`,
+  `.txt`, `.md`, `.csv`, `.html` or `.json` file (read in the browser; nothing is uploaded). A
+  question is answered from the passages that match it, so a policy that lives in one paragraph of
+  a long page can still be quoted. Drafts and archived entries are never shown to a visitor.
 - **Pre-chat lead form** — name, email and phone, configurably required — so a lead is captured
   even if the visitor leaves right after.
 - **File attachments** (images, PDFs, text; 8 MB limit), stored in their own Media Library folder
@@ -1268,13 +1279,18 @@ instead of breaking.
 4. Configure the widget and, if wanted, a live-agent channel under **Chat → General & AI** /
    **Chat → Live agent** (see below). Nothing beyond step 1–2 is required — the chat works with the
    AI off and the channel left on the default "Internal".
+5. Optional: open **Chat → Knowledge** and press **Sync the site now** so the assistant can quote
+   the pages it has only indexed titles for. It refreshes on its own once a day after that if you
+   leave the switch on.
 
 #### Admin settings (`Chat` in the sidebar)
 
 | Tab | What it controls |
 | --- | --- |
 | **General & AI** | Bot name/avatar/welcome message, launcher position & theme, whether the AI answers, pre-chat form fields, attachments on/off, proactive invitation timing and wording. |
+| **Knowledge** | What the assistant is allowed to quote: pages and posts scraped from this site, entries written by hand, uploaded documents, the auto-refresh interval, an AI rewrite of any entry, and a box that runs a real question against the store to show what would be found. |
 | **Live agent** | Which channel "Talk to a person" uses, its button label, the public WhatsApp number (for the free link), and the Telegram / WhatsApp API credentials. |
+
 | **Products & orders** | Whether a product card and "Track my order" appear, and the cart/product-page nudge timing and wording. Inert without `rwp-shop`. |
 | **Inbox** | The live queue and transcripts — reply, claim, close or delete a conversation, and manage canned responses. Needs `moderate_comments`; the other tabs need `manage_options`. |
 
@@ -1313,6 +1329,18 @@ answered what. The system prompt in
 delivery time or a policy, and forbids asking for a card number. Without a key the chat still
 works — every message simply waits for a person.
 
+**The knowledge library is retrieved, not pasted.** A scraped page is stored in
+`chat_knowledge_base`, and a trigger re-splits its text into overlapping passages in
+`chat_knowledge_chunks` — a `tsvector` column with a GIN index — so a question matches the paragraph
+that answers it rather than the whole article. The assistant asks `rwp_chat_knowledge_search`, which
+is `SECURITY DEFINER` and returns published passages only, so a draft or an archived entry is as
+invisible to it as to a visitor; the **Try a question** box on the same screen splits the question
+the same way and shows the passages that lookup returns, so a gap in the library is visible before a
+customer finds it (an empty result there means the library has nothing to add — the assistant also
+quotes the matching pages themselves). Each entry keeps the fingerprint of the page it was copied
+from, so an edit made by hand survives every sync that finds the page unchanged, and an entry you
+archive or pull back to draft is left alone instead of being republished.
+
 **Credentials never reach the browser.** The Telegram bot token and the WhatsApp API token live in
 `chat_secrets`, which **no browser can read, including the settings screen** — it shows only
 whether each one is set, because `options` is world-readable (the public site reads `site_title`
@@ -1328,12 +1356,11 @@ chatbot has no reference to a shop table anywhere, and looks these up by name at
 site with no shop.
 
 **Attachments have their own folder.** A file goes to Cloudinary under
-`plugins/rwp-chat/chat_media` and is recorded in the Media Library as folder `chat_media` — by the
-server, since `public.media` only accepts inserts from someone with `upload_files` and most
+`plugins/rwp-chat/chat_media` and is recorded in the Media Library as `chat_media` — by the
+server, because `public.media` only accepts inserts from someone with `upload_files` and most
 visitors have no account at all. The Media Library keeps `chat_media` out of **All media** and
-shows it only when you click **💬 Chatbot media** in the folder sidebar.
-
-**Attachments have their own folder.** A file goes to Cloudinary under `plugins/rwp-chat/chat_media` and is recorded in the Media Library as `chat_media` — by the server, because `public.media` only accepts inserts from someone with `upload_files` and most visitors have no account at all. The Media Library keeps `chat_media` out of **All media** and shows it only when you click **💬 Chatbot media** in the folder sidebar, so a support inbox full of screenshots does not bury the site's own pictures.
+shows it only when you click **💬 Chatbot media** in the folder sidebar, so a support inbox full of
+screenshots does not bury the site's own pictures.
 
 ### The editor
 

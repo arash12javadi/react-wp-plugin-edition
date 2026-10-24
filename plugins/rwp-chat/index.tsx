@@ -46,6 +46,9 @@ export const chatPluginCleanup = defineRwpPlugin(manifest, ({ admin, shortcodes 
       submenu: [
         { id: 'inbox', label: 'Inbox', icon: '📥' },
         { id: 'general', label: 'General & AI', icon: '🤖', capability: 'manage_options' },
+        // What the assistant may quote. Editing it is editing what the bot says to customers, and
+        // the table's own policy already checks manage_options, so the entry says it too.
+        { id: 'knowledge', label: 'Knowledge', icon: '📚', capability: 'manage_options' },
         { id: 'agent', label: 'Live agent', icon: '🙋', capability: 'manage_options' },
         { id: 'commerce', label: 'Products & orders', icon: '🛍️', capability: 'manage_options' },
       ],

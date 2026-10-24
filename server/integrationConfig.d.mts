@@ -12,11 +12,13 @@
 import type {
   AiConfig,
   AiProvider,
+  DeployConfig,
   EmailConfig,
   EmailProvider,
   IntegrationStatus,
   MediaStorageConfig,
   MediaStorageProvider,
+  SaasInstallerConfig,
 } from '../src/lib/integrations';
 
 export type IntegrationConfigRow = Record<string, unknown>;
@@ -28,6 +30,8 @@ export const AI_CONFIG_KEY: string;
 export const MEDIA_STORAGE_CONFIG_KEY: string;
 export const EMAIL_CONFIG_KEY: string;
 export const GITHUB_CONFIG_KEY: string;
+export const DEPLOY_CONFIG_KEY: string;
+export const SAAS_INSTALLER_CONFIG_KEY: string;
 export const INTEGRATION_CONFIG_KEYS: string[];
 
 export const AI_PROVIDERS: AiProvider[];
@@ -52,6 +56,22 @@ export function githubStatusFrom(value: unknown): {
   repository: string;
 };
 export function isGithubConnectedConfig(value: unknown): boolean;
+export function emptyDeployConfig(): DeployConfig;
+export function deployConfigFrom(value: unknown): DeployConfig;
+export function deployHookFrom(value: unknown): string;
+export function isDeployHookUrl(value: unknown): boolean;
+export function deployStatusFrom(value: unknown): { configured: boolean; hookConfigured: boolean };
+export function isDeployConfigured(value: unknown): boolean;
+export function emptySaasInstallerConfig(): SaasInstallerConfig;
+export function saasInstallerConfigFrom(value: unknown): SaasInstallerConfig;
+export function saasInstallerStatusFrom(value: unknown): {
+  configured: boolean;
+  repository: string;
+  branch: string;
+  projectName: string;
+  installedVersion: string;
+  installedAt: string;
+};
 export function mediaProviderStatus(config: MediaStorageConfig): {
   cloudinaryConfigured: boolean;
   imagekitConfigured: boolean;
@@ -76,6 +96,7 @@ export function describeIntegrations(options: {
     username?: string;
     repository?: string;
   };
+  deploy?: { configured?: boolean; hookConfigured?: boolean };
   ai?: AiConfig;
   media?: MediaStorageConfig;
   email?: EmailConfig;

@@ -413,7 +413,9 @@ export default function PluginUploadModal({ onClose: close, onInstalled, initial
 
             {result.deploy.configured && (
               <div className={result.deploy.triggered ? styles.alert : styles.errorBox}>
-                <strong>Vercel:</strong> {result.deploy.triggered ? 'a rebuild was triggered with the deploy hook.' : result.deploy.error}
+                <strong>Rebuild:</strong> {result.deploy.triggered
+                  ? 'the deploy hook accepted the request, so a new build is on its way.'
+                  : result.deploy.error}
               </div>
             )}
 

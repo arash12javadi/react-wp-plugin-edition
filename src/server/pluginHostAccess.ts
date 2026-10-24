@@ -10,14 +10,29 @@
  * then hands the work to `server/pluginUninstall.mjs`. Answering "who may touch plugins" and "which
  * credential source does this deployment have" once, here, is what keeps those surfaces from drifting
  * apart.
+ *
+ * A third question belongs to the same family and is answered alongside them: which `system_settings`
+ * rows a *plugin's* route may read. A plugin runs with this site's service key, so the grant is an
+ * allow-list keyed by plugin id (`server/pluginIntegrationAccess.mjs`) rather than a key list passed by
+ * the plugin itself — re-exported below, together with the engine's reader, so a plugin surface on this
+ * host reads under the same grant the classic one does.
  */
 import { createServerDbAdapter } from '../lib/db/index';
 import { createServerAuthAdapter } from '../lib/auth/index';
 import { hasCapability, type Capability, type UserRole } from '../lib/roles';
 import type { RuntimeConfig } from '../lib/runtime';
 import { detectPluginHostMode } from './pluginHostMode';
-import { GITHUB_CONFIG_KEY } from '../../server/integrationConfig.mjs';
-import { readIntegrationRows } from '../../server/integrationSettings.mjs';
+import { DEPLOY_CONFIG_KEY, GITHUB_CONFIG_KEY, deployHookFrom } from '../../server/integrationConfig.mjs';
+import {
+  readIntegrationRows,
+  type IntegrationReadOptions,
+  type IntegrationRowsResult,
+} from '../../server/integrationSettings.mjs';
+import {
+  readPluginIntegrationRows,
+  undeclaredIntegrationKeys,
+  undeclaredKeyRefusal,
+} from '../../server/pluginIntegrationAccess.mjs';
 import { authorizePluginManager } from '../../server/pluginFiles.mjs';
 import { githubTargetFrom, type GithubCommitTarget } from '../../server/pluginGitPush.mjs';
 import type { PluginInstallOptionStore } from '../../server/pluginGitInstaller.mjs';
@@ -118,6 +133,26 @@ export function systemSettingReader(config: RuntimeConfig): SystemSettingReader 
 }
 
 /**
+ * The `readIntegrationRows` options for this deployment — built once, because three readers now want
+ * them (`githubTarget`, `deployHookUrl`, and the plugin-scoped reader below) and a second copy is how
+ * one of them ends up without `dbType` and offers a MySQL URL to `pg`.
+ *
+ * Supabase is deliberately left without an injected reader: its adapter speaks the publishable key,
+ * which RLS does not let near `system_settings`, so the shared module opens a direct connection rather
+ * than reporting a connection that is stored but unreadable.
+ */
+export function integrationReadOptions(config: RuntimeConfig): IntegrationReadOptions {
+  return {
+    readSetting: systemSettingReader(config),
+    databaseUrl: config.databaseUrl,
+    dbType: config.dbType,
+    supabaseUrl: config.supabaseUrl,
+    supabaseKey: config.supabasePublishableKey,
+    env: serverEnvironment(),
+  };
+}
+
+/**
  * The repository to publish to, read from the stored `github_config` row.
  *
  * The row is read through `readIntegrationRows` — the same module, with the same options, that serves
@@ -127,17 +162,7 @@ export function systemSettingReader(config: RuntimeConfig): SystemSettingReader 
  * would be advice about a token that is already stored.
  */
 export async function githubTarget(config: RuntimeConfig): Promise<GithubCommitTarget> {
-  const rows = await readIntegrationRows([GITHUB_CONFIG_KEY], {
-    // Supabase is deliberately left without an injected reader: its adapter speaks the publishable key,
-    // which RLS does not let near `system_settings`, so the shared module opens a direct connection
-    // rather than reporting a connection that is stored but unreadable.
-    readSetting: systemSettingReader(config),
-    databaseUrl: config.databaseUrl,
-    dbType: config.dbType,
-    supabaseUrl: config.supabaseUrl,
-    supabaseKey: config.supabasePublishableKey,
-    env: serverEnvironment(),
-  });
+  const rows = await readIntegrationRows([GITHUB_CONFIG_KEY], integrationReadOptions(config));
   if (!rows.readable) {
     throw new HttpError(501, `The stored GitHub connection could not be read, so this plugin cannot be committed to the repository this site is built from. ${rows.error}`.trim());
   }
@@ -145,11 +170,64 @@ export async function githubTarget(config: RuntimeConfig): Promise<GithubCommitT
 }
 
 /**
+ * The deploy hook a plugin upload or uninstall calls, from Settings → Integrations → Deployments.
+ *
+ * Deliberately not `githubTarget`'s shape: a missing hook is not a refusal. A host that can write its
+ * own disk installs without one, and a commit path without one still leaves the plugin in the
+ * repository — so a failed read answers '' and the install's own warnings say what to configure. The
+ * installers fall back to `VERCEL_DEPLOY_HOOK_URL` when this answers nothing.
+ */
+export async function deployHookUrl(config: RuntimeConfig): Promise<string> {
+  try {
+    const rows = await readIntegrationRows([DEPLOY_CONFIG_KEY], integrationReadOptions(config));
+    if (!rows.readable) return '';
+    return deployHookFrom(rows.settings[DEPLOY_CONFIG_KEY]);
+  } catch {
+    // A setting that could not be read is a hook that is not configured, as far as this caller goes.
+    return '';
+  }
+}
+
+/**
+ * The rows a plugin route may read, granted in `server/pluginIntegrationAccess.mjs` — the same grant
+ * `plugins/<id>/server.mjs` reads under, re-exported here so a plugin surface on this engine cannot
+ * resolve its own private key list.
+ *
+ * The policy is declared in plain ESM rather than in this file for a mechanical reason: a plugin's
+ * server module runs as it is under `npm start`, so it cannot import TypeScript, and one declaration
+ * both hosts read is what keeps the two from disagreeing about what a plugin was granted.
+ */
+export {
+  PLUGIN_INTEGRATION_KEYS,
+  pluginIntegrationKeys,
+  readPluginIntegrationRows,
+} from '../../server/pluginIntegrationAccess.mjs';
+
+/**
+ * A plugin's own integration rows, read through this engine's adapter and under its grant.
+ *
+ * Throws on a refused key, unlike `readPluginIntegrationRows`, which answers `readable: false`: a route
+ * that named a row it was never granted has a bug, and this engine's routes report bugs with a status
+ * rather than an empty card. A row that exists but cannot be read still answers `readable: false` — what
+ * to make of that is the caller's, as it is for `githubTarget`.
+ */
+export async function pluginIntegrationRows(
+  pluginId: string,
+  keys: readonly string[],
+  config: RuntimeConfig,
+): Promise<IntegrationRowsResult> {
+  const undeclared = undeclaredIntegrationKeys(pluginId, keys);
+  if (undeclared.length > 0) throw new HttpError(403, undeclaredKeyRefusal(pluginId, undeclared));
+  return readPluginIntegrationRows(pluginId, keys, integrationReadOptions(config));
+}
+
+/**
  * The `options` accessor the plugin work uses: `installPluginFromGit` pins `rwp_active_plugins` through
  * it, and an uninstall reads that same option to know which plugin may have its folder removed.
  *
- * An adapter per call, for the reason above: an install takes seconds — GitHub round-trips, then the
- * deploy hook — and a connection held open across it is one a serverless function is billed for.
+ * An adapter per call, for the reason `systemSettingReader` gives: an install takes seconds — GitHub
+ * round-trips, then the deploy hook — and a connection held open across it is one a serverless function
+ * is billed for.
  */
 export function settingsStore(config: RuntimeConfig): PluginInstallOptionStore {
   return {

@@ -2,13 +2,16 @@ import { getSupabaseClient } from '../../../src/lib/db';
 import { sanitizeHtml } from '../../../src/components/ContentRenderer';
 import { controlStore } from '../lib/controls';
 import { getWidget, type Control } from '../lib/registry';
-import { findNode, updateNode, walkNodes } from '../lib/tree';
+import { findNode, locate, updateNode, walkNodes } from '../lib/tree';
 import type { BuilderDocument, BuilderNode, SectionNode, WidgetNode } from '../lib/types';
 
 /**
- * "AI Section Refine": sends one section's copy to the server, which asks the provider chosen on
- * Settings → Integrations → AI for better wording, and patches the returned strings back into that
- * section.
+ * "AI Refine": sends copy to the server, which asks the provider chosen on Settings → Integrations →
+ * AI for better wording, and patches the returned strings back into the document.
+ *
+ * The same code serves three scopes, because the work is identical and only the selection differs:
+ * a whole section (the ✨ button on a section's toolbar), one widget (the ✨ button in the inspector)
+ * and one text field (the ✨ button beside a control). `AiTarget` is that choice.
  *
  * Only text leaves the browser, never the layout JSON, and only text comes back. So the AI cannot
  * change ids, structure, links, media, styles, Custom HTML code or private form settings, and
@@ -17,6 +20,15 @@ import type { BuilderDocument, BuilderNode, SectionNode, WidgetNode } from '../l
 
 export type OptimizePreset = 'seo' | 'cta' | 'shorten' | 'tone';
 export type OptimizeTone = 'professional' | 'casual' | 'urgent' | 'persuasive';
+
+/**
+ * What an AI Refine window is open for. `field` is one control of one widget, which is why it
+ * carries the control key as well as the node id.
+ */
+export type AiTarget =
+  | { kind: 'section'; nodeId: string }
+  | { kind: 'widget'; nodeId: string }
+  | { kind: 'field'; nodeId: string; key: string };
 
 export interface CopyItem {
   /** "nodeId|key" or, for repeater items, "nodeId|key|index|field". */
@@ -45,6 +57,8 @@ export interface CopyChange extends CopyItem {
 export interface OptimizeResult {
   changes: CopyChange[];
   rejected: Array<{ id: string; field: string; reason: string }>;
+  /** Rewrites that came back without naming a field of this target, or without usable text. */
+  ignored: number;
   summary: string;
   model: string;
 }
@@ -67,43 +81,69 @@ const isCopy = (control: Control, value: unknown): value is string =>
 const itemId = (nodeId: string, key: string, index?: number, field?: string) =>
   index === undefined ? `${nodeId}|${key}` : `${nodeId}|${key}|${index}|${field}`;
 
+/** Every copy item of one widget, in control order. */
+function widgetCopy(node: WidgetNode): CopyItem[] {
+  const items: CopyItem[] = [];
+  const definition = getWidget(node.type);
+  // Custom HTML is administrator-only code, not copy.
+  if (!definition || definition.adminOnly) return items;
+  const settings = node.settings || {};
+  for (const control of definition.controls) {
+    if (controlStore(control) !== 'settings') continue;
+    if (control.condition && !control.condition(settings, node.style?.desktop || {}, node.advanced)) continue;
+    const value = settings[control.key];
+    if (control.type === 'repeater' && Array.isArray(value) && control.fields) {
+      value.forEach((entry, index) => {
+        if (!entry || typeof entry !== 'object') return;
+        for (const field of control.fields!) {
+          const fieldValue = (entry as Record<string, unknown>)[field.key];
+          if (!isCopy(field, fieldValue)) continue;
+          items.push({
+            id: itemId(node.id, control.key, index, field.key), nodeId: node.id, key: control.key, itemIndex: index, itemField: field.key,
+            widget: definition.label, field: `${control.label} ${index + 1}: ${field.label}`,
+            format: field.type === 'richtext' ? 'html' : 'text', text: fieldValue,
+          });
+        }
+      });
+      continue;
+    }
+    if (!isCopy(control, value)) continue;
+    items.push({
+      id: itemId(node.id, control.key), nodeId: node.id, key: control.key, widget: definition.label,
+      field: node.type === 'heading' ? `${String(settings.tag || 'h2').toUpperCase()} heading` : control.label,
+      format: control.type === 'richtext' ? 'html' : 'text', text: value,
+    });
+  }
+  return items;
+}
+
 /** Every piece of visible copy in the section, in reading order. */
 export function extractSectionCopy(section: SectionNode): CopyItem[] {
   const items: CopyItem[] = [];
   walkNodes([section], (node) => {
     if (node.kind !== 'widget' || node.hidden) return;
-    const definition = getWidget(node.type);
-    // Custom HTML is administrator-only code, not copy.
-    if (!definition || definition.adminOnly) return;
-    const settings = node.settings || {};
-    for (const control of definition.controls) {
-      if (controlStore(control) !== 'settings') continue;
-      if (control.condition && !control.condition(settings, node.style?.desktop || {}, node.advanced)) continue;
-      const value = settings[control.key];
-      if (control.type === 'repeater' && Array.isArray(value) && control.fields) {
-        value.forEach((entry, index) => {
-          if (!entry || typeof entry !== 'object') return;
-          for (const field of control.fields!) {
-            const fieldValue = (entry as Record<string, unknown>)[field.key];
-            if (!isCopy(field, fieldValue)) continue;
-            items.push({
-              id: itemId(node.id, control.key, index, field.key), nodeId: node.id, key: control.key, itemIndex: index, itemField: field.key,
-              widget: definition.label, field: `${control.label} ${index + 1}: ${field.label}`,
-              format: field.type === 'richtext' ? 'html' : 'text', text: fieldValue,
-            });
-          }
-        });
-        continue;
-      }
-      if (!isCopy(control, value)) continue;
-      items.push({
-        id: itemId(node.id, control.key), nodeId: node.id, key: control.key, widget: definition.label,
-        field: node.type === 'heading' ? `${String(settings.tag || 'h2').toUpperCase()} heading` : control.label,
-        format: control.type === 'richtext' ? 'html' : 'text', text: value,
-      });
-    }
+    items.push(...widgetCopy(node));
   });
   return items;
+}
+
+/** Every piece of visible copy in one widget, in control order. */
+export const extractWidgetCopy = (widget: WidgetNode): CopyItem[] => (widget.hidden ? [] : widgetCopy(widget));
+
+/** Whether a widget holds text the AI may rewrite. Cheap enough to ask when its toolbar is drawn. */
+export const widgetHasCopy = (widget: WidgetNode): boolean => extractWidgetCopy(widget).length > 0;
+
+/**
+ * The copy an AI Refine window works on. A `field` target keeps every repeater row of that control,
+ * since they share one key.
+ */
+export function extractTargetCopy(doc: BuilderDocument, target: AiTarget): CopyItem[] {
+  const node = findNode(doc, target.nodeId);
+  if (!node) return [];
+  if (target.kind === 'section') return node.kind === 'section' ? extractSectionCopy(node) : [];
+  if (node.kind !== 'widget') return [];
+  const items = extractWidgetCopy(node);
+  return target.kind === 'field' ? items.filter((item) => item.key === target.key) : items;
 }
 
 const widgetTypes = (section: SectionNode) => {
@@ -148,19 +188,50 @@ const stripTags = (value: string) => value.replace(/<[^>]*>/g, ' ').replace(/\s+
 const cleanOutput = (format: CopyItem['format'], text: string) =>
   format === 'html' ? sanitizeHtml(text).innerHTML.trim() : stripTags(text);
 
-export async function optimizeSection(input: {
+/** The longest custom instruction the server accepts, shared with the modal's counter. */
+export const PROMPT_MAX_CHARS = 4_000;
+
+/** The section a node sits in, when the node is not one itself. */
+function sectionOf(doc: BuilderDocument, nodeId: string): SectionNode | null {
+  const location = locate(doc, nodeId);
+  for (let index = (location?.ancestors.length || 0) - 1; index >= 0; index -= 1) {
+    const ancestor = location!.ancestors[index];
+    if (ancestor.kind === 'section') return ancestor;
+  }
+  return null;
+}
+
+/** What the model is told about the copy it is rewriting, so it writes the right kind of text. */
+export function describeTarget(doc: BuilderDocument, target: AiTarget): SectionOverview {
+  const node = findNode(doc, target.nodeId);
+  const section = node?.kind === 'section' ? node : sectionOf(doc, target.nodeId);
+  const overview = section ? describeSection(doc, section) : { kind: 'Section', columns: 1, widgets: [], position: '' };
+  if (!section || target.kind === 'section' || node?.kind !== 'widget') return overview;
+  const label = getWidget(node.type)?.label || 'Widget';
+  // One widget is not a page section: say what it is, and keep the place it sits in.
+  return { kind: `${label} widget`, columns: 1, widgets: [label], position: overview.position };
+}
+
+export async function optimizeCopy(input: {
   doc: BuilderDocument;
-  sectionId: string;
+  target: AiTarget;
   focusKeyword: string;
   preset: OptimizePreset | null;
   tone: OptimizeTone | null;
   customPrompt: string;
   pageTitle: string;
 }): Promise<OptimizeResult> {
-  const section = findNode(input.doc, input.sectionId);
-  if (!section || section.kind !== 'section') throw new Error('That section no longer exists. Close this window and choose a section again.');
-  const items = extractSectionCopy(section);
-  if (!items.length) throw new Error('This section has no editable text (only images, spacers or dynamic content).');
+  const node = findNode(input.doc, input.target.nodeId);
+  if (!node) throw new Error('That element no longer exists. Close this window and choose it again.');
+  if (node.kind === 'widget' && node.hidden) {
+    throw new Error('That widget is hidden, so it has no text to refine. Show it first, then try again.');
+  }
+  const items = extractTargetCopy(input.doc, input.target);
+  if (!items.length) {
+    throw new Error(input.target.kind === 'section'
+      ? 'This section has no editable text (only images, spacers or dynamic content).'
+      : 'This text cannot be refined: it is empty, or the widget has no text fields (only images, icons or settings).');
+  }
 
   const { data } = await getSupabaseClient().auth.getSession();
   let response: Response;
@@ -169,7 +240,7 @@ export async function optimizeSection(input: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token || ''}` },
       body: JSON.stringify({
-        section: describeSection(input.doc, section),
+        context: describeTarget(input.doc, input.target),
         items: items.map(({ id, widget, field, format, text }) => ({ id, widget, field, format, text })),
         focusKeyword: input.focusKeyword,
         pageTitle: input.pageTitle,
@@ -181,22 +252,27 @@ export async function optimizeSection(input: {
   } catch {
     throw new Error('Could not reach the site server. If you are using npm run dev, npm start must also be running on port 3000.');
   }
-  const payload = await response.json().catch(() => null) as { items?: Array<{ id: string; text: string }>; rejected?: Array<{ id: string; reason: string }>; summary?: string; model?: string; error?: string } | null;
+  const payload = await response.json().catch(() => null) as { items?: Array<{ id: string; text: string }>; rejected?: Array<{ id: string; reason: string }>; ignored?: number; summary?: string; model?: string; error?: string } | null;
   if (!response.ok || !payload) {
     throw new Error(payload?.error || `The AI request failed (HTTP ${response.status}). If you are using npm run dev, npm start must also be running on port 3000.`);
   }
 
   const byId = new Map(items.map((item) => [item.id, item]));
   const changes: CopyChange[] = [];
+  // The server counts answers that named no field; an id it named but that sanitises to nothing is
+  // the same kind of loss and is counted here, so an empty result can always say why it is empty.
+  let ignored = Number(payload.ignored) || 0;
   for (const entry of payload.items || []) {
     const item = byId.get(entry.id);
-    if (!item) continue;
+    if (!item) { ignored += 1; continue; }
     const after = cleanOutput(item.format, entry.text);
     if (after && after !== item.text.trim()) changes.push({ ...item, after });
+    else if (!after) ignored += 1;
   }
   return {
     changes,
     rejected: (payload.rejected || []).map((entry) => ({ ...entry, field: byId.get(entry.id)?.field || entry.id })),
+    ignored,
     summary: payload.summary || '',
     model: payload.model || '',
   };

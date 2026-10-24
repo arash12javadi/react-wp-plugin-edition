@@ -1,6 +1,8 @@
 -- Canonical React-WP schema. `server.mjs` reads this file and `POST /api/install-schema`
 -- (`src/server/index.ts`) executes it — the serverless bundle carries it inlined, so this file is the
 -- single source of truth for a fresh installation and nothing has to read it from disk at runtime.
+-- The `Privileges` section at the end is mirrored in `server/schemaPrivileges.mjs`, which every
+-- install path runs immediately after the schema, including for a template release older than it.
 
 create extension if not exists pgcrypto;
 
@@ -3037,5 +3039,49 @@ grant execute on function public.rwp_security_secrets_status() to authenticated;
 create index if not exists pages_sitemap_idx
   on public.pages (status, updated_at desc)
   where status = 'published';
+
+-- Privileges --------------------------------------------------------------------
+-- The grants a provisioned project needs, spelled out instead of inherited.
+--
+-- A Supabase project created from the dashboard hands `anon` and `authenticated` full table
+-- privileges in `public`, so the policies above are all that stand between a visitor and a row. A
+-- project provisioned over a direct Postgres connection cannot assume that: with no grant at all,
+-- `anon` cannot read `public.options` even though "Allow public read access on options" says it may,
+-- and the first page load answers `permission denied for table options (42501)` — which the client
+-- reads as "not installed" and answers with the Setup Wizard instead of the homepage.
+--
+-- The same statements live in `server/schemaPrivileges.mjs`, which every install path runs on top of
+-- whatever schema it applied, including a template release tag older than this section. Keep the two
+-- in sync; like the rest of this file, this block is idempotent and safe to re-run over a live site.
+--
+-- The grants are blanket on purpose — every table a plugin adds later inherits them, which is what
+-- stops the next table from reintroducing the same 42501 — and the tables that hold secrets or
+-- per-user state are withheld again at the bottom, after them.
+grant usage on schema public to anon, authenticated;
+
+-- Visitors read, signed-in users write, and RLS policies decide which rows either one sees.
+grant select on all tables in schema public to anon;
+grant all on all tables in schema public to authenticated;
+grant all on all sequences in schema public to authenticated;
+
+-- Tables created after this point inherit the same privileges: a plugin schema applied from the
+-- Plugins screen, and anything a later migration adds.
+alter default privileges in schema public grant select on tables to anon;
+alter default privileges in schema public grant all on tables to authenticated;
+alter default privileges in schema public grant all on sequences to authenticated;
+
+-- Withheld again, and last. Each of these is revoked in the section that creates it; repeating the
+-- revokes here is what keeps the blanket grants above from re-opening them.
+revoke all on table public.rwp_security_secrets from anon, authenticated;
+revoke all on table public.rwp_view_salts from anon, authenticated;
+revoke all on table public.page_views from anon, authenticated;
+revoke all on table public.profile_details from anon;
+revoke all on table public.rwp_user_capabilities from anon;
+revoke all on table public.likes from anon;
+revoke all on table public.follows from anon;
+revoke all on table public.taxonomy_follows from anon;
+revoke all on table public.bookmarks from anon;
+revoke insert, update, delete on table public.theme_settings from anon;
+revoke insert, update, delete on table public.rwp_translations from anon;
 
 notify pgrst, 'reload schema';

@@ -54,7 +54,7 @@ function initialState(page: BuilderPage, role: UserRole, savedDoc: BuilderDocume
     notice: null,
     canPublish: hasCapability(role, 'publish_posts'),
     canManageOptions: hasCapability(role, 'manage_options'),
-    aiSectionId: null,
+    aiTarget: null,
     aiCodeNodeId: null,
   };
 }

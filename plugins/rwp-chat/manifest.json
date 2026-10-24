@@ -11,7 +11,7 @@
   "database": {
     "schema": "./schema.sql",
     "uninstall": "./uninstall.sql",
-    "tables": ["chat_sessions", "chat_messages", "live_agent_requests", "chat_canned_responses", "chat_secrets"],
+    "tables": ["chat_sessions", "chat_messages", "live_agent_requests", "chat_canned_responses", "chat_secrets", "chat_knowledge_base", "chat_knowledge_chunks"],
     "options": ["chat\\_%"],
     "retains": [
       "Attachments visitors sent stay in the Media Library's chat_media folder, and at Cloudinary. Delete that folder from the Media Library to remove them.",

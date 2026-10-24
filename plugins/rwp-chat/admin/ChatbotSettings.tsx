@@ -11,10 +11,11 @@ import {
 } from '../lib/api';
 import type { AgentChannel, PreChatField } from '../lib/types';
 import ChatInbox from './ChatInbox';
+import KnowledgeManager from './KnowledgeManager';
 import styles from './chat-admin.module.css';
 
 /**
- * Chat → General & AI / Live Agent / Shop / Inbox.
+ * Chat → General & AI / Knowledge / Live Agent / Shop / Inbox.
  *
  * Two kinds of setting live on this screen and they are stored quite differently:
  *
@@ -26,12 +27,16 @@ import styles from './chat-admin.module.css';
  *
  * The password fields therefore start empty and mean "leave it alone" when left empty. That is
  * not a UI shortcut — there is genuinely no way to read the stored value back.
+ *
+ * Two of the five tabs do not fit that shape at all and hand the screen to their own component:
+ * Inbox is a transcript queue, and Knowledge is a table of rows in chat_knowledge_base that the
+ * assistant quotes. Neither reads ChatSettings, so both return before it is used.
  */
 
-type Tab = 'general' | 'agent' | 'commerce' | 'inbox';
+type Tab = 'general' | 'agent' | 'commerce' | 'inbox' | 'knowledge';
 
 const tabFor = (subsection: string): Tab =>
-  (['general', 'agent', 'commerce', 'inbox'].includes(subsection) ? subsection as Tab : 'general');
+  (['general', 'agent', 'commerce', 'inbox', 'knowledge'].includes(subsection) ? subsection as Tab : 'general');
 
 export default function ChatbotSettings({ subsection }: RwpAdminPageProps) {
   const tab = tabFor(subsection);
@@ -68,6 +73,7 @@ export default function ChatbotSettings({ subsection }: RwpAdminPageProps) {
   };
 
   if (tab === 'inbox') return <ChatInbox />;
+  if (tab === 'knowledge') return <KnowledgeManager />;
 
   return (
     <div className={styles.screen}>

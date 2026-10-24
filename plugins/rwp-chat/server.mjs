@@ -3,21 +3,30 @@
  * (self-hosted) and api/plugins.ts (Vercel). Registered in server/plugins.mjs.
  *
  * Almost all of the chat happens straight between the browser and Supabase, where row level
- * security and the rwp_chat_* functions decide. Only three things have to happen here, and each
- * one is here because it needs something the browser must never hold:
+ * security and the rwp_chat_* functions decide. Only a handful of things have to happen here, and
+ * each one is here because it needs something the browser must never hold:
  *
  *   ai/reply            the key saved on Settings → Integrations → AI
  *   agent/notify        the Telegram bot token / WhatsApp API token, from chat_secrets
  *   attachments/record  the Supabase secret key, to write a media row for an anonymous uploader
  *
- * Every one of them starts by proving the caller holds the session's own token. That check runs
- * with the secret key, which bypasses row level security, so it is written out here rather than
- * leaned on: `loadSession` is the only door, and it compares the token in full.
+ * Those three start by proving the caller holds the session's own token. The check runs with the
+ * secret key, which bypasses row level security, so it is written out here rather than leaned on:
+ * `loadSession` is the only door, and it compares the token in full.
+ *
+ * Three more routes serve Chat → Knowledge, and are the exception the other way round: they need no
+ * secret, only a signed-in administrator, because row level security and the ai_config row already
+ * hold everything they touch (sync, refine, search — see serverKnowledge.mjs).
  */
 
 import { aiStatus, replyRoute, describeSubject } from './serverAi.mjs';
 import { AgentError, channelReady, notifyAgents } from './serverAgents.mjs';
-import { describeKnowledge, loadKnowledge } from './serverKnowledge.mjs';
+import {
+  combinePassages, describeKnowledge, loadKnowledge, loadLibrary,
+  refineRoute, searchRoute, syncRoute,
+} from './serverKnowledge.mjs';
+// Core's classes, not local copies: a route catches what `callAiJson` throws with `instanceof`.
+import { AiError, callAiJson, isAiConfigured } from '../../server/integrationAi.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -116,10 +125,18 @@ const readSecrets = async (ctx) => {
  * index: titles and URLs it can point at. `knowledge` is what those pages say, retrieved for the
  * question being asked (see serverKnowledge.mjs), so "what does delivery cost" can be answered
  * from the site's own words instead of refused for lack of them.
+ *
+ * `knowledge` is drawn from two places that overlap: the curated knowledge base (Chat → Knowledge)
+ * first, then the page matcher for whatever budget the library did not use. The order matters —
+ * the library can hold things no page says, and a sync keeps it no staler than the pages — and the
+ * merge drops the duplicates, so a page is quoted once however many corpora found it. Turning the
+ * library off (chat_knowledge_enabled) leaves exactly the behaviour this had before it existed.
  */
 async function loadSiteFacts(ctx, session, question = '') {
-  const [options, card, pages, knowledge] = await Promise.all([
-    readOptions(ctx, ['site_title', 'site_tagline', 'site_description', 'chat_bot_name']),
+  // Read first, alone: the library is one more query, and whether to make it is a setting.
+  const options = await readOptions(ctx, ['site_title', 'site_tagline', 'site_description', 'chat_bot_name', 'chat_knowledge_enabled']);
+  const libraryOn = options.chat_knowledge_enabled !== 'false';
+  const [card, pages, library, knowledge] = await Promise.all([
     session.context_type && session.context_id
       ? rest(ctx, 'rpc/rwp_chat_card', {
         method: 'POST',
@@ -130,8 +147,18 @@ async function loadSiteFacts(ctx, session, question = '') {
     // Titles and slugs only, so the assistant can point somewhere real instead of guessing a URL.
     rest(ctx, 'pages?status=eq.published&is_site_template=not.is.true&select=title,slug&order=updated_at.desc&limit=40', { auth: 'anon' })
       .catch(() => []),
-    // The bodies of the pages that fit this question. Read with the anon key, so RLS decides what
-    // the public may see; a failure here costs the answer its detail, never the whole answer.
+    // The curated knowledge base. Read with the anon key: rwp_chat_knowledge_search is SECURITY
+    // DEFINER and returns published passages only, so a draft stays as invisible to the assistant
+    // as it is to the public.
+    libraryOn
+      ? loadLibrary((term) => rest(ctx, 'rpc/rwp_chat_knowledge_search', {
+        method: 'POST',
+        auth: 'anon',
+        body: { p_query: term, p_limit: 6 },
+      }), { question })
+      : Promise.resolve([]),
+    // The bodies of the pages that fit this question, read with the anon key too, so RLS decides
+    // what the public may see; a failure costs the answer its detail, never the whole answer.
     loadKnowledge((path) => rest(ctx, path, { auth: 'anon' }), {
       question,
       contextType: session.context_type || '',
@@ -145,7 +172,7 @@ async function loadSiteFacts(ctx, session, question = '') {
     pageUrl: session.current_page_url || '',
     subject: describeSubject(card),
     pages: (pages || []).map((page) => `"${page.title}" (/${page.slug})`).join(', '),
-    knowledge: describeKnowledge(knowledge),
+    knowledge: describeKnowledge(combinePassages(library, knowledge)),
   };
 }
 
@@ -160,14 +187,23 @@ async function saveBotMessage(ctx, sessionId, message, metadata) {
   return Array.isArray(rows) ? rows[0] : null;
 }
 
-/** manage_options, checked as the caller rather than assumed. Used by the status route. */
-async function requireSettingsManager(ctx) {
-  if (!ctx.bearerToken) throw new HttpError(401, 'Sign in to view the chat server status.');
+/**
+ * manage_options, checked as the caller rather than assumed. Used by the status route and by the
+ * three knowledge routes.
+ *
+ * The knowledge routes write rows that RLS already protects, so this is the same rule a second
+ * time — but in a place that can say what is missing instead of an empty result set. `subject` is
+ * what the request was about, and only appears in the message.
+ */
+async function requireAdmin(ctx, subject) {
+  if (!ctx.bearerToken) {
+    throw new HttpError(401, `Sign in as an administrator to open ${subject}.`);
+  }
   const allowed = await rest(ctx, 'rpc/user_has_cap', {
     method: 'POST', body: { capability: 'manage_options' }, auth: 'user',
   }).catch(() => false);
   if (allowed !== true) {
-    throw new HttpError(403, 'Viewing the chat server status needs the “Manage settings” capability (Administrator).');
+    throw new HttpError(403, `Opening ${subject} needs the “Manage settings” capability (Administrator).`);
   }
 }
 
@@ -188,7 +224,7 @@ export default {
      * channel set up. Reports that each credential is set, never its value.
      */
     'GET status': (ctx) => handle(async () => {
-      await requireSettingsManager(ctx);
+      await requireAdmin(ctx, 'the chat server status');
       const [secrets, options, ai] = await Promise.all([
         readSecrets(ctx),
         readOptions(ctx, ['chat_agent_channel']),
@@ -213,6 +249,32 @@ export default {
 
     /** The assistant's answer to whatever the visitor last said. */
     'POST ai/reply': (ctx) => handle(() => replyRoute(ctx, { loadSession, loadMessages, loadSiteFacts, saveBotMessage })),
+
+    /**
+     * Copies the published pages and posts into the knowledge base — the "Sync site" button in
+     * Chat → Knowledge. Idempotent and one-way: the CMS stays the source of truth for what it owns,
+     * and an entry it no longer publishes is archived rather than left quotable.
+     */
+    'POST knowledge/sync': (ctx) => handle(() => syncRoute(ctx, {
+      rest,
+      requireAdmin: (caller) => requireAdmin(caller, 'the knowledge base'),
+    })),
+
+    /**
+     * Rewrites one entry with the AI the site already pays for, so a visitor's question matches it.
+     * The result comes back to the screen and is saved only if the administrator saves it: text that
+     * will be quoted to customers is never written straight from a model's answer.
+     */
+    'POST knowledge/refine': (ctx) => handle(() => refineRoute(ctx, { callAiJson, isAiConfigured, AiError })),
+
+    /**
+     * What the assistant would be told for a question — the same retrieval a chat reply gets, so an
+     * administrator can see whether the answer they expect actually comes back.
+     */
+    'POST knowledge/search': (ctx) => handle(() => searchRoute(ctx, {
+      rest,
+      requireAdmin: (caller) => requireAdmin(caller, 'the knowledge base'),
+    })),
 
     /**
      * Makes a phone buzz. The live_agent_requests row already exists — rwp_chat_request_agent

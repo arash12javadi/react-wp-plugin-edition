@@ -28,6 +28,7 @@ import { ensureSiteInstalled, getRuntimeConfig } from '../config';
 import { detectPluginHostMode } from '../pluginHostMode';
 import {
   HttpError,
+  deployHookUrl,
   githubTarget,
   messageOf,
   requirePluginManager,
@@ -138,11 +139,16 @@ type PluginFolderRemover = ReturnType<typeof pluginFolderRemover>;
  * A host that cannot gets `server/pluginGitUninstall.mjs`, built with the connection resolved lazily:
  * `githubTarget` throws its 501 when the stored `github_config` row cannot be read, and asking for it
  * here would turn a missing credential into a failed uninstall whose tables have already been dropped.
- * As a warning it says exactly what is left instead: the code, and where to go and delete it.
+ * As a warning it says exactly what is left instead: the code, and where to go and delete it. The deploy
+ * hook is lazy for the same reason and swallows its own failures (`deployHookUrl` answers ''), so an
+ * uninstall never fails over a rebuild it could not ask for.
  */
 async function folderRemover(config: RuntimeConfig): Promise<PluginFolderRemover | undefined> {
   if (await detectPluginHostMode() === 'local') return undefined;
-  return pluginFolderRemover({ resolveTarget: () => githubTarget(config) });
+  return pluginFolderRemover({
+    resolveTarget: () => githubTarget(config),
+    resolveDeployHook: () => deployHookUrl(config),
+  });
 }
 
 /**

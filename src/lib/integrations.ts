@@ -3,9 +3,9 @@
  *
  * Everything here is deliberately free of imports: this file is read by the settings screen and by the
  * server route that answers `/api/integrations/status`, and it holds the contract between the two — the
- * shape of the `github_config` row, the presence-only status that route reports, and the two GitHub
- * calls the GitHub card makes itself while validating a personal access token — so a rename cannot
- * half-happen.
+ * shape of the `github_config` and `deploy_config` rows, the presence-only status that route reports, and
+ * the two GitHub calls the GitHub card makes itself while validating a personal access token — so a
+ * rename cannot half-happen.
  */
 
 /**
@@ -113,6 +113,19 @@ export interface EmailIntegrationStatus {
 }
 
 /**
+ * What the status route says about the deploy hook.
+ *
+ * The hook's URL is the secret, so it never travels: the card shows "saved" from these two booleans and
+ * nothing else. `configured` means "a URL this server would actually call" — `https://`, absolute —
+ * while `hookConfigured` means "something is stored", which lets a hook pasted as `http://` show as
+ * saved-but-unusable instead of vanishing from the screen.
+ */
+export interface DeployIntegrationStatus {
+  configured: boolean;
+  hookConfigured: boolean;
+}
+
+/**
  * Whether the *server* could read the credential rows at all.
  *
  * Under Supabase they are RLS-protected, so a server holding only the publishable key reads nothing;
@@ -127,6 +140,7 @@ export interface IntegrationCredentialsStatus {
 /** The body of `GET /api/integrations/status`. */
 export interface IntegrationStatus {
   github: GithubEnvironmentStatus;
+  deploy: DeployIntegrationStatus;
   ai: AiIntegrationStatus;
   media: MediaIntegrationStatus;
   email: EmailIntegrationStatus;
@@ -141,6 +155,143 @@ export const mediaStorageConfigKey = 'media_storage_config';
 
 /** The `system_settings` row the email card owns. In step with `EMAIL_CONFIG_KEY`. */
 export const emailConfigKey = 'email_config';
+
+/**
+ * The `system_settings` row the Deployments card owns. In step with `DEPLOY_CONFIG_KEY`,
+ * `server/integrationConfig.mjs`.
+ */
+export const deployConfigKey = 'deploy_config';
+
+/**
+ * `system_settings.deploy_config`: the URL of the deploy hook a plugin upload or uninstall calls.
+ *
+ * A deploy hook is an unauthenticated request that asks a platform to rebuild the branch it watches, so
+ * the URL is the whole secret. It is stored here because the *server* is what calls it — see
+ * `triggerDeployHook` in `server/pluginInstaller.mjs` — and the card never renders it back: a saved hook
+ * shows as "saved" and is replaced by pasting a new one, exactly like the GitHub token.
+ *
+ * Vercel's hooks live on the project: **Settings → Git → Deploy Hooks**. Nothing here is Vercel-specific:
+ * any host that rebuilds on a plain `POST` to an `https://` URL works, which is why the field is named
+ * for what it does rather than for one platform.
+ */
+export interface DeployConfig {
+  deploy_hook: string;
+}
+
+export const emptyDeployConfig = (): DeployConfig => ({ deploy_hook: '' });
+
+/**
+ * Reads a stored row into a full configuration.
+ *
+ * `deployHook` and `hook` are accepted alongside `deploy_hook` for the same reason the server reads them:
+ * a row written by hand in the SQL editor, or by a release that named the field differently, still
+ * triggers a rebuild.
+ */
+export const deployConfigFrom = (value: unknown): DeployConfig => {
+  const row = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const text = (field: unknown): string => (typeof field === 'string' ? field.trim() : '');
+  return {
+    ...emptyDeployConfig(),
+    deploy_hook: text(row.deploy_hook) || text(row.deployHook) || text(row.hook),
+  };
+};
+
+/** Whether a stored hook is one the server would actually call: an absolute `https://` URL. */
+export const isDeployHookUrl = (value: string): boolean => {
+  try {
+    return new URL(value.trim()).protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the card counts as configured.
+ *
+ * A non-empty value is not enough: the server only calls an `https://` address, so `http://…` or a
+ * half-pasted URL would look saved here and quietly do nothing on the next upload. The card says which
+ * of the two states it is in rather than leaving the administrator to find out from a failed install.
+ */
+export const isDeployConfigured = (config: DeployConfig): boolean => isDeployHookUrl(config.deploy_hook);
+
+/**
+ * The `system_settings` row the rwp-saas-installer card owns. In step with
+ * `SAAS_INSTALLER_CONFIG_KEY`, `server/integrationConfig.mjs`.
+ *
+ * Not one of the rows the hub's own status call summarises: this one names the template repository the
+ * `[react_wp_installer]` wizard copies, which is the plugin's business rather than a service of this
+ * site's. The card reads and writes it through the administrator's own session, exactly like the
+ * built-in cards, and the plugin's server module reads it back to provision.
+ */
+export const saasInstallerConfigKey = 'saas_installer_config';
+
+/**
+ * `system_settings.saas_installer_config`: which repository a wizard-built site starts from, and which
+ * release this site itself was last deployed at.
+ *
+ * No credential is stored. The credential that reads the template is the site's own GitHub connection
+ * (`github_config`, pasted on the GitHub card) rather than a second token pasted here: a fine-grained
+ * token with `Contents: read` on the template is the same token this site publishes plugins with, and
+ * two copies of it is one copy to forget to rotate. The Vercel token an update needs is deliberately
+ * *not* a field here either: it is asked for per deployment and lives only inside that request.
+ */
+export interface SaasInstallerConfig {
+  /** `owner/repo`, normalised. Empty means no wizard can provision: the card is unconfigured. */
+  template_repo: string;
+  /** Empty means the repository's default branch, which is what GitHub itself would answer with. */
+  template_branch: string;
+  /**
+   * The Vercel project the card's Update and Roll back buttons deploy to — this site's own project,
+   * written by the server after a deployment and editable on the card. Empty means the card asks.
+   */
+  project_name: string;
+  /** The release tag the last card deployment used. Empty means "never deployed from here". */
+  installed_version: string;
+  /** When that deployment was started, ISO-8601. The card formats it; nothing compares it. */
+  installed_at: string;
+}
+
+export const emptySaasInstallerConfig = (): SaasInstallerConfig => ({
+  template_repo: '',
+  template_branch: '',
+  project_name: '',
+  installed_version: '',
+  installed_at: '',
+});
+
+/** `owner/repo`, however it was pasted: clone URL, web URL or the bare pair. */
+const repositorySlug = (value: unknown): string =>
+  (typeof value === 'string' ? value.trim() : '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/^https?:\/\/(?:www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '');
+
+/**
+ * Reads a stored row into a full configuration, mirroring `saasInstallerConfigFrom` on the server so
+ * the card shows what the wizard will really use — a pasted web URL saved as `owner/repo`, and a
+ * repository that is not `owner/repo` shown as unconfigured rather than as ready.
+ */
+export const saasInstallerConfigFrom = (value: unknown): SaasInstallerConfig => {
+  const row = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const text = (field: unknown): string => (typeof field === 'string' ? field.trim() : '');
+  const repository = repositorySlug(text(row.template_repo) || text(row.templateRepo) || text(row.repository));
+  const project = text(row.project_name) || text(row.projectName);
+  return {
+    ...emptySaasInstallerConfig(),
+    template_repo: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ? repository : '',
+    template_branch: text(row.template_branch) || text(row.templateBranch) || text(row.branch),
+    // A project name Vercel would refuse is dropped for the same reason as a repository: a value that
+    // reads as configured and then fails after the visitor has pasted a token is worse than an empty
+    // one. Lowercase, because that is Vercel's rule and the rule the card and its server both enforce.
+    project_name: /^[a-z0-9][a-z0-9-]{0,99}$/.test(project) ? project : '',
+    installed_version: text(row.installed_version) || text(row.installedVersion),
+    installed_at: text(row.installed_at) || text(row.installedAt),
+  };
+};
+
+/** Whether the wizard has a template to copy. The branch is optional: empty means the default branch. */
+export const isSaasInstallerConfigured = (config: SaasInstallerConfig): boolean => Boolean(config.template_repo);
 
 /** A GitHub account, as `GET /user` describes it. Only the fields the card renders. */
 export interface GithubAccount {

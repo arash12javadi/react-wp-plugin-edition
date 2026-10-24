@@ -98,6 +98,16 @@ It is served at `/api/plugins/<id>/<route>` by `server.mjs` (self-hosted) and by
 signatures), `headers`, `query`, `params`, `bearerToken` (the caller's Supabase access
 token), `origin`, and `supabase: { url, publishableKey, secretKey }`.
 
+**A server module may only read the integration rows it is granted.** `ctx.supabase.secretKey` can
+reach every row in `system_settings`, including the credentials saved on the other Integrations
+cards, so the rows a plugin is allowed to read are declared once per plugin id in
+`server/pluginIntegrationAccess.mjs` (`PLUGIN_INTEGRATION_KEYS`) and read with
+`readPluginIntegrationRows(id, keys, options)` instead of `readIntegrationRows`. A key outside the
+grant is refused, not read: the call answers `readable: false` with a sentence naming the plugin and
+the row, and logs `[PLUGIN_INTEGRATION_REFUSED]`. Add your plugin's id and row keys to that map in
+the same change that adds the card writing them — that pair is the review. A plugin that only uses
+its own tables does not need an entry.
+
 **Server modules are registered by hand in `server/plugins.mjs`.** Vercel bundles a
 function by tracing its imports, so a module found with `readdir` at runtime (and the npm
 packages it imports) would be missing from the deployment. Routes of a plugin that is not

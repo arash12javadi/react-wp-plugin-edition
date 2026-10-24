@@ -27,6 +27,7 @@ import type { PluginHostMode } from '../pluginHostMode';
 import type { RuntimeConfig } from '../../lib/runtime';
 import {
   HttpError,
+  deployHookUrl,
   messageOf,
   pluginHostPlan,
   requirePluginManager,
@@ -98,6 +99,7 @@ async function upload(c: Context): Promise<Response> {
   let config: RuntimeConfig;
   let plan: PluginHostPlan;
   let source: PluginInstallSource;
+  let deployHook: string;
   let mode: PluginHostMode | undefined;
   try {
     const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -114,6 +116,10 @@ async function upload(c: Context): Promise<Response> {
     plan = await pluginHostPlan(config);
     mode = plan.mode;
     source = await readSource(c);
+    // After the host question, before the work: the hook is a `system_settings` read, and both paths read
+    // it — a host that writes `plugins/<id>/` asks its deploy hook to rebuild too, and the installer's own
+    // warning says that the platform's build only picks the folder up once it is committed and pushed.
+    deployHook = await deployHookUrl(config);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : statusOf(error) ?? 500;
     // `mode`, once the host question is answered, says which path refused: a host with no disk and no
@@ -129,8 +135,8 @@ async function upload(c: Context): Promise<Response> {
       const onStep = (step: PluginInstallStep) => send({ type: 'step', step, mode: plan.mode });
       try {
         const result = plan.mode === 'github'
-          ? await installPluginFromGit({ source, target: plan.target, optionStore, onStep })
-          : await installPlugin(source, null, onStep, { optionStore });
+          ? await installPluginFromGit({ source, target: plan.target, optionStore, deployHook, onStep })
+          : await installPlugin(source, null, onStep, { optionStore, deployHook });
         send({ type: 'result', result: { ...result, mode: plan.mode } });
       } catch (error) {
         // The response is already a 200 with bytes in flight; the installer's own status travels in the

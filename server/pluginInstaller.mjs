@@ -464,25 +464,39 @@ export async function pinActivePluginsWithStore(optionStore, existingIds) {
 }
 
 /**
- * POSTs the Vercel deploy hook (`VERCEL_DEPLOY_HOOK_URL`), if the host has one.
+ * POSTs the site's deploy hook — the one saved on Settings → Integrations → Deployments
+ * (`deploy_config`, which the caller resolves and passes in) or, for a host with no hub in front of it,
+ * `VERCEL_DEPLOY_HOOK_URL`.
  *
- * Shared with the Git-backed installer, which triggers the same rebuild after its commit: one
- * implementation of "is a hook configured, and did it answer" keeps both halves of the upload
- * telling the admin the same thing. The hook URL is a secret and is never echoed back.
+ * Shared with the Git-backed installer and the uninstall path, which trigger the same rebuild after
+ * their commit: one implementation of "is a hook configured, and did it answer" keeps all three halves
+ * of the plugin work telling the admin the same thing. The hook URL is a secret — it is the whole
+ * credential, since the platform accepts an unauthenticated POST — and is never echoed back.
+ *
+ * `configuredHook` first, the environment second: a row saved from the admin wins over a variable left
+ * in `.env`, because that is the one an administrator can rotate without a redeploy.
  */
-export async function triggerDeployHook() {
-  const hook = process.env.VERCEL_DEPLOY_HOOK_URL;
+export async function triggerDeployHook(configuredHook = '') {
+  const hook = String(configuredHook || '').trim() || String(process.env.VERCEL_DEPLOY_HOOK_URL || '').trim();
   if (!hook) return { configured: false, triggered: false };
+  // Parsed before the network try, so a half-pasted URL is reported as the wrong value rather than as a
+  // failure to reach it: "Invalid URL" next to a timeout message would send the admin looking at their
+  // network for what is a copy-paste mistake in the card.
+  let url;
   try {
-    const url = new URL(hook);
-    if (url.protocol !== 'https:') return { configured: true, triggered: false, error: 'VERCEL_DEPLOY_HOOK_URL must be an https:// URL.' };
+    url = new URL(hook);
+  } catch {
+    return { configured: true, triggered: false, error: 'The deploy hook is not a valid URL. Paste the complete address the platform gave you.' };
+  }
+  if (url.protocol !== 'https:') return { configured: true, triggered: false, error: 'The deploy hook must be an https:// URL.' };
+  try {
     const response = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(15_000) });
     // The hook URL is a secret; it is never echoed back.
     return response.ok
       ? { configured: true, triggered: true, status: response.status }
-      : { configured: true, triggered: false, status: response.status, error: `The Vercel deploy hook answered HTTP ${response.status}.` };
+      : { configured: true, triggered: false, status: response.status, error: `The deploy hook answered HTTP ${response.status}.` };
   } catch (error) {
-    return { configured: true, triggered: false, error: `Calling the Vercel deploy hook failed: ${error?.name === 'TimeoutError' ? 'no response within 15 seconds' : error?.message || 'network error'}.` };
+    return { configured: true, triggered: false, error: `Calling the deploy hook failed: ${error?.name === 'TimeoutError' ? 'no response within 15 seconds' : error?.message || 'network error'}.` };
   }
 }
 
@@ -490,12 +504,14 @@ export async function triggerDeployHook() {
  * @param {{ zip?: Buffer, url?: string }} source
  * @param {{ baseUrl: string, headers: Record<string,string> } | null} auth  From authorizePluginManager; null when `options.optionStore` does the pinning.
  * @param {(step: string) => void} onStep  downloading | extracting | validating | installing | registering-routes | triggering-rebuild
- * @param {{ optionStore?: { getOption: (name: string) => Promise<unknown>, setOption: (name: string, value: unknown) => Promise<unknown> } }} [options]
+ * @param {{ optionStore?: { getOption: (name: string) => Promise<unknown>, setOption: (name: string, value: unknown) => Promise<unknown> }, deployHook?: string }} [options]
  *   `optionStore` pins `rwp_active_plugins` through an engine's own database adapter instead of the
  *   Supabase REST call `auth` implies — what the universal engine passes, whose database is whichever
- *   `DB_TYPE` selects. Nothing else differs between the two callers: one `plugins/<id>/` either way.
+ *   `DB_TYPE` selects. `deployHook` is the `deploy_config` URL the caller resolved (Settings →
+ *   Integrations → Deployments); left out, `VERCEL_DEPLOY_HOOK_URL` is used. Nothing else differs
+ *   between the two callers: one `plugins/<id>/` either way.
  */
-export async function installPlugin(source, auth, onStep, { optionStore } = {}) {
+export async function installPlugin(source, auth, onStep, { optionStore, deployHook } = {}) {
   if (installing) throw new InstallError('Another plugin is being installed right now. Wait for it to finish, then try again.', 409);
   installing = true;
   let staging = null;
@@ -550,9 +566,9 @@ export async function installPlugin(source, auth, onStep, { optionStore } = {}) 
     installedFolder = null; // committed: from here on nothing is rolled back
 
     onStep('triggering-rebuild');
-    const deploy = await triggerDeployHook();
+    const deploy = await triggerDeployHook(deployHook);
     if (deploy.triggered) {
-      warnings.push('Vercel builds from your Git repository, not from this server. The deploy only includes this plugin once plugins/' + manifest.id + (hasServer ? ' and the updated server/plugins.mjs are' : ' is') + ' committed and pushed.');
+      warnings.push('This host installs plugins on its own disk, so the rebuild it just triggered is of the repository the platform builds from: that build includes plugins/' + manifest.id + (hasServer ? ' and the updated server/plugins.mjs' : '') + ' only once they are committed and pushed.');
     }
 
     return {

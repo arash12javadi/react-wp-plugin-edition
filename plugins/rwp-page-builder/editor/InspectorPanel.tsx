@@ -5,6 +5,7 @@ import { getWidget, type Control, type ControlTab } from '../lib/registry';
 import { effectiveBag } from '../lib/style';
 import { findNode, locate } from '../lib/tree';
 import type { BuilderNode } from '../lib/types';
+import { extractWidgetCopy } from '../services/sectionAi';
 import { ControlInput, Row } from './Controls';
 import { hasPasteSource, useEditor, useStore } from './store';
 import styles from './editor.module.css';
@@ -41,6 +42,8 @@ export default function InspectorPanel({ nodeId, onSaveTemplate }: { nodeId: str
   const path = [...(location?.ancestors || []), node];
   const definition = node.kind === 'widget' ? getWidget(node.type) : null;
   const canUseCodeAi = node.kind === 'widget' && node.type === 'html' && canManageOptions;
+  // The control keys that hold copy, so ✨ only appears where there is text the AI can rewrite.
+  const copyKeys = node.kind === 'widget' && !node.hidden ? new Set(extractWidgetCopy(node).map((item) => item.key)) : new Set<string>();
   const bag = effectiveBag(node.style, device);
   const controls = controlsFor(node, tab).filter((control) => !control.condition || control.condition(node.settings, bag, node.advanced));
 
@@ -62,6 +65,10 @@ export default function InspectorPanel({ nodeId, onSaveTemplate }: { nodeId: str
           {node.label && <small>{definition?.label || kindLabels[node.kind]}</small>}
         </div>
         <div className={styles.inspectorActions}>
+          {node.kind === 'widget' && copyKeys.size > 0 && (
+            <button type="button" className={styles.aiButton} title="Refine this widget's text with AI" aria-label="Refine this widget's text with AI"
+              onClick={() => actions.openCopyAi({ kind: 'widget', nodeId: node.id })}><Sparkles size={15} /></button>
+          )}
           {node.kind === 'section' && (
             <>
               <button type="button" title="Add a column" aria-label="Add a column" onClick={() => actions.addColumn(node.id)}><Plus size={15} /></button>
@@ -108,7 +115,14 @@ export default function InspectorPanel({ nodeId, onSaveTemplate }: { nodeId: str
             <Row key={control.key} label={control.label} help={control.help}
               device={control.responsive ? device : undefined}
               inherited={inherited && value !== undefined}
-              onReset={hasOverride ? () => actions.resetResponsive(node.id, control.key) : undefined}>
+              onReset={hasOverride ? () => actions.resetResponsive(node.id, control.key) : undefined}
+              action={tab === 'content' && copyKeys.has(control.key) ? (
+                <button type="button" className={styles.fieldAiButton} title={`Refine “${control.label}” with AI`}
+                  aria-label={`Refine ${control.label} with AI`}
+                  onClick={() => actions.openCopyAi({ kind: 'field', nodeId: node.id, key: control.key })}>
+                  <Sparkles size={11} aria-hidden="true" />
+                </button>
+              ) : undefined}>
               <ControlInput
                 control={control}
                 value={value}

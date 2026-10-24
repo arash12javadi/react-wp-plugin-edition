@@ -12,7 +12,7 @@ import InspectorPanel from './InspectorPanel';
 import Navigator from './Navigator';
 import PageSettingsPanel from './PageSettingsPanel';
 import RevisionsModal from './RevisionsModal';
-import SectionAiModal from './ai/SectionAiModal';
+import CopyAiModal from './ai/CopyAiModal';
 import PageAiModal from './ai/PageAiModal';
 import CustomCodeAiModal from './ai/CustomCodeAiModal';
 import SeoPanel from './seo/SeoPanel';
@@ -74,7 +74,7 @@ export default function PageBuilderLayout() {
   const selectedId = useEditor((state) => state.selectedId);
   const drag = useEditor((state) => state.drag);
   const dropTarget = useEditor((state) => state.dropTarget);
-  const aiSectionId = useEditor((state) => state.aiSectionId);
+  const aiTarget = useEditor((state) => state.aiTarget);
   const aiCodeNodeId = useEditor((state) => state.aiCodeNodeId);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [pageAiOpen, setPageAiOpen] = useState(false);
@@ -358,7 +358,7 @@ export default function PageBuilderLayout() {
       {revisionsOpen && <RevisionsModal onClose={() => setRevisionsOpen(false)} />}
       {pageAiOpen && <PageAiModal onClose={() => setPageAiOpen(false)} />}
       {templates && <TemplatesModal mode={templates} onClose={() => setTemplates(null)} />}
-      {aiSectionId && <SectionAiModal key={aiSectionId} sectionId={aiSectionId} onClose={actions.closeSectionAi} />}
+      {aiTarget && <CopyAiModal key={`${aiTarget.kind}:${aiTarget.nodeId}:${aiTarget.kind === 'field' ? aiTarget.key : ''}`} target={aiTarget} onClose={actions.closeCopyAi} />}
       {aiCodeNodeId && <CustomCodeAiModal key={aiCodeNodeId} nodeId={aiCodeNodeId} onClose={actions.closeCodeAi} />}
     </DndContext>
   );

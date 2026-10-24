@@ -108,10 +108,16 @@ export function moveIntoPlace(staging: string, target: string): Promise<void>;
  *
  * `auth` is what `authorizePluginManager` returns, for the Supabase REST pinning `server.mjs` uses;
  * pass `null` with `options.optionStore` to pin through an engine's own adapter instead.
+ *
+ * `options.deployHook` is the URL of the saved deploy hook (`deploy_config`, Settings → Integrations →
+ * Deployments). It is passed in rather than read here because only the caller knows which
+ * `system_settings` row its deployment keeps, and because the value is a secret the browser wrote: the
+ * engine hands it straight to `triggerDeployHook`, which calls it after the install and never returns it.
+ * An empty or missing hook means "no rebuild to trigger", which is a state, not a failure.
  */
 export function installPlugin(
   source: PluginInstallSource,
   auth: { baseUrl: string; headers: Record<string, string> } | null,
   onStep: (step: PluginInstallStep) => void,
-  options?: { optionStore?: PluginInstallOptionStore },
+  options?: { optionStore?: PluginInstallOptionStore; deployHook?: string },
 ): Promise<PluginDiskInstallResult>;

@@ -10,7 +10,7 @@ import type {
   BuilderDocument, BuilderNode, BuilderPage, ColumnNode, Device, LocaleDocuments, SectionNode, WidgetNode,
 } from '../lib/types';
 import type { SeoFields } from '../../../src/components/SeoPanel';
-import { applyCopyChanges, type CopyChange } from '../services/sectionAi';
+import { applyCopyChanges, type AiTarget, type CopyChange } from '../services/sectionAi';
 import { applyCodeFields, type CodeFieldSet } from '../services/customCodeAi';
 
 /**
@@ -192,8 +192,8 @@ export interface EditorState {
   notice: EditorNotice | null;
   canPublish: boolean;
   canManageOptions: boolean;
-  /** Section whose "AI Section Refine" window is open. */
-  aiSectionId: string | null;
+  /** What the "AI Refine" window is open for: a section, a widget or one text field. */
+  aiTarget: AiTarget | null;
   /** Custom HTML widget whose "AI code assistant" window is open. */
   aiCodeNodeId: string | null;
 }
@@ -662,8 +662,8 @@ function createActions(store: BaseStore) {
 
     replaceDocument: (doc: BuilderDocument) => commit(() => doc, { select: null }),
 
-    openSectionAi: (sectionId: string) => store.setState({ aiSectionId: sectionId }),
-    closeSectionAi: () => store.setState({ aiSectionId: null }),
+    openCopyAi: (target: AiTarget) => store.setState({ aiTarget: target }),
+    closeCopyAi: () => store.setState({ aiTarget: null }),
 
     openCodeAi: (nodeId: string) => store.setState({ aiCodeNodeId: nodeId }),
     closeCodeAi: () => store.setState({ aiCodeNodeId: null }),
@@ -686,7 +686,7 @@ function createActions(store: BaseStore) {
      * Applies AI copy changes as ONE undo step (Ctrl+Z reverts the whole refinement). Only the
      * changed widgets and their ancestors get new objects, so other sections do not re-render.
      */
-    applySectionCopy: (changes: CopyChange[]): { applied: number; stale: number } => {
+    applyAiCopy: (changes: CopyChange[]): { applied: number; stale: number } => {
       let result = { applied: 0, stale: 0 };
       commit((doc) => {
         const outcome = applyCopyChanges(doc, changes);

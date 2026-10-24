@@ -8,7 +8,7 @@
  * through, or is revealed to, the visitor's browser.
  */
 
-import { aiStatus, optimizeSectionRoute } from './serverAi.mjs';
+import { aiStatus, optimizeCopyRoute } from './serverAi.mjs';
 import { assistCodeRoute } from './serverCodeAi.mjs';
 import { generatePageRoute } from './serverPageAi.mjs';
 
@@ -192,7 +192,7 @@ export default {
       };
     },
 
-    'POST ai/section': (ctx) => optimizeSectionRoute(ctx, rest),
+    'POST ai/section': (ctx) => optimizeCopyRoute(ctx, rest),
     'POST ai/page': (ctx) => generatePageRoute(ctx, rest),
     'POST ai/code': (ctx) => assistCodeRoute(ctx, rest),
   },

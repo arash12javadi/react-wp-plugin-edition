@@ -1,11 +1,11 @@
 /**
  * Settings → Integrations, on the universal engine.
  *
- * The routing, the credential rows and the two probes live in `server/integrationsRoutes.mjs` +
+ * The routing, the credential rows and the three probes live in `server/integrationsRoutes.mjs` +
  * `server/integrationConfig.mjs`, which `server.mjs` also runs — two copies of "which `code` may be
  * trusted", or of which field holds a private key, is exactly the duplication that ends with one of
  * them being wrong. This file is the Hono half: the routes, the database adapter that can read the
- * credential rows, and the capability check the two POSTs need. Both shared modules are imported as
+ * credential rows, and the capability check the three POSTs need. Both shared modules are imported as
  * plain ESM rather than re-implemented, the same way the plugin installer has always been shared with
  * the classic server.
  *
@@ -32,8 +32,9 @@ const requestBody = async (c: Context): Promise<Record<string, unknown>> =>
   (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
 
 /**
- * The capability the two POSTs require. Both spend a saved credential on an outbound call — an AI
- * request, an email — so they are administrator-only, exactly like the screen that configures them.
+ * The capability the three POSTs require. Each spends a saved credential on an outbound call — an AI
+ * request, an email, a deploy hook — so they are administrator-only, exactly like the screen that
+ * configures them.
  *
  * Under Supabase the token is put to the project itself through the shared `authorizeSettingsManager`
  * (`server/integrationSettings.mjs`: `/auth/v1/user`, then `user_has_cap`) — the very check
@@ -104,11 +105,11 @@ async function integrationAccess(): Promise<{
 }
 
 
-/** Registers the status read and the two credential tests, at the paths the shared module owns. */
+/** Registers the status read and the credential tests, at the paths the shared module owns. */
 export function registerIntegrationRoutes(app: Hono): void {
   /**
    * Everything under the prefix, matched once: `ownsIntegrationPath` — the shared module's own list —
-   * decides whether a path is one of the three, so a route added there cannot be forgotten here.
+   * decides whether a path is one it answers, so a route added there cannot be forgotten here.
    */
   app.all('/api/integrations/*', (c) => handleRequest(c));
 }
