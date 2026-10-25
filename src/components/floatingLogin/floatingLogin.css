@@ -256,6 +256,7 @@
 .rwp-fl-close:focus-visible,
 .rwp-fl-tab:focus-visible,
 .rwp-fl-link:focus-visible,
+.rwp-fl-social-button:focus-visible,
 .rwp-fl-submit:focus-visible {
   outline: 3px solid var(--rwp-fl-focus);
   outline-offset: 2px;
@@ -375,6 +376,72 @@
 
 .rwp-fl-alert--error { color: var(--rwp-fl-error-fg); background: var(--rwp-fl-error-bg); }
 .rwp-fl-alert--notice { color: var(--rwp-fl-notice-fg); background: var(--rwp-fl-notice-bg); }
+
+/* Google / Facebook ----------------------------------------------------------------------------- */
+
+.rwp-fl-social {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rwp-fl-social-buttons {
+  display: grid;
+  gap: 8px;
+}
+
+.rwp-fl-social-button {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--rwp-fl-field-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--rwp-fl-fg);
+  background: var(--rwp-fl-field-bg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.rwp-fl-social-button:hover:not(:disabled) {
+  border-color: var(--rwp-fl-accent);
+  background: var(--rwp-fl-tab-active);
+}
+
+.rwp-fl-social-button:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+/* Google's mark is multicolour and Facebook's is blue, so neither inherits the theme's text colour. */
+.rwp-fl-social-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+/* "or use your email": a rule on either side of the words, in whichever direction the page runs. */
+.rwp-fl-divider {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+  color: var(--rwp-fl-muted);
+  font-size: 12.5px;
+}
+
+.rwp-fl-divider::before,
+.rwp-fl-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--rwp-fl-border);
+}
 
 .rwp-fl-submit {
   display: inline-flex;

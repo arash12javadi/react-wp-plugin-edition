@@ -91,7 +91,7 @@ const inlineChat: WidgetDefinition = {
  * the canvas, follow the editor's scrolling and sit in the way of every other widget, and it
  * would also be audited as page content by the builder's SEO tab.
  */
-function FloatingChatView() {
+function FloatingChatView({ node }: { node: WidgetNode }) {
   const { mode } = useRenderContext();
   const { ready, settings } = useChatSettings();
   if (mode === 'edit') {
@@ -103,7 +103,9 @@ function FloatingChatView() {
     );
   }
   if (!ready || !settings.chat_enabled) return null;
-  return <ChatLauncher />;
+  // No label in the widget means "whatever Chat → General says", which itself defaults to none:
+  // an empty label is the round robot, not a missing setting.
+  return <ChatLauncher label={str(node.settings?.label) || undefined} />;
 }
 
 const chatBox: WidgetDefinition = {
@@ -112,8 +114,14 @@ const chatBox: WidgetDefinition = {
   icon: 'headphones',
   category: 'pro',
   keywords: ['chat', 'chatbot', 'launcher', 'bubble', 'support'],
-  defaults: () => ({ settings: {} }),
+  defaults: () => ({ settings: { label: '' } }),
   controls: [{
+    key: 'label',
+    label: 'Label beside the robot',
+    type: 'text',
+    placeholder: 'Leave empty for the round robot',
+    help: 'Leave empty to use the label from Chat → General, which is no label — the round robot on its own.',
+  }, {
     key: 'note',
     label: 'Already on every page',
     type: 'heading',

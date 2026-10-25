@@ -1,4 +1,4 @@
-import { isSafeUrl } from './account';
+import { accountPageByPath, isSafeUrl } from './account';
 import { describeDbError, client, tryGetClient } from './db';
 
 /**
@@ -47,6 +47,20 @@ export const themeLabels: Record<FloatingLoginTheme, string> = {
 
 export const floatingLoginOptionNames = Object.keys(defaultFloatingLoginSettings) as Array<keyof FloatingLoginSettings>;
 
+/** The Google / Facebook buttons, switched on under Settings → Accounts → Social sign-in. */
+export type FloatingLoginProvider = 'google' | 'facebook';
+
+export interface FloatingLoginSocialProviders {
+  google: boolean;
+  facebook: boolean;
+}
+
+/**
+ * Both off until the options are read. A project that has not configured a provider should not
+ * offer a button that can only come back with an error from Supabase.
+ */
+export const defaultSocialProviders: FloatingLoginSocialProviders = { google: false, facebook: false };
+
 export const buttonTextMaxLength = 40;
 
 /** Why a redirect value is refused, or '' when it is fine. */
@@ -93,10 +107,17 @@ export interface FloatingLoginState {
   settings: FloatingLoginSettings;
   /** Settings → Accounts → "Anyone can register". */
   siteAllowsRegistration: boolean;
+  /** Settings → Accounts → Social sign-in; read in the same query as the rest. */
+  socialProviders: FloatingLoginSocialProviders;
   loaded: boolean;
 }
 
-let state: FloatingLoginState = { settings: defaultFloatingLoginSettings, siteAllowsRegistration: true, loaded: false };
+let state: FloatingLoginState = {
+  settings: defaultFloatingLoginSettings,
+  siteAllowsRegistration: true,
+  socialProviders: defaultSocialProviders,
+  loaded: false,
+};
 let pending: Promise<FloatingLoginState> | null = null;
 const listeners = new Set<() => void>();
 
@@ -127,7 +148,7 @@ export const loadFloatingLoginSettings = (): Promise<FloatingLoginState> => {
     const { data, error } = await supabase
       .from('options')
       .select('option_name,option_value')
-      .in('option_name', [...floatingLoginOptionNames, 'users_can_register']);
+      .in('option_name', [...floatingLoginOptionNames, 'users_can_register', 'auth_google_enabled', 'auth_facebook_enabled']);
     if (error) {
       console.warn(`Floating Login settings could not be loaded (${describeDbError(error)}); the defaults are used.`);
       setState({ ...state, loaded: true });
@@ -137,6 +158,10 @@ export const loadFloatingLoginSettings = (): Promise<FloatingLoginState> => {
     setState({
       settings: normalizeFloatingLoginSettings(values),
       siteAllowsRegistration: toBoolean(values.users_can_register, true),
+      socialProviders: {
+        google: toBoolean(values.auth_google_enabled, false),
+        facebook: toBoolean(values.auth_facebook_enabled, false),
+      },
       loaded: true,
     });
     return state;
@@ -160,3 +185,14 @@ export const saveFloatingLoginSettings = async (next: FloatingLoginSettings): Pr
   setState({ ...state, settings: clean, loaded: true });
   return clean;
 };
+
+/**
+ * Whether the floating Login / Register button is on the page right now. The chat launcher reads
+ * this too, and the two swap rather than stack: while the button is on the page the launcher stays
+ * out of the corner, and it takes over once the button is gone — because the visitor signed in, or
+ * because the button is switched off or this is an account page.
+ */
+export const floatingLoginShowsTrigger = (
+  settings: FloatingLoginSettings,
+  { signedIn, pathname = window.location.pathname }: { signedIn: boolean; pathname?: string },
+): boolean => settings.floating_login_enabled && !signedIn && !accountPageByPath(pathname);

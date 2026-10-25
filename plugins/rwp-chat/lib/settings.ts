@@ -52,7 +52,7 @@ export const defaultChatSettings: ChatSettings = {
   chat_bot_name: 'Assistant',
   chat_bot_avatar: '',
   chat_welcome_message: 'Hi! Ask me anything about this site — I usually reply in a few seconds.',
-  chat_launcher_label: 'Chat with us',
+  chat_launcher_label: '',
   chat_position: 'bottom-right',
   chat_theme: 'dark',
   chat_ai_enabled: true,
@@ -130,7 +130,8 @@ export const normalizeChatSettings = (values: Record<string, string | undefined>
     chat_bot_name: (values.chat_bot_name ?? defaults.chat_bot_name).trim().slice(0, 60) || defaults.chat_bot_name,
     chat_bot_avatar: (values.chat_bot_avatar ?? '').trim().slice(0, 500),
     chat_welcome_message: (values.chat_welcome_message ?? defaults.chat_welcome_message).slice(0, 500),
-    chat_launcher_label: (values.chat_launcher_label ?? defaults.chat_launcher_label).trim().slice(0, 40) || defaults.chat_launcher_label,
+    // Empty is a real choice, not a missing value: no label is the round robot on its own.
+    chat_launcher_label: (values.chat_launcher_label ?? defaults.chat_launcher_label).trim().slice(0, 40),
     chat_position: position && position in positionLabels ? position : defaults.chat_position,
     chat_theme: theme && theme in themeLabels ? theme : defaults.chat_theme,
     chat_ai_enabled: toBoolean(values.chat_ai_enabled, defaults.chat_ai_enabled),

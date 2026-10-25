@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { redirectTarget } from '../../lib/floatingLogin';
+import { redirectTarget, type FloatingLoginProvider } from '../../lib/floatingLogin';
 import type { FloatingLoginController, FloatingLoginTab } from './useFloatingLogin';
 import './floatingLogin.css';
 
@@ -33,14 +33,32 @@ const submitLabels: Record<FloatingLoginTab, [string, string]> = {
 
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
+const providerLabels: Record<FloatingLoginProvider, string> = { google: 'Google', facebook: 'Facebook' };
+
+/** The provider marks are their own colours, so they are not inherited from the theme. */
+function ProviderIcon({ provider }: { provider: FloatingLoginProvider }) {
+  return provider === 'google' ? (
+    <svg className="rwp-fl-social-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path fill="#4285f4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.02v2.5h3.24c1.89-1.74 2.98-4.3 2.98-7.35Z" />
+      <path fill="#34a853" d="M12 22c2.7 0 4.96-.9 6.62-2.42l-3.24-2.5c-.9.6-2.05.96-3.38.96-2.6 0-4.8-1.76-5.58-4.12H3.06v2.58A10 10 0 0 0 12 22Z" />
+      <path fill="#fbbc05" d="M6.42 13.92a6 6 0 0 1 0-3.84V7.5H3.06a10 10 0 0 0 0 9l3.36-2.58Z" />
+      <path fill="#ea4335" d="M12 5.96c1.47 0 2.79.5 3.83 1.5l2.87-2.87A10 10 0 0 0 3.06 7.5l3.36 2.58C7.2 7.72 9.4 5.96 12 5.96Z" />
+    </svg>
+  ) : (
+    <svg className="rwp-fl-social-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path fill="#1877f2" d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.77-3.89 1.09 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.78l-.45 2.89h-2.33v6.99A10 10 0 0 0 22 12Z" />
+    </svg>
+  );
+}
+
 /**
  * The Log in / Register / Forgot password dialog. Portalled into <body>, so no transformed or
  * overflow-hidden ancestor can clip it, above the header layer (9800) like the other overlays.
  */
 export default function FloatingLoginModal({ controller, inline = false }: FloatingLoginModalProps) {
   const {
-    settings, isOpen, close, activeTab, setActiveTab, canRegister, loading, errorMessage, notice, successMessage,
-    login, register, forgotPassword,
+    settings, isOpen, close, activeTab, setActiveTab, canRegister, providers, busyProvider, loading, errorMessage,
+    notice, successMessage, login, signInWithProvider, register, forgotPassword,
   } = controller;
   const uid = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -183,6 +201,7 @@ export default function FloatingLoginModal({ controller, inline = false }: Float
   const [heading, subtitle] = headings[activeTab];
   const [submitLabel, busyLabel] = submitLabels[activeTab];
   const target = redirectTarget(settings.floating_login_redirect_url);
+  const providerList = (Object.keys(providerLabels) as FloatingLoginProvider[]).filter((provider) => providers[provider]);
 
   const body = successMessage ? (
     <div className="rwp-fl-success" role="status">
@@ -213,6 +232,31 @@ export default function FloatingLoginModal({ controller, inline = false }: Float
       >
         {errorMessage && <div className="rwp-fl-alert rwp-fl-alert--error" role="alert">{errorMessage}</div>}
         {notice && <div className="rwp-fl-alert rwp-fl-alert--notice" role="status">{notice}</div>}
+
+        {activeTab !== 'forgot' && providerList.length > 0 && (
+          <div className="rwp-fl-social">
+            <div className="rwp-fl-social-buttons">
+              {providerList.map((provider) => (
+                <button
+                  key={provider}
+                  type="button"
+                  className={`rwp-fl-social-button rwp-fl-social-button--${provider}`}
+                  disabled={loading}
+                  aria-busy={busyProvider === provider || undefined}
+                  onClick={() => void signInWithProvider(provider)}
+                >
+                  {busyProvider === provider
+                    ? <span className="rwp-fl-spinner rwp-fl-spinner--small" aria-hidden="true" />
+                    : <ProviderIcon provider={provider} />}
+                  {busyProvider === provider
+                    ? `Opening ${providerLabels[provider]}…`
+                    : `Continue with ${providerLabels[provider]}`}
+                </button>
+              ))}
+            </div>
+            <p className="rwp-fl-divider"><span>or use your email</span></p>
+          </div>
+        )}
 
         {activeTab === 'register' && field('displayName', 'Display name (optional)', 'text', 'name')}
         {field('email', 'Email', 'email', activeTab === 'login' ? 'username' : 'email')}

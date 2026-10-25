@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { accountPageByPath } from '../../lib/account';
+import { floatingLoginShowsTrigger } from '../../lib/floatingLogin';
 import { useFloatingLogin, type FloatingLoginController } from './useFloatingLogin';
 import FloatingLoginModal from './FloatingLoginModal';
 import './floatingLogin.css';
@@ -34,21 +34,25 @@ export function FloatingLoginTrigger({ controller, contained = false }: Floating
  * PublicLayout, so no page has to include it; configured under Settings → Floating Login.
  *
  * Renders nothing when Floating Login is switched off, for someone who is signed in, and on the
- * account pages (/login, /register, …), which already show the same forms.
+ * account pages (/login, /register, …), which already show the same forms. The chat launcher asks
+ * the same helper whether this button is on the page, and takes the corner when it is not.
  */
 export default function FloatingLoginButton() {
   const controller = useFloatingLogin();
   const { ready, settings, user, isOpen } = controller;
 
-  if (!ready || !settings.floating_login_enabled || user === undefined) return null;
-  if (accountPageByPath(window.location.pathname)) return null;
+  if (!ready || user === undefined) return null;
+  const showsTrigger = floatingLoginShowsTrigger(settings, {
+    signedIn: Boolean(user),
+    pathname: window.location.pathname,
+  });
   // Signing in makes the visitor signed in before the success message has shown, so the dialog
   // stays until the redirect; only the button goes.
-  if (user && !isOpen) return null;
+  if (!showsTrigger && !isOpen) return null;
 
   return (
     <>
-      {!user && createPortal(<FloatingLoginTrigger controller={controller} />, document.body)}
+      {showsTrigger && createPortal(<FloatingLoginTrigger controller={controller} />, document.body)}
       <FloatingLoginModal controller={controller} />
     </>
   );

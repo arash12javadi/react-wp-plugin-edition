@@ -169,8 +169,9 @@ function GeneralTab({ settings, set }: { settings: ChatSettings; set: Setter }) 
           </label>
           <label className={styles.field}>
             Launcher label
-            <input type="text" value={settings.chat_launcher_label} maxLength={40}
+            <input type="text" value={settings.chat_launcher_label} maxLength={40} placeholder="e.g. Chat with us"
               onChange={(event) => set('chat_launcher_label', event.target.value)} />
+            <small>Optional. Empty shows the round robot on its own, without a pill around it.</small>
           </label>
           <label className={styles.field}>
             Corner

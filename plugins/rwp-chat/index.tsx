@@ -37,7 +37,7 @@ export const chatPluginCleanup = defineRwpPlugin(manifest, ({ admin, shortcodes 
     admin.registerPage({
       id: 'rwp-chat',
       label: 'Chat',
-      icon: '💬',
+      icon: '🤖',
       // Reading transcripts is reading other people's names, emails and phone numbers, so the
       // screen needs the same capability that moderates comments. The settings and the
       // credentials inside it check manage_options separately, in the database.
@@ -62,9 +62,11 @@ export const chatPluginCleanup = defineRwpPlugin(manifest, ({ admin, shortcodes 
     shortcodes.register({
       name: 'rwp_chat_box',
       description: 'The floating chat launcher, for a page that should have it when the site-wide one is off.',
-      example: '[rwp_chat_box]',
-      attributes: [],
-      render: () => <ChatLauncher />,
+      example: '[rwp_chat_box label="Chat with us"]',
+      attributes: [
+        { name: 'label', description: 'The words beside the robot. Leave it out for the round robot on its own.' },
+      ],
+      render: (attributes) => <ChatLauncher label={attributes.label} />,
     }),
     shortcodes.register({
       name: 'rwp_inline_chat',

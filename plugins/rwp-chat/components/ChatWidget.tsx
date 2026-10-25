@@ -204,7 +204,7 @@ export default function ChatWidget({
           <span className="rwp-chat-avatar">
             {settings.chat_bot_avatar
               ? <img src={settings.chat_bot_avatar} alt="" width={34} height={34} style={{ borderRadius: '50%' }} />
-              : '💬'}
+              : '🤖'}
           </span>
           <div className="rwp-chat-head-text">
             <div className="rwp-chat-head-title">{settings.chat_bot_name}</div>

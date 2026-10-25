@@ -1014,7 +1014,7 @@ insert into public.options (option_name, option_value) values
   ('chat_bot_name', 'Assistant'),
   ('chat_bot_avatar', ''),
   ('chat_welcome_message', 'Hi! Ask me anything about this site — I usually reply in a few seconds.'),
-  ('chat_launcher_label', 'Chat with us'),
+  ('chat_launcher_label', ''),
   ('chat_position', 'bottom-right'),
   ('chat_theme', 'dark'),
   ('chat_ai_enabled', 'true'),
@@ -1040,6 +1040,19 @@ insert into public.options (option_name, option_value) values
   ('chat_knowledge_last_sync', '')
 on conflict (option_name) do nothing;
 
+-- Until now the seed above wrote "Chat with us", and an existing row is never overwritten. Clear
+-- that old seed once, so an upgraded site gets the round robot on its own too. A label the site
+-- owner typed is anything other than that exact text; the marker row makes this a single run, so
+-- deliberately choosing "Chat with us" tomorrow is not undone by reinstalling the plugin.
+do $$ begin
+  if not exists (select 1 from public.options where option_name = 'chat_launcher_label_seed_cleared') then
+    update public.options set option_value = ''
+     where option_name = 'chat_launcher_label' and option_value = 'Chat with us';
+    insert into public.options (option_name, option_value)
+    values ('chat_launcher_label_seed_cleared', 'true')
+    on conflict (option_name) do nothing;
+  end if;
+end $$;
 -- Empty folders exist as rows, so "Chatbot Media" is in the Media Library sidebar from the start
 -- rather than appearing only after the first attachment. Skipped on a site that has not run the
 -- 20260928 folder-manager migration.

@@ -23,9 +23,11 @@
   --rwp-chat-bubble: #f1f5f9;
   --rwp-chat-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
   --rwp-chat-radius: 16px;
-  /* Raised when Floating Login uses the same corner, so the two buttons never sit on top of
-     each other. ChatLauncher sets it from core's floating login state. */
+  /* Distance from the viewport edge. The panel and the nudge stack on top of the launcher, so
+     moving this moves all three together. */
   --rwp-chat-offset: 24px;
+  /* The round robot; a label widens the same button into a pill but never changes its height. */
+  --rwp-chat-launcher-size: 56px;
   font-family: var(--rwp-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
   color: var(--rwp-chat-text);
 }
@@ -52,28 +54,85 @@
   z-index: 9840;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 18px;
+  justify-content: center;
+  gap: 9px;
+  min-height: var(--rwp-chat-launcher-size);
+  padding-block: 0;
+  padding-inline: 17px 20px;
   border: 0;
   border-radius: 999px;
   background: var(--rwp-chat-accent);
   color: var(--rwp-chat-accent-text);
-  font: 600 15px/1.2 inherit;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
   cursor: pointer;
   box-shadow: 0 12px 30px rgba(37, 99, 235, 0.35);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
+/* No label, no pill: the robot sits in a perfect circle. */
+.rwp-chat-launcher--round {
+  width: var(--rwp-chat-launcher-size);
+  padding: 0;
+}
+
+.rwp-chat-launcher-icon {
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* The robot bobs a little while the panel is closed: alive, not a bouncing widget. */
+.rwp-chat-launcher:not(.rwp-chat-launcher--open) .rwp-chat-launcher-icon {
+  animation: rwp-chat-bob 3.4s ease-in-out infinite;
+}
+
+.rwp-chat-launcher--open .rwp-chat-launcher-icon { font-size: 19px; }
+
+.rwp-chat-launcher-text { white-space: nowrap; }
+
+/* The ring swells out of the button and fades: attention-drawing, not a bobbing widget. */
+.rwp-chat-launcher-ping {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--rwp-chat-accent);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: rwp-chat-ping 2.6s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+}
+
 .rwp-chat-launcher:hover { transform: translateY(-2px); }
+.rwp-chat-launcher:hover .rwp-chat-launcher-ping { animation-duration: 1.8s; }
 .rwp-chat-launcher:focus-visible { outline: 3px solid var(--rwp-chat-accent); outline-offset: 3px; }
+
+@keyframes rwp-chat-ping {
+  0% { opacity: 0.6; transform: scale(0.96); }
+  70%, 100% { opacity: 0; transform: scale(1.4); }
+}
+
+@keyframes rwp-chat-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* A visitor who asked for less motion gets the same button with none of the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .rwp-chat-launcher { transition: none; }
+  .rwp-chat-launcher:hover { transform: none; }
+  .rwp-chat-launcher-icon { animation: none; }
+  .rwp-chat-launcher-ping { display: none; animation: none; }
+}
 
 /* Physical, because a corner is a physical choice the site owner made; it must not flip in RTL. */
 .rwp-chat-pos-bottom-right .rwp-chat-launcher,
 .rwp-chat-pos-bottom-right .rwp-chat-panel,
-.rwp-chat-pos-bottom-right .rwp-chat-nudge { right: 24px; }
+.rwp-chat-pos-bottom-right .rwp-chat-nudge { right: var(--rwp-chat-offset); }
 .rwp-chat-pos-bottom-left .rwp-chat-launcher,
 .rwp-chat-pos-bottom-left .rwp-chat-panel,
-.rwp-chat-pos-bottom-left .rwp-chat-nudge { left: 24px; }
+.rwp-chat-pos-bottom-left .rwp-chat-nudge { left: var(--rwp-chat-offset); }
 
 .rwp-chat-launcher-badge {
   min-width: 20px;
@@ -88,7 +147,7 @@
 /* The proactive nudge: a speech bubble above the launcher, never a modal. */
 .rwp-chat-nudge {
   position: fixed;
-  inset-block-end: calc(var(--rwp-chat-offset) + 62px);
+  inset-block-end: calc(var(--rwp-chat-offset) + var(--rwp-chat-launcher-size) + 6px);
   z-index: 9840;
   max-width: min(280px, calc(100vw - 48px));
   padding: 12px 14px;
@@ -117,7 +176,7 @@
 
 .rwp-chat-panel {
   position: fixed;
-  inset-block-end: calc(var(--rwp-chat-offset) + 62px);
+  inset-block-end: calc(var(--rwp-chat-offset) + var(--rwp-chat-launcher-size) + 6px);
   z-index: 9984;
   display: flex;
   flex-direction: column;
@@ -270,7 +329,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .rwp-chat-typing span { animation: none; opacity: 0.6; }
-  .rwp-chat-launcher { transition: none; }
 }
 
 /* Cards --------------------------------------------------------------------------------------- */
@@ -443,7 +501,7 @@
 @media (max-width: 520px) {
   .rwp-chat-panel:not(.rwp-chat-inline) {
     inset-inline: 8px;
-    inset-block: 8px calc(var(--rwp-chat-offset) + 62px);
+    inset-block: 8px calc(var(--rwp-chat-offset) + var(--rwp-chat-launcher-size) + 6px);
     width: auto;
     height: auto;
   }

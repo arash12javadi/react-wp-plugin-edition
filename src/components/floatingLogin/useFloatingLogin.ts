@@ -3,7 +3,8 @@ import type { User } from '../../lib/db';
 import { client, tryGetClient } from '../../lib/db';
 import { rwp } from '../../lib/rwp';
 import {
-  getFloatingLoginState, loadFloatingLoginSettings, redirectTarget, subscribeFloatingLogin, type FloatingLoginSettings,
+  defaultSocialProviders, getFloatingLoginState, loadFloatingLoginSettings, redirectTarget, subscribeFloatingLogin,
+  type FloatingLoginProvider, type FloatingLoginSettings,
 } from '../../lib/floatingLogin';
 
 export type FloatingLoginTab = 'login' | 'register' | 'forgot';
@@ -35,6 +36,9 @@ export const describeAuthError = (error: unknown): string => {
   if (code === 'signup_disabled' || /signups not allowed/i.test(message)) {
     return 'The Supabase project does not accept new sign-ups ("Allow new users to sign up" is off under Authentication → Sign In / Providers).';
   }
+  if (code === 'provider_not_enabled' || /provider is not enabled|unsupported provider/i.test(message)) {
+    return 'This sign-in provider is switched off in Supabase. Turn it on under Authentication → Providers, or sign in with your email and password.';
+  }
   if (code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit' || status === 429) {
     return `Too many attempts in a short time, so Supabase refused this one. Wait a minute and try again. (${message || 'rate limit'})`;
   }
@@ -57,12 +61,16 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
   const store = useSyncExternalStore(subscribeFloatingLogin, getFloatingLoginState);
   const settings = draft || store.settings;
   const canRegister = settings.floating_login_allow_registration && store.siteAllowsRegistration;
+  // The preview is a picture of the dialog, not a working sign-in, so it never starts an OAuth trip.
+  const socialProviders = preview ? defaultSocialProviders : store.socialProviders;
 
   /** undefined while the session is still being read. */
   const [user, setUser] = useState<User | null | undefined>(preview ? null : undefined);
   const [isOpen, setIsOpen] = useState(false);
   const [requestedTab, setRequestedTab] = useState<FloatingLoginTab>('login');
   const [loading, setLoading] = useState(false);
+  /** Which social button started the trip; the browser leaves the page for the provider. */
+  const [busyProvider, setBusyProvider] = useState<FloatingLoginProvider | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [notice, setNotice] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -121,20 +129,22 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
   };
 
   /** Runs one request: one at a time, with its failure shown in the modal. */
-  const run = async (action: () => Promise<void>) => {
-    if (loading) return;
+  const run = async (action: () => Promise<void>, provider: FloatingLoginProvider | null = null) => {
+    if (loading || busyProvider) return;
     clearMessages();
     if (preview) {
       setNotice('This is a preview: nothing was sent.');
       return;
     }
     setLoading(true);
+    setBusyProvider(provider);
     try {
       await action();
     } catch (error: unknown) {
       setErrorMessage(describeAuthError(error));
     } finally {
       setLoading(false);
+      setBusyProvider(null);
     }
   };
 
@@ -145,6 +155,22 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
     rwp.actions.do('rwp_user_logged_in', data.session.user);
     finish('You are signed in.');
   });
+
+  /**
+   * Hands the browser to the provider and back. Supabase holds the callback URL, so `redirectTo`
+   * only names the page to land on: no token ever travels in the address bar. The session arrives
+   * through the same onAuthStateChange listener as a password login, which is what retires the
+   * floating button and lets the chat launcher take its corner.
+   */
+  const signInWithProvider = (provider: FloatingLoginProvider) => run(async () => {
+    const { error } = await client.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: `${window.location.origin}${window.location.pathname}${window.location.search}`,
+      },
+    });
+    if (error) throw error;
+  }, provider);
 
   const register = (displayName: string, email: string, password: string) => run(async () => {
     const address = email.trim();
@@ -185,6 +211,9 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
     /** The settings have been read (or failed to be read and the defaults apply). */
     ready: Boolean(draft) || store.loaded,
     canRegister,
+    /** Settings → Accounts → Social sign-in, read with the rest so the dialog has no second load. */
+    providers: socialProviders,
+    busyProvider,
     user,
     isLoggedIn: Boolean(user),
     isOpen,
@@ -197,6 +226,7 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
     notice,
     successMessage,
     login,
+    signInWithProvider,
     register,
     forgotPassword,
     preview,
