@@ -1,0 +1,51 @@
+﻿14: *      that screen existed. Visibility, branch and head commit come from the authenticated call.
+39: *   - The template and the GitHub credential are resolved *per request* from `system_settings`, with
+42: *     provisioning copies another and no other card's row can be read from here. The environment is
+60: import { readFile } from 'node:fs/promises';
+61: import { createHash, createSign, randomBytes } from 'node:crypto';
+62: import { gunzipSync } from 'node:zlib';
+63: import { fileURLToPath } from 'node:url';
+64: import path from 'node:path';
+65: import { describeDbError, resolveConnectionString, withClient } from '../../server/db.mjs';
+66: import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
+67: import {
+72: } from '../../server/integrationConfig.mjs';
+73: import { authorizeSettingsManager } from '../../server/integrationSettings.mjs';
+74: import { readPluginIntegrationRows } from '../../server/pluginIntegrationAccess.mjs';
+96: * keeps a dashboard that is left open from spending the token's rate limit on a list that has not
+125: const PLUGIN_ID = 'rwp-saas-installer';
+138: * `strategy` names where the credential came from (`settings`, `environment`, `app` or `anonymous`) and
+147: // The service key answers even where RLS keeps the publishable key out of `system_settings`; the
+171: /** Empty means the repository's default branch — from the row, then the environment. */
+175: * card writes (`project_name`, `installed_version`, `installed_at`). Passed through rather than
+195: if (!settings?.readable) missing.push(`a readable system_settings row (${settings?.readError || 'the server could not read one'})`);
+212: /** Removes every known secret from a message before it is returned to the browser. */
+272: /** Plain-text fetch, used for the SQL schema. `?ref=` is dropped from messages, not from the URL. */
+278: if (!response.ok) throw new HttpError(502, `Could not fetch the schema from ${url.split('?')[0]} (HTTP ${response.status}).`);
+413: * Repository id, visibility, branch and head commit — read from GitHub with the credential above.
+420: throw new HttpError(500, `No template repository is configured, so there is nothing to provision from. Save it as owner/repo on ${TEMPLATE_SCREEN}${settings.readable ? '' : ` — this server could not read system_settings (${settings.readError})`}.`);
+544: throw new HttpError(500, `No template repository is configured, so there are no releases to list. Save it as owner/repo on ${TEMPLATE_SCREEN}${settings.readable ? '' : ` — this server could not read system_settings (${settings.readError})`}.`);
+581: const tooBig = () => new HttpError(413, `${settings.repo}@${ref} is larger than the ${Math.round(TARBALL_LIMITS.bytes / (1024 * 1024))} MB this installer deploys in one request. Deploy it from Vercel directly, or shrink the repository.`);
+767: * Vercel — the customer's project, deployed from a source tree rather than from a clone
+831: * costs nothing for the shared part the second time, and a deployment built from digests can only ever
+916: * The first production deployment of a new project, from the template tarball.
+955: message: `Uploaded ${deployment.files} files from ${template.fullName}@${version} (${deployment.uploaded} new) and Vercel accepted the production deployment.`,
+1008: async function runMigration(body, { siteTitle, adminEmail, adminPassword, serviceRoleKey, supabaseUrl, settings }) {
+1023: `insert into public.options (option_name, option_value)
+1030: `insert into public.profiles (id, email, display_name, role)
+1032: from auth.users u
+1093: throw new HttpError(400, `Name the Vercel project to deploy to. This site has no project recorded in system_settings, so save it as "Project name" on ${TEMPLATE_SCREEN}, or send projectName with the request.`);
+1123: throw new HttpError(404, `The Vercel token cannot see a project named "${projectName}". Use a token from the account that owns it, or correct the name${teamId ? ' and team' : ''}.`);
+1163: * into its own row: `system_settings` is RLS-protected and the card is that row's only writer, so the
+1173: const permission = await authorizeSettingsManager(
+1192: const previousVersion = str(settings.config?.installed_version);
+1241: * visitor is provisioned from — so there is nothing here for one visitor to learn about another.
+1273: * the card can show the truth instead of echoing its own form. `authorizeSettingsManager` is the
+1283: const permission = await authorizeSettingsManager(
+1295: // `refresh` because this route exists to answer "is it readable *now*" — a cached yes from a
+1331: * GitHub credential. The installed version comes from `saas_installer_config` rather than from the
+1341: const permission = await authorizeSettingsManager(
+1351: const installed = str(settings.config?.installed_version);
+1401: const permission = await authorizeSettingsManager(
+1534: await runMigration(body, { siteTitle, adminEmail, adminPassword, serviceRoleKey, supabaseUrl, settings });
+1554: // project name on the site they were just given — whose first deployment from its own card

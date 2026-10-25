@@ -1,0 +1,6 @@
+﻿107: create table if not exists public.system_settings (
+523: alter table public.system_settings enable row level security;
+635: drop policy if exists "Settings managers read system settings" on public.system_settings;
+637: on public.system_settings for select to authenticated
+639: drop policy if exists "Settings managers write system settings" on public.system_settings;
+641: on public.system_settings for all to authenticated

@@ -229,11 +229,13 @@ export const saasInstallerConfigKey = 'saas_installer_config';
  * `system_settings.saas_installer_config`: which repository a wizard-built site starts from, and which
  * release this site itself was last deployed at.
  *
- * No credential is stored. The credential that reads the template is the site's own GitHub connection
- * (`github_config`, pasted on the GitHub card) rather than a second token pasted here: a fine-grained
- * token with `Contents: read` on the template is the same token this site publishes plugins with, and
- * two copies of it is one copy to forget to rotate. The Vercel token an update needs is deliberately
- * *not* a field here either: it is asked for per deployment and lives only inside that request.
+ * No service credential is stored. The credential that reads the template is the site's own GitHub
+ * connection (`github_config`, pasted on the GitHub card) rather than a second token pasted here: a
+ * fine-grained token with `Contents: read` on the template is the same token this site publishes
+ * plugins with, and two copies of it is one copy to forget to rotate. The Vercel token an update needs
+ * is deliberately *not* a field here either: it is asked for per deployment and lives only inside that
+ * request. The one secret-shaped value the row does hold is `license_key`, and it is written down here
+ * on purpose — it is the single, reviewable record of what this installation is entitled to.
  */
 export interface SaasInstallerConfig {
   /** `owner/repo`, normalised. Empty means no wizard can provision: the card is unconfigured. */
@@ -249,6 +251,16 @@ export interface SaasInstallerConfig {
   installed_version: string;
   /** When that deployment was started, ISO-8601. The card formats it; nothing compares it. */
   installed_at: string;
+  /**
+   * The license key this installation was activated with, as it was pasted. Empty means unlicensed.
+   *
+   * Stored on this row rather than in the environment because it is per-installation bookkeeping an
+   * administrator changes from the card, and because it is not a credential in the sense the other
+   * keys here are: `plugins/rwp-saas-installer/license.mjs` verifies it offline, with no license
+   * server and no network call, and what it grants is the wizard's permission to provision. The
+   * server, never this browser, is what decides whether a key is valid.
+   */
+  license_key: string;
 }
 
 export const emptySaasInstallerConfig = (): SaasInstallerConfig => ({
@@ -257,6 +269,7 @@ export const emptySaasInstallerConfig = (): SaasInstallerConfig => ({
   project_name: '',
   installed_version: '',
   installed_at: '',
+  license_key: '',
 });
 
 /** `owner/repo`, however it was pasted: clone URL, web URL or the bare pair. */
@@ -287,6 +300,10 @@ export const saasInstallerConfigFrom = (value: unknown): SaasInstallerConfig => 
     project_name: /^[a-z0-9][a-z0-9-]{0,99}$/.test(project) ? project : '',
     installed_version: text(row.installed_version) || text(row.installedVersion),
     installed_at: text(row.installed_at) || text(row.installedAt),
+    // Kept as pasted: the key is case-insensitive and `licenseKeyFrom` in the plugin's `license.mjs`
+    // is the one normaliser, so a typo stays visible in the field it was typed into instead of being
+    // rewritten here into a key that looks right and verifies as a different one.
+    license_key: text(row.license_key) || text(row.licenseKey),
   };
 };
 

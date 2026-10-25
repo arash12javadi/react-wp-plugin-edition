@@ -1,0 +1,54 @@
+﻿21: export interface User {
+22: id: string;
+23: email?: string | null;
+26: role?: string;
+32: identities?: UserIdentity[] | null;
+37: export interface UserIdentity {
+38: id?: string;
+39: provider?: string;
+43: export interface Session {
+47: user: User;
+54: export type DbError = { message: string; code?: string; details?: string; hint?: string; name?: string } | null;
+63: export interface QueryResult {
+65: data: any;
+66: error: DbError;
+68: count: number | null;
+77: export interface RwpRealtimeChannel {
+79: event: 'postgres_changes',
+80: filter: { event: string; schema: string; table: string; filter?: string },
+81: callback: (payload: unknown) => void,
+87: export interface Client {
+90: auth: AuthFacade;
+97: export interface AuthFacade {
+117: export class QueryBuilder {
+137: onfulfilled?: ((value: QueryResult) => TResult1 | PromiseLike<TResult1>) | null,
+138: onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+188: default:
+353: export class UniversalAuthFacade implements AuthFacade {
+395: data: {
+396: session: { access_token: session.accessToken, expires_at: session.expiresAt, user: session.user as User },
+397: user: session.user as User,
+399: error: null as DbError,
+417: data: {
+418: session: result.session ? { access_token: result.session.accessToken, expires_at: result.session.expiresAt, user: result.session.user as User } : null,
+419: user: result.user as User | null,
+421: error: null,
+437: data: {
+438: subscription: {
+439: unsubscribe: () => {
+472: on: () => noopChannel,
+473: subscribe: () => noopChannel,
+474: unsubscribe: () => Promise.resolve('ok' as const),
+484: from: (table: string) => supabase.from(table),
+485: rpc: (fn: string, args?: Record<string, unknown>) => supabase.rpc(fn, args),
+486: auth: supabase.auth,
+487: channel: (name: string) => supabase.channel(name),
+488: removeChannel: (channel: RwpRealtimeChannel) => supabase.removeChannel(channel),
+493: from: (table: string) => new QueryBuilder(adapter, table),
+494: rpc: (fn: string) => Promise.resolve({ data: null, error: { message: `RPC ${fn} is a Supabase-specific database function and is not available on the ${config.dbType} backend.` } }),
+495: auth: new UniversalAuthFacade(getAuthAdapter(config)),
+496: channel: () => noopChannel,
+497: removeChannel: async () => 'ok',
+502: export const client: Client = new Proxy({} as Client, {
+511: export const tryGetClient = (): Client | null => {
+522: export const resetClient = (): void => {

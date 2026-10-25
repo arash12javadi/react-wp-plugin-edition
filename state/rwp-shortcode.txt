@@ -1,0 +1,42 @@
+export interface RwpShortcode {
+  name: string;
+  render: (attributes: Record<string, string>) => ReactNode;
+  /** Documentation for Dashboard → Guide. */
+  description?: string;
+  example?: string;
+  attributes?: Array<{ name: string; description: string }>;
+}
+
+export interface RwpRouteProps {
+  /** Named segments from the path pattern, e.g. { slug: 'blue-shirt' } for /product/:slug */
+  params: Record<string, string>;
+}
+
+export interface RwpRoute {
+  /**
+   * Public path pattern. Segments starting with ":" are captured; a trailing "*" matches
+   * the rest of the path into params["*"]. Example: "/product/:slug", "/my-account/*".
+   */
+  path: string;
+  component: ComponentType<RwpRouteProps>;
+  /** Wrap in the site header, menu and footer. Defaults to true. */
+  chrome?: boolean;
+}
+
+export interface RwpHeaderItem {
+  id: string;
+  component: ComponentType;
+}
+
+export interface RwpContentRendererProps {
+  page: Page;
+  /** The comment section PublicContent would have shown, or null when comments are off. */
+  comments: ReactNode;
+}
+
+export interface RwpContentRenderer {
+  id: string;
+  /** Receives the full pages row (select *), including columns added by plugins. */
+  match: (page: Page) => boolean;
+-----
+-----

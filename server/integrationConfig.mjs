@@ -265,6 +265,7 @@ export const emptySaasInstallerConfig = () => ({
   project_name: '',
   installed_version: '',
   installed_at: '',
+  license_key: '',
 });
 
 /** `owner/repo`, however the operator pasted it: clone URL, web URL or the bare pair. */
@@ -293,6 +294,11 @@ export const saasInstallerConfigFrom = (value) => {
     project_name: /^[a-z0-9][a-z0-9-]{0,99}$/.test(project) ? project : '',
     installed_version: (asString(row.installed_version) || asString(row.installedVersion)).trim(),
     installed_at: (asString(row.installed_at) || asString(row.installedAt)).trim(),
+    // Upper case here, unlike the browser's copy: this is the value every route verifies with, and one
+    // spelling means `license.mjs` (which accepts any case anyway) is never the only normaliser two
+    // different code paths rely on. The key's own format is checked by `licenseState`, not here, so a
+    // malformed key stays visible in the answer rather than being silently emptied.
+    license_key: (asString(row.license_key) || asString(row.licenseKey)).toUpperCase(),
   };
 };
 

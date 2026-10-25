@@ -1,0 +1,46 @@
+ * The registry is a plain module with a version counter, read through `useSyncExternalStore` by
+ * `useIntegrationsRegistry()` — the same pattern as the hook registry in `./hooks`, so a plugin
+ * activated after the first paint puts its card on screen without a reload.
+ */
+import { useMemo, useSyncExternalStore, type ComponentType } from 'react';
+
+export interface IntegrationCardProps {
+  /** Which provider or service the card is set to, as the card's own `describe` reports it. */
+  status: { configured: boolean; label: string };
+  /** Reads the card's own `system_settings` row again, after a save or a test. */
+  refresh: () => void;
+}
+
+export interface RwpIntegrationCard {
+  /** Unique, and stable: the hub uses it as the React key and as the card's DOM id. */
+  id: string;
+  title: string;
+  /** An emoji, rendered as text — no icon font and no image to load. */
+  icon?: string;
+  description: string;
+  /** Hides the card from, and blocks it for, roles without this capability. Defaults to `manage_options`. */
+  capability?: string;
+  /**
+   * Where the card sits among the built-ins. Lower comes first; built-ins use 10, 20, 30, 40, so a
+   * plugin that belongs beside Media passes 35.
+   */
+  order?: number;
+  /**
+   * Whether the plugin considers itself configured, for the card's state pill. Optional: a card that
+   * omits it simply has no pill, which beats one that is wrong.
+   */
+  describe?: () => Promise<{ configured: boolean; label: string }>;
+  /** Renders the card's own form. Everything inside it is the plugin's business. */
+  renderComponent: ComponentType<IntegrationCardProps>;
+}
+
+const cards = new Map<string, RwpIntegrationCard>();
+const subscribers = new Set<() => void>();
+
+let version = 0;
+const notify = () => {
+  version += 1;
+  subscribers.forEach((listener) => {
+    try {
+      listener();
+    } catch (error) {

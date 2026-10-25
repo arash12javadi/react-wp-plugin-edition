@@ -1,0 +1,10 @@
+218:  * The `system_settings` row the rwp-saas-installer card owns. In step with
+219:  * `SAAS_INSTALLER_CONFIG_KEY`, `server/integrationConfig.mjs`.
+226: export const saasInstallerConfigKey = 'saas_installer_config';
+229:  * `system_settings.saas_installer_config`: which repository a wizard-built site starts from, and which
+238: export interface SaasInstallerConfig {
+254: export const emptySaasInstallerConfig = (): SaasInstallerConfig => ({
+271:  * Reads a stored row into a full configuration, mirroring `saasInstallerConfigFrom` on the server so
+275: export const saasInstallerConfigFrom = (value: unknown): SaasInstallerConfig => {
+281:     ...emptySaasInstallerConfig(),
+294: export const isSaasInstallerConfigured = (config: SaasInstallerConfig): boolean => Boolean(config.template_repo);

@@ -143,3 +143,43 @@ The runtime that applies snippets lives in core, at `src/core/SnippetInjector.ts
 core must not import plugin code. The plugin starts it on activation and returns its cleanup,
 so deactivating the plugin removes every style, script and hook the snippets added. Anything
 else that wants the same behaviour can call `startSnippetRuntime()` or mount `<SnippetInjector />`.
+
+## SaaS installer plugin
+
+`rwp-saas-installer` is the `[react_wp_installer]` wizard: a visitor signs in, names a site, and the
+plugin's `server.mjs` proves the Vercel and Supabase credentials it was handed, creates the project and
+its schema, then deploys the template repository the installer card saves. It also carries the release
+lifecycle (`GET versions`, `POST update`, `POST rollback`) for sites that already exist.
+
+**The license is verified offline.** `plugins/rwp-saas-installer/license.mjs` signs and checks
+`RWP1-PLAN-SEATS-YYYYMMDD-SIGNATURE` keys with HMAC-SHA256, so activation answers without a license
+server and nothing phones home. Mint and check a key from a shell:
+
+```bash
+node plugins/rwp-saas-installer/license.mjs mint --plan AGENCY --seats 25 --expires 2027-06-30
+node plugins/rwp-saas-installer/license.mjs verify RWP1-AGENCY-25-20270630-0VX7JSKV7Z
+```
+
+The default signing secret ships in that file on purpose — a key is an entitlement record, not a
+paywall — and `SAAS_LICENSE_SECRET` replaces it for an installation whose keys only it should be able
+to mint; `mint` prints which of the two signed the key, and warns when the key is already expired.
+`GET license/status` and `POST license/activate` are the only routes that read it, and both mask the key.
+Without a valid key `POST provision` answers `402` before a Vercel or Supabase credential is used, so a
+wizard that cannot provision costs nothing.
+
+**Installations are counted in `public.saas_installer_installations`**, created by
+`plugins/rwp-saas-installer/schema.sql` when the plugin is activated (`uninstall.sql` drops it, and
+only it). `POST provision` records the site it hands out, `POST installs/register` one provisioned
+before the tracker existed, and a provisioned site refreshes its own row with `POST installs/heartbeat`
+— the only public write in the file, and a patch to a row that must already exist, so an address nobody
+registered is a no-op rather than a new row. The rows are written server-side only; the table is
+readable so `[rwp_active_installs]` can render them:
+
+```
+[rwp_active_installs]                                  how many sites checked in within 30 days
+[rwp_active_installs days="0"]                          every site ever recorded
+[rwp_active_installs days="7" list="yes" limit="10"]    the ten most recent, as links
+```
+
+`title` and `empty` replace the heading and the sentence shown when nothing is recorded, and a missing
+table renders that same muted line instead of an error — the plugin is simply not fully installed yet.

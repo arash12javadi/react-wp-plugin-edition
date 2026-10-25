@@ -1,0 +1,110 @@
+=== rwp-ai-factory ===
+{
+  "id": "rwp-ai-factory",
+  "name": "RWP AI Factory",
+  "version": "1.0.0",
+  "author": "React-WP",
+  "description": "Turn a plain-language description into a code snippet or a complete plugin ZIP. Each administrator and visitor uses their own provider key, which stays in the browser and is never sent to this site's server.",
+  "entry": "./index.tsx"
+}
+
+=== rwp-chat ===
+{
+  "id": "rwp-chat",
+  "name": "RWP Chat & AI Assistant",
+  "version": "1.0.0",
+  "author": "React-WP",
+  "description": "A floating and inline chat widget with an AI assistant, a pre-chat lead form, file attachments, product and order context on shop pages, and handover to a live agent by Telegram or WhatsApp.",
+  "entry": "./index.tsx",
+  "media": {
+    "prefixes": ["plugins/rwp-chat"]
+  },
+  "database": {
+    "schema": "./schema.sql",
+    "uninstall": "./uninstall.sql",
+    "tables": ["chat_sessions", "chat_messages", "live_agent_requests", "chat_canned_responses", "chat_secrets", "chat_knowledge_base", "chat_knowledge_chunks"],
+    "options": ["chat\\_%"],
+    "retains": [
+      "Attachments visitors sent stay in the Media Library's chat_media folder, and at Cloudinary. Delete that folder from the Media Library to remove them.",
+      "rwp_chat_card_product and rwp_chat_order_status belong to rwp-shop and are dropped by its own uninstall."
+    ]
+  }
+}
+
+=== rwp-code-snippets ===
+{
+  "id": "rwp-code-snippets",
+  "name": "RWP Code Snippets & AI Developer Assistant",
+  "version": "1.0.0",
+  "author": "React-WP",
+  "description": "Add CSS, JavaScript, HTML and React action/filter hooks to the site without editing files, with an AI code generator, a system-aware assistant and JSON backup and restore.",
+  "entry": "./index.tsx",
+  "database": {
+    "schema": "./schema.sql",
+    "uninstall": "./uninstall.sql",
+    "tables": ["code_snippets"],
+    "options": [],
+    "retains": []
+  }
+}
+
+=== rwp-page-builder ===
+{
+  "id": "rwp-page-builder",
+  "name": "RWP Page Builder",
+  "version": "1.1.0",
+  "author": "React-WP",
+  "description": "A visual drag-and-drop page builder: sections, columns and widgets, responsive styling, dynamic data tags, posts grids, forms, sliders, global colours and fonts, templates and revisions.",
+  "entry": "./index.tsx",
+  "database": {
+    "schema": "./schema.sql",
+    "uninstall": "./uninstall.sql",
+    "tables": ["elementor_templates", "form_submissions", "page_builder_revisions", "builder_form_settings"],
+    "options": ["builder_global_styles"],
+    "retains": [
+      "Saved layouts stay in pages.builder_data: those are core columns, and site templates (header, footer, single post) are rendered by core.",
+      "A page with a layout falls back to its classic editor content while the builder is uninstalled."
+    ]
+  }
+}
+
+=== rwp-saas-installer ===
+{
+  "id": "rwp-saas-installer",
+  "name": "RWP SaaS Installer",
+  "version": "1.1.0",
+  "author": "React-WP",
+  "description": "A [react_wp_installer] shortcode wizard that provisions a new, independent React-WP site on a visitor's own Vercel and Supabase accounts, and the release lifecycle - update and rollback - for sites that already exist.",
+  "entry": "./index.tsx"
+}
+
+=== rwp-shop ===
+{
+  "id": "rwp-shop",
+  "name": "RWP Shop",
+  "version": "1.3.0",
+  "author": "React-WP",
+  "description": "A WooCommerce-style store: products with variations, cart, checkout, orders, coupons, tax, shipping zones, Stripe, PayPal and offline payments, customer accounts, reviews, reports and order emails.",
+  "entry": "./index.tsx",
+  "media": {
+    "prefixes": ["plugins/rwp-shop"]
+  },
+  "database": {
+    "schema": "./schema.sql",
+    "uninstall": "./uninstall.sql",
+    "tables": [
+      "shop_categories", "shop_tags", "shop_attributes", "shop_attribute_terms",
+      "shop_shipping_classes", "shop_products", "shop_product_categories", "shop_product_tags",
+      "shop_variations", "shop_product_downloads", "shop_customers", "shop_coupons",
+      "shop_tax_rates", "shop_shipping_zones", "shop_shipping_methods", "shop_orders",
+      "shop_order_items", "shop_order_notes", "shop_refunds", "shop_reviews",
+      "shop_product_qa", "shop_product_offers", "shop_price_drop_alerts", "shop_product_bundles"
+    ],
+    "options": ["shop\\_%"],
+    "retains": [
+      "Shop site templates (Shop, Product, Cart, Checkout, My Account) stay in Pages as ordinary builder layouts.",
+      "The shop_manager role stays on existing accounts; without the shop it grants nothing extra.",
+      "Likes, saved items and view counts of products stay in the core engagement tables, keyed by product id."
+    ]
+  }
+}
