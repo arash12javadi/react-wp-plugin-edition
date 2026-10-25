@@ -41,6 +41,15 @@ export const PLUGIN_LICENSES_OPTION = 'rwp_plugin_licenses';
 export const PLUGIN_LICENSE_PREFIX = 'RWP1';
 
 /**
+ * Where a key is bought.
+ *
+ * One constant, because it is said in three places that must not disagree: the Plugins screen beside a
+ * locked plugin, the sentence a plugin's own 402 carries, and the "no key stored" verdict the license
+ * route returns. A browser-side constant is enough - nothing here is a secret or per-site.
+ */
+export const PLUGIN_LICENSE_SHOP_URL = 'https://react-wp.com/shop';
+
+/**
  * The plugins that are sold, and the addon code each one's key carries.
  *
  * This map *is* the licensing policy, and it is deliberately the only place the policy lives. A plugin
@@ -191,3 +200,19 @@ export const pluginLicenseAddonFor = (plugin) => {
 
 /** True for the four sold plugins in `COMMERCIAL_PLUGIN_ADDONS`; false for everything else. */
 export const isCommercialPlugin = (plugin) => pluginLicenseAddonFor(plugin) !== '';
+
+/**
+ * The plugins a site runs when nobody has chosen: every free plugin, and none of the sold ones.
+ *
+ * A missing `rwp_active_plugins` option used to mean "every bundled plugin is active", which switched
+ * the four commercial plugins on for a site that had never heard of them and had no key for them -
+ * they then answered 402 (or 404 once the front end learned to keep them off) to every visitor. The
+ * default is the set a site can actually use: the sold four start inactive and are switched on from
+ * Plugins once their key verifies.
+ *
+ * One definition, used by `App.tsx`, the Plugins screen, `server/plugins.mjs` (which answers plugin
+ * routes) and the installers that pin the option before adding a folder, so a fresh site, a rebuilt
+ * one and a self-hosted one agree on what "nothing chosen yet" means.
+ */
+export const defaultActivePluginIds = (pluginIds) => (Array.isArray(pluginIds) ? pluginIds : [])
+  .filter((pluginId) => !isCommercialPlugin(pluginId));

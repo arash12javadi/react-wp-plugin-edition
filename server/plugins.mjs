@@ -38,7 +38,8 @@
 import { readAiConfig } from './integrationAi.mjs';
 import { currentEdition, editionKeepsPlugin } from '../src/lib/pluginEdition.js';
 import {
-  PLUGIN_LICENSES_OPTION, pluginLicenseAddonFor, pluginLicenseGate, pluginLicenseState, readPluginLicenses,
+  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds, pluginLicenseAddonFor,
+  pluginLicenseGate, pluginLicenseState, readPluginLicenses,
 } from './pluginLicense.mjs';
 
 const loaded = await Promise.allSettled([
@@ -78,15 +79,17 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
 /**
  * The options a plugin request depends on, read together and cached for half a minute.
  *
- * `active: null` means the option is absent, which App.tsx reads as "every bundled plugin is active".
- * `licenses: null` means the license option could not be read at all, which the gate treats as
- * "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
+ * `active: null` means the option is absent, which App.tsx reads as "every free plugin is active and
+ * none of the sold ones is" (`defaultActivePluginIds`), so the four commercial plugins are off until
+ * somebody activates them. `licenses: null` means the license option could not be read at all, which
+ * the gate treats as "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
  */
 const optionCache = { at: 0, active: null, licenses: null };
 const OPTION_CACHE_MS = 30_000;
 
 /**
- * Mirrors App.tsx: a missing rwp_active_plugins option means every bundled plugin is active.
+ * Mirrors App.tsx: a missing rwp_active_plugins option means every free plugin is active and the four
+ * sold ones are not (`defaultActivePluginIds`).
  *
  * `fresh` re-reads both options instead of trusting the cache. `GET <plugin>/license` asks for a fresh
  * read so an administrator who has just saved a key sees the truth immediately, and that read also
@@ -214,19 +217,29 @@ export async function handlePluginRequest(request) {
   }
 
   const options = await readOptions();
-  const activeIds = options.active ?? serverPlugins.map((item) => item.id);
+  // Nothing chosen yet: the free plugins answer and the four sold ones do not, so a site handed out
+  // by the installer never runs a plugin nobody licensed. Activating one writes the option.
+  const activeIds = options.active ?? defaultActivePluginIds(serverPlugins.map((item) => item.id));
   if (!activeIds.includes(plugin.id)) {
     return { status: 404, body: { error: `The plugin "${plugin.id}" is not active. Activate it under Plugins.` } };
   }
 
   // A commercial plugin answers nothing until its key verifies. 402 rather than 403: the request is
   // well formed and nothing is forbidden - what is missing is this site's right to use the plugin. The
-  // body carries the same sentence the Plugins screen shows, so a plugin's own UI can display it.
+  // body carries the same sentence the Plugins screen shows, so a plugin's own UI can display it, plus
+  // a `code` a client can branch on without matching prose, and the address a key comes from.
   const gate = pluginLicenseGate({ plugin, licenses: options.licenses });
   if (gate && !gate.licensed) {
     return {
       status: 402,
-      body: { error: gate.message, plugin: plugin.id, addon: gate.addon, license: gate },
+      body: {
+        error: gate.message,
+        code: 'license_required',
+        plugin: plugin.id,
+        addon: gate.addon,
+        license: gate,
+        shop: PLUGIN_LICENSE_SHOP_URL,
+      },
     };
   }
 

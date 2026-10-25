@@ -26,6 +26,7 @@ import { isIP } from 'node:net';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
 import { listPluginFolders } from './pluginFiles.mjs';
+import { defaultActivePluginIds } from './pluginLicense.mjs';
 import { addServerPluginImport } from './serverPluginImports.mjs';
 
 /** Kept equal to MAX_PLUGIN_ZIP_BYTES in src/components/PluginUploadModal.tsx. */
@@ -424,8 +425,10 @@ export async function moveIntoPlace(staging, target) {
 }
 
 /**
- * The rwp_active_plugins option missing means "every bundled plugin is active" (App.tsx), which
- * would switch the new plugin on at the next build. Pin the current set first so it arrives inactive.
+ * The rwp_active_plugins option missing means "every free plugin is active" (`defaultActivePluginIds`
+ * in src/lib/pluginLicense.js), which would switch the new plugin on at the next build. Pin the current
+ * set first so it arrives inactive - and pin it through `defaultActivePluginIds`, so the four sold
+ * plugins are written down as inactive rather than being switched on by the same write.
  */
 async function pinActivePlugins(auth, existingIds) {
   const read = await fetch(`${auth.baseUrl}/rest/v1/options?option_name=eq.rwp_active_plugins&select=option_name`, { headers: auth.headers });
@@ -434,7 +437,7 @@ async function pinActivePlugins(auth, existingIds) {
   const write = await fetch(`${auth.baseUrl}/rest/v1/options`, {
     method: 'POST',
     headers: { ...auth.headers, 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
-    body: JSON.stringify({ option_name: 'rwp_active_plugins', option_value: JSON.stringify(existingIds) }),
+    body: JSON.stringify({ option_name: 'rwp_active_plugins', option_value: JSON.stringify(defaultActivePluginIds(existingIds)) }),
   });
   if (!write.ok) {
     return `rwp_active_plugins is not set, and saving it failed (HTTP ${write.status}; it needs the manage_options capability). Until it is saved, every plugin — including this one — is active after the next build. Activate or deactivate any plugin under Plugins to save it.`;
@@ -456,7 +459,7 @@ export async function pinActivePluginsWithStore(optionStore, existingIds) {
   try {
     const current = await optionStore.getOption('rwp_active_plugins');
     if (current !== null && current !== undefined) return null;
-    await optionStore.setOption('rwp_active_plugins', existingIds);
+    await optionStore.setOption('rwp_active_plugins', defaultActivePluginIds(existingIds));
     return null;
   } catch (error) {
     return `rwp_active_plugins could not be saved (${error?.message || error}). Until it is, every installed plugin — including this one — is active after the next build. Activate or deactivate any plugin under Plugins to save it.`;

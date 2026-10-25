@@ -35,14 +35,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
-  COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSE_PREFIX, PLUGIN_LICENSES_OPTION, isCommercialPlugin,
-  maskPluginLicense, pluginLicenseAddon, pluginLicenseAddonFor, pluginLicenseKeyFrom, pluginLicenseParts,
-  readPluginLicenses,
+  COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSE_PREFIX, PLUGIN_LICENSE_SHOP_URL, PLUGIN_LICENSES_OPTION,
+  defaultActivePluginIds, isCommercialPlugin, maskPluginLicense, pluginLicenseAddon, pluginLicenseAddonFor,
+  pluginLicenseKeyFrom, pluginLicenseParts, readPluginLicenses,
 } from '../src/lib/pluginLicense.js';
 
 export {
-  COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSES_OPTION, isCommercialPlugin, maskPluginLicense,
-  pluginLicenseAddonFor, readPluginLicenses,
+  COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds,
+  isCommercialPlugin, maskPluginLicense, pluginLicenseAddonFor, readPluginLicenses,
 };
 
 /** Where an operator's own signing secret is read from. Empty means the default below. */
@@ -157,7 +157,7 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), sec
     status: 'missing',
     expiresOn: '',
     daysLeft: 0,
-    message: `${required || 'This plugin'} needs a license key, and this site has not stored one. Enter it under Plugins -> License; a key is minted with \`${mint}\`.`,
+    message: `${required || 'This plugin'} needs a license key, and this site has not stored one. Enter it under Plugins -> License, or buy one at ${PLUGIN_LICENSE_SHOP_URL}; a key is minted with \`${mint}\`.`,
   };
 
   const parts = pluginLicenseParts(key);
@@ -206,7 +206,7 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), sec
       licensed: false,
       status: 'expired',
       daysLeft: 0,
-      message: `The ${parts.addon} license expired on ${parts.expiresOn}, so ${pluginId || 'the plugin'} stays locked until a current key is entered.`,
+      message: `The ${parts.addon} license expired on ${parts.expiresOn}, so ${pluginId || 'the plugin'} stays locked until a current key is entered. Renew at ${PLUGIN_LICENSE_SHOP_URL}.`,
     };
   }
   return state;

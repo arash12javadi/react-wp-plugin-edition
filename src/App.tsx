@@ -26,6 +26,7 @@ import { pageViewLink } from './lib/contentBulk';
 import { accountPageByPath, accountTarget, signOutAndRedirect, type AccountPageKey } from './lib/account';
 import { startSessionGovernor } from './lib/session';
 import { useCurrentProfile } from './lib/profiles';
+import { defaultActivePluginIds } from './lib/pluginLicense';
 import { describeDbError } from './lib/db';
 import { bootDatabase, checkInstallOnServer, clearStoredSession, type BootFailure } from './lib/boot';
 import {
@@ -85,7 +86,12 @@ const initializePlugins = async (supabase: Client) => {
   const { data: activeRow } = await supabase
     .from('options').select('option_value').eq('option_name', 'rwp_active_plugins').maybeSingle();
   const registered = rwp.getPlugins();
-  const activeIds = activeRow ? readPluginIds(activeRow.option_value) : registered.map((plugin) => plugin.id);
+  // Nothing saved yet: the free plugins run and the four sold ones stay off until somebody activates
+  // them from Plugins with a key in place (`defaultActivePluginIds`). Reading a saved option as it is
+  // keeps an administrator's choice exact - a site that has switched its shop on is not overruled here.
+  const activeIds = activeRow
+    ? readPluginIds(activeRow.option_value)
+    : defaultActivePluginIds(registered.map((plugin) => plugin.id));
   registered.forEach((plugin) => {
     if (activeIds.includes(plugin.id)) rwp.activatePlugin(plugin.id);
   });

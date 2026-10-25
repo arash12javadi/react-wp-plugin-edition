@@ -3,6 +3,9 @@ import { describeDbError, client, getOption, updateOption } from '../lib/db';
 import { rwp, type RwpInstalledPlugin } from '../lib/rwp';
 import {
   PLUGIN_LICENSES_OPTION,
+  PLUGIN_LICENSE_SHOP_URL,
+  defaultActivePluginIds,
+  isCommercialPlugin,
   pluginLicenseAddonFor,
   pluginLicenseKeyFrom,
   pluginLicenseParts,
@@ -15,6 +18,12 @@ import { installPluginSchema, isEndpointUnavailable } from '../lib/pluginSchema'
 import styles from './PluginsManager.module.css';
 
 const activationOption = 'rwp_active_plugins';
+
+/**
+ * Where a key is bought, named once in `src/lib/pluginLicense.js` because the server says the same
+ * address in the 402 a locked plugin answers and in its "no key stored" verdict.
+ */
+const SHOP_URL = PLUGIN_LICENSE_SHOP_URL;
 
 /**
  * What `GET /api/plugins/<id>/license` answers.
@@ -190,7 +199,9 @@ export default function PluginsManager() {
         ...diskFiles,
         notBuilt: diskFiles.plugins.filter((plugin) => !registeredPlugins.some((registered) => registered.id === plugin.id)),
       };
-      // No option yet means every bundled plugin is active (App.tsx); otherwise new plugins start inactive.
+      // No option yet means the free plugins are active and the four sold ones are not
+      // (`defaultActivePluginIds`, which App.tsx and server/plugins.mjs apply the same way); otherwise
+      // new plugins start inactive.
       const storedActiveIds = activeRow ? readOptionIds(activeRow.option_value) : null;
       const existingById = new Map((existingRows || []).map((row) => [row.plugin_id, row]));
       const metadata = visiblePlugins.map((plugin) => ({
@@ -204,7 +215,12 @@ export default function PluginsManager() {
       }));
       const newRows = metadata
         .filter((plugin) => !existingById.has(plugin.plugin_id))
-        .map((plugin) => ({ ...plugin, active: storedActiveIds === null || storedActiveIds.includes(plugin.plugin_id) }));
+        .map((plugin) => ({
+          ...plugin,
+          active: storedActiveIds === null
+            ? !isCommercialPlugin(plugin.plugin_id)
+            : storedActiveIds.includes(plugin.plugin_id),
+        }));
       if (newRows.length > 0) {
         const { error: insertError } = await supabase.from('plugins').insert(newRows);
         if (insertError) throw insertError;
@@ -237,7 +253,7 @@ export default function PluginsManager() {
       }
       const { data: rows, error: rowsError } = await supabase.from('plugins').select('*').order('name');
       if (rowsError) throw rowsError;
-      const ids = storedActiveIds ?? registeredIds;
+      const ids = storedActiveIds ?? defaultActivePluginIds(registeredIds);
       const currentIds = ids.filter((id) => registeredIds.includes(id));
       if (storedActiveIds && currentIds.length !== ids.length) await updateOption(activationOption, currentIds);
       const dbRows = ((rows || []) as PluginRow[]).filter((row) => row.source !== 'bundled' || registeredIds.includes(row.plugin_id));
@@ -360,12 +376,33 @@ export default function PluginsManager() {
     }
   };
 
-  /** Activates or deactivates several plugins with one write to the table and one to the option. */
+  /**
+   * Activates or deactivates several plugins with one write to the table and one to the option.
+   *
+   * Activation is refused for a sold plugin whose key is not in place. The refusal is not the gate -
+   * the plugin's own routes answer 402 until the key verifies, and that is checked on the server where
+   * a browser cannot talk it round - but switching on a plugin that can only answer 402 leaves a site
+   * with a shop on the menu and a 402 behind it, so the answer here is the key field plus where to get
+   * a key, not an "Active" badge that lies.
+   */
   const setActive = async (targets: PluginRow[], nextActive: boolean) => {
     const changing = targets.filter((plugin) => plugin.active !== nextActive);
     if (!changing.length) {
       setFeedback(`${describe(targets)} ${targets.length === 1 ? 'is' : 'are'} already ${nextActive ? 'active' : 'inactive'}.`);
       return;
+    }
+    if (nextActive) {
+      const locked = changing.filter((plugin) => {
+        const report = licenseReports[plugin.plugin_id];
+        return Boolean(report?.required) && !report?.licensed;
+      });
+      if (locked.length) {
+        const names = locked.map((plugin) => `${plugin.name} (${pluginLicenseAddonFor(plugin.plugin_id)})`).join(', ');
+        setFeedback('');
+        setError(`${names} ${locked.length === 1 ? 'is' : 'are'} sold separately and no key in place checks out, so ${locked.length === 1 ? 'it' : 'they'} cannot be activated yet. Paste the key in the License column, or buy one at ${SHOP_URL}.`);
+        setLicenseOpenId(locked[0].plugin_id);
+        return;
+      }
     }
     const ids = changing.map((plugin) => plugin.plugin_id);
     setSavingId(changing.length === 1 ? ids[0] : 'bulk');
@@ -532,7 +569,7 @@ export default function PluginsManager() {
       {error && <div className={styles.error} role="alert">{error}</div>}
       {feedback && <div className={styles.feedback} role="status">{feedback}</div>}
       <div className={styles.notice}>
-        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one.
+        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one. They arrive <strong>inactive</strong> and stay that way until their key checks out, so a new site carries nothing it cannot use. <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">Buy a key</a> when you want one.
       </div>
       {!files.available && files.reason && (
         <div className={styles.notice} role="status">Plugin folders could not be checked, so Delete is unavailable: {files.reason}</div>
@@ -601,7 +638,7 @@ export default function PluginsManager() {
                               Free
                             </span>
                           ) : (
-                            <>
+                            <div className={styles.licenseCell}>
                               <button
                                 type="button"
                                 className={report.licensed ? styles.licenseUnlocked : styles.licenseLocked}
@@ -614,7 +651,17 @@ export default function PluginsManager() {
                               {report.licensed && report.expiresOn
                                 ? <small className={styles.licenseExpiry}>to {report.expiresOn}</small>
                                 : null}
-                            </>
+                              {!report.licensed ? (
+                                <a
+                                  className={styles.shopLink}
+                                  href={SHOP_URL}
+                                  target="_blank"
+                                  rel="noreferrer noopener"
+                                >
+                                  Buy a key
+                                </a>
+                              ) : null}
+                            </div>
                           )}
                         </td>
                         <td>
@@ -623,6 +670,9 @@ export default function PluginsManager() {
                             className={plugin.active ? styles.deactivate : styles.activate}
                             disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
                             onClick={() => void setActive([plugin], !plugin.active)}
+                            title={!plugin.active && report?.required && !report.licensed
+                              ? 'Sold separately: save a key in the License column, then activate.'
+                              : undefined}
                           >
                             {savingId === plugin.plugin_id ? 'Saving…' : plugin.active ? 'Deactivate' : 'Activate'}
                           </button>
@@ -670,7 +720,11 @@ export default function PluginsManager() {
                               <p className={styles.licenseNote}>{licenseDetail(report)}</p>
                               <p className={styles.licenseNote}>
                                 Only this plugin is affected: everything else on the site, including setup, stays free.
-                                Leave the field empty and save to remove the stored key.
+                                Leave the field empty and save to remove the stored key.{' '}
+                                <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">
+                                  Buy a license key
+                                </a>{' '}
+                                if you do not have one yet.
                               </p>
                             </form>
                           </td>

@@ -825,6 +825,12 @@ That is enforced in three places, all reading one list (`DEV_EDITION_PLUGINS` in
 `npm run check:plugins` verifies the list, both manifests (`"edition": "dev"`) and the two
 `export-ignore` lines, and prints the license and edition of every plugin folder.
 
+The installer's site counter is the one thing here that needs a secret: it writes each provisioned site to
+`saas_installer_installations` through PostgREST, and RLS refuses an anon key, so set
+`SUPABASE_SECRET_KEY` (or the older `SUPABASE_SERVICE_ROLE_KEY`) on the deployment. Without it the wizard
+still builds sites — it only cannot count them — and the settings card, the server log and the wizard's own
+answer all say which variable is missing rather than blaming the schema.
+
 ### Settings → Advanced → Reset Website
 
 A factory reset: it drops the `public` schema, deletes every account and flips `data/react-wp-config.json` back to `installed: false`, so the site returns to the Setup Wizard. It is restricted to Administrators and Super Admins — checked against `profiles.role` rather than the `manage_options` capability, which App Settings can grant to other roles — and requires re-entering the signed-in account's own password, which the server verifies against Supabase Auth, plus typing `RESET`. Everything runs in one transaction, so a failure leaves a working site.
