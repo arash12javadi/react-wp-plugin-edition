@@ -5,6 +5,7 @@ import {
   registerIntegrationCard,
   type RwpIntegrationCard,
 } from '../core/integrations';
+import { editionKeepsPlugin } from './pluginEdition';
 import type { Page } from './types';
 
 export type RwpActionName =
@@ -272,6 +273,12 @@ export interface RwpPluginManifest {
   author?: string;
   description?: string;
   entry?: string;
+  /**
+   * `'dev'` for a plugin that only exists in the development edition - `rwp-ai-factory` and
+   * `rwp-saas-installer` (`src/lib/pluginEdition.js`). Documentation, not enforcement: the list in that
+   * module is what decides, so an uploaded manifest cannot move a plugin out of the public edition.
+   */
+  edition?: string;
 }
 
 export interface RwpInstalledPlugin extends RwpPlugin {
@@ -415,6 +422,15 @@ export const rwp: RwpPluginContext & {
     },
   },
   registerPlugin: (plugin) => {
+    // A development-edition plugin (`rwp-ai-factory`, `rwp-saas-installer`) is discovered by the same
+    // `import.meta.glob` as every other plugin, so the public edition has to refuse it here as well as
+    // on the server: registering it would put an admin screen, a shortcode and a route into a build
+    // that must not have them. Silently, with one line to the console - a customer's build has no
+    // business logging a warning they cannot act on, and a developer in this repository never sees it.
+    if (!editionKeepsPlugin(plugin.id)) {
+      console.warn(`[plugin-edition] ${plugin.id} belongs to the development edition and was not registered in this build.`);
+      return () => {};
+    }
     if (plugins.has(plugin.id)) throw new Error(`RWP plugin "${plugin.id}" is already registered.`);
     const record: PluginRecord = { plugin, active: false };
     plugins.set(plugin.id, record);

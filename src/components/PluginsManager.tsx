@@ -1,6 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { describeDbError, client, updateOption } from '../lib/db';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { describeDbError, client, getOption, updateOption } from '../lib/db';
 import { rwp, type RwpInstalledPlugin } from '../lib/rwp';
+import {
+  PLUGIN_LICENSES_OPTION,
+  pluginLicenseAddonFor,
+  pluginLicenseKeyFrom,
+  pluginLicenseParts,
+  readPluginLicenses,
+} from '../lib/pluginLicense';
 import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './BulkActions';
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
 import PluginUninstallModal from './PluginUninstallModal';
@@ -8,6 +15,29 @@ import { installPluginSchema, isEndpointUnavailable } from '../lib/pluginSchema'
 import styles from './PluginsManager.module.css';
 
 const activationOption = 'rwp_active_plugins';
+
+/**
+ * What `GET /api/plugins/<id>/license` answers.
+ *
+ * `required: false` is the common case - a plugin that is not one of the four sold ones - and it is
+ * the server that decides, not this screen: the commercial set is `COMMERCIAL_PLUGIN_ADDONS`
+ * (`src/lib/pluginLicense.js`), and the key it is checked against is verified there with a secret a
+ * browser must never hold.
+ */
+interface PluginLicenseReport {
+  success: boolean;
+  /** False for a free plugin, and for one that ships no server module (nothing to gate). */
+  required: boolean;
+  licensed: boolean;
+  status: 'free' | 'licensed' | 'missing' | 'invalid' | 'wrong-plugin' | 'expired' | 'unknown';
+  addon: string;
+  pluginId: string;
+  /** The stored key, masked by the server. Never the whole key. */
+  key?: string;
+  expiresOn?: string;
+  daysLeft?: number;
+  message: string;
+}
 
 interface PluginRow extends RwpInstalledPlugin {
   plugin_id: string;
@@ -59,6 +89,40 @@ const readOptionIds = (value: string | null | undefined): string[] => {
   }
 };
 
+/**
+ * The host's verdict on one plugin's license.
+ *
+ * `null` means "no report": a plugin with no `server.mjs` has nothing to gate, and a host that cannot
+ * answer (a static build with no `/api/plugins`) must not make a free plugin look locked. This screen
+ * therefore reads a missing report as free, which is what it is — the gate lives in the server, so a
+ * plugin that answers nothing here cannot be refused there either.
+ */
+const fetchPluginLicense = async (pluginId: string): Promise<PluginLicenseReport | null> => {
+  try {
+    const response = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/license`, { cache: 'no-store' });
+    const payload = (await response.json().catch(() => null)) as PluginLicenseReport | null;
+    return response.ok && payload?.success ? payload : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The keys in one line for a locked plugin: what is stored (masked) and what to do about it.
+ *
+ * Masked, always: the server never sends a whole key back, and this string is rendered, so a screenshot
+ * of the Plugins screen cannot carry a key that would unlock another site.
+ */
+const licenseDetail = (report: PluginLicenseReport): string => {
+  if (!report.required) return report.message;
+  if (report.status === 'licensed') {
+    return [report.message, report.key ? `Stored key ${report.key} - clear the field and save to remove it.` : '']
+      .filter(Boolean)
+      .join(' ');
+  }
+  return report.key ? `${report.message} (stored: ${report.key})` : report.message;
+};
+
 export default function PluginsManager() {
   const [plugins, setPlugins] = useState<PluginRow[]>([]);
   const [activeIds, setActiveIds] = useState<string[]>([]);
@@ -77,6 +141,15 @@ export default function PluginsManager() {
   const [uploadOpen, setUploadOpen] = useState(pendingInstall !== null);
   /** Bumped after an upload so the disk listing (and its "restart to load" notice) is re-read. */
   const [reloadKey, setReloadKey] = useState(0);
+  /** Every stored key, `{ [pluginId]: key }`, as the `rwp_plugin_licenses` option holds them. */
+  const [licenseKeys, setLicenseKeys] = useState<Record<string, string>>({});
+  /** The host's verdict per plugin. A plugin with no entry has no server module, so nothing gates it. */
+  const [licenseReports, setLicenseReports] = useState<Record<string, PluginLicenseReport>>({});
+  /** The key being typed, per plugin: a draft, so a saved key is not overwritten by a re-read. */
+  const [licenseDrafts, setLicenseDrafts] = useState<Record<string, string>>({});
+  /** The plugin whose key field is open, or `''` when the table is compact. */
+  const [licenseOpenId, setLicenseOpenId] = useState('');
+  const [licenseSavingId, setLicenseSavingId] = useState('');
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -208,6 +281,84 @@ export default function PluginsManager() {
   }, [reloadKey]);
 
   const describe = (list: PluginRow[]) => (list.length === 1 ? list[0].name : `${list.length} plugins`);
+
+  /**
+   * The stored keys and the host's verdict on each one.
+   *
+   * Two reads rather than one: the keys come from the options row this screen may write, and the verdict
+   * comes from the server, which is the only side that can check a signature. A plugin whose report
+   * cannot be fetched keeps no entry, and the table reads that as free - the gate is in the server, so a
+   * plugin that answers nothing here cannot be refused there either.
+   */
+  useEffect(() => {
+    if (loading) return;
+    let mounted = true;
+    void (async () => {
+      const stored = readPluginLicenses(await getOption<Record<string, string>>(PLUGIN_LICENSES_OPTION, {}));
+      const reports: Record<string, PluginLicenseReport> = {};
+      await Promise.all(plugins.map(async (plugin) => {
+        const report = await fetchPluginLicense(plugin.plugin_id);
+        if (report) reports[plugin.plugin_id] = report;
+      }));
+      if (!mounted) return;
+      setLicenseKeys(stored);
+      setLicenseReports(reports);
+    })();
+    return () => { mounted = false; };
+  }, [loading, plugins]);
+
+  /**
+   * Stores one plugin's key, or removes it when the field is left empty.
+   *
+   * The whole `rwp_plugin_licenses` option is rewritten because it is one row: a per-plugin write would
+   * race another administrator's and lose whichever saved first. The key is checked here for its shape
+   * and for the plugin it names - an obvious typo should not need a round trip - and the *server* is
+   * asked whether it verifies, since only it holds the signing secret. It does not gate anything else:
+   * the plugin's own routes answer 402 until the verdict is `licensed`.
+   */
+  const saveLicense = async (plugin: PluginRow) => {
+    const pasted = pluginLicenseKeyFrom(licenseDrafts[plugin.plugin_id] ?? '');
+    setError('');
+    setFeedback('');
+    if (pasted) {
+      const parts = pluginLicenseParts(pasted);
+      if (!parts) {
+        setError('That is not a license key: a key reads RWP1-ADDON-YYYYMMDD-SIGNATURE, for example RWP1-SHOP-20270630-4K7QM2XZ8B.');
+        return;
+      }
+      const addon = pluginLicenseAddonFor(plugin.plugin_id);
+      if (parts.addon !== addon) {
+        setError(`That key was issued for ${parts.addon}, not for ${plugin.name} (${addon}). Paste the key this plugin was issued.`);
+        return;
+      }
+    }
+    setLicenseSavingId(plugin.plugin_id);
+    try {
+      const next = { ...licenseKeys };
+      if (pasted) next[plugin.plugin_id] = pasted;
+      else delete next[plugin.plugin_id];
+      if (!(await updateOption(PLUGIN_LICENSES_OPTION, next))) {
+        throw new Error('The key could not be stored. Sign in again as an administrator and retry.');
+      }
+      setLicenseKeys(next);
+      setLicenseDrafts((current) => ({ ...current, [plugin.plugin_id]: '' }));
+      const report = await fetchPluginLicense(plugin.plugin_id);
+      setLicenseReports((current) => {
+        const merged = { ...current };
+        if (report) merged[plugin.plugin_id] = report;
+        else delete merged[plugin.plugin_id];
+        return merged;
+      });
+      setFeedback(report
+        ? `${plugin.name}: ${report.message}`
+        : `${plugin.name}: the key was saved. This host reports no license for it, so nothing is gated.`);
+      if (report?.licensed) setLicenseOpenId('');
+    } catch (saveError: unknown) {
+      setError(saveError instanceof Error ? saveError.message : describeDbError(saveError));
+    } finally {
+      setLicenseSavingId('');
+    }
+  };
 
   /** Activates or deactivates several plugins with one write to the table and one to the option. */
   const setActive = async (targets: PluginRow[], nextActive: boolean) => {
@@ -381,7 +532,7 @@ export default function PluginsManager() {
       {error && <div className={styles.error} role="alert">{error}</div>}
       {feedback && <div className={styles.feedback} role="status">{feedback}</div>}
       <div className={styles.notice}>
-        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables.
+        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one.
       </div>
       {!files.available && files.reason && (
         <div className={styles.notice} role="status">Plugin folders could not be checked, so Delete is unavailable: {files.reason}</div>
@@ -426,37 +577,108 @@ export default function PluginsManager() {
           {visible.length > 0 && <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
-                <tr><th className={styles.checkCell}><SelectAllCheckbox selection={selection} total={visible.length} /></th><th>Plugin</th><th>Description</th><th>Version</th><th>Author</th><th>Status</th><th>Actions</th></tr>
+                <tr><th className={styles.checkCell}><SelectAllCheckbox selection={selection} total={visible.length} /></th><th>Plugin</th><th>Description</th><th>Version</th><th>Author</th><th>Status</th><th>License</th><th>Actions</th></tr>
               </thead>
               <tbody>
-                {visible.map((plugin) => (
-                  <tr key={plugin.plugin_id} className={selection.isSelected(plugin.plugin_id) ? styles.rowSelected : undefined}>
-                    <td className={styles.checkCell}><RowCheckbox selection={selection} id={plugin.plugin_id} label={plugin.name} /></td>
-                    <td><strong>{plugin.name}</strong><small>{plugin.plugin_id}</small></td>
-                    <td>{plugin.description || 'No description provided.'}</td>
-                    <td>{plugin.version}</td>
-                    <td>{plugin.author || 'â€”'}</td>
-                    <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
-                    <td>
-                      <button
-                        type="button"
-                        className={plugin.active ? styles.deactivate : styles.activate}
-                        disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
-                        onClick={() => void setActive([plugin], !plugin.active)}
-                      >
-                        {savingId === plugin.plugin_id ? 'Savingâ€¦' : plugin.active ? 'Deactivate' : 'Activate'}
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.delete}
-                        disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
-                        onClick={() => { setError(''); setFeedback(''); setUninstalling(plugin); }}
-                      >
-                        Uninstall
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {visible.map((plugin) => {
+                  const report = licenseReports[plugin.plugin_id];
+                  const open = licenseOpenId === plugin.plugin_id;
+                  return (
+                    <Fragment key={plugin.plugin_id}>
+                      <tr className={selection.isSelected(plugin.plugin_id) ? styles.rowSelected : undefined}>
+                        <td className={styles.checkCell}><RowCheckbox selection={selection} id={plugin.plugin_id} label={plugin.name} /></td>
+                        <td><strong>{plugin.name}</strong><small>{plugin.plugin_id}</small></td>
+                        <td>{plugin.description || 'No description provided.'}</td>
+                        <td>{plugin.version}</td>
+                        <td>{plugin.author || '—'}</td>
+                        <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
+                        <td>
+                          {!report || !report.required ? (
+                            <span
+                              className={styles.licenseFree}
+                              title={report?.message || 'This plugin has no server routes, so there is nothing to gate.'}
+                            >
+                              Free
+                            </span>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className={report.licensed ? styles.licenseUnlocked : styles.licenseLocked}
+                                onClick={() => setLicenseOpenId(open ? '' : plugin.plugin_id)}
+                                aria-expanded={open}
+                                title={report.message}
+                              >
+                                {report.licensed ? 'Unlocked' : 'Locked'}
+                              </button>
+                              {report.licensed && report.expiresOn
+                                ? <small className={styles.licenseExpiry}>to {report.expiresOn}</small>
+                                : null}
+                            </>
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className={plugin.active ? styles.deactivate : styles.activate}
+                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
+                            onClick={() => void setActive([plugin], !plugin.active)}
+                          >
+                            {savingId === plugin.plugin_id ? 'Saving…' : plugin.active ? 'Deactivate' : 'Activate'}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.delete}
+                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
+                            onClick={() => { setError(''); setFeedback(''); setUninstalling(plugin); }}
+                          >
+                            Uninstall
+                          </button>
+                        </td>
+                      </tr>
+                      {open && report ? (
+                        <tr className={styles.licenseRow}>
+                          <td colSpan={8}>
+                            <form
+                              className={styles.licenseForm}
+                              onSubmit={(event) => { event.preventDefault(); void saveLicense(plugin); }}
+                            >
+                              <label htmlFor={`license-${plugin.plugin_id}`}>
+                                License key for {plugin.name} ({pluginLicenseAddonFor(plugin.plugin_id)})
+                              </label>
+                              <div className={styles.licenseEntry}>
+                                <input
+                                  id={`license-${plugin.plugin_id}`}
+                                  className={styles.licenseInput}
+                                  value={licenseDrafts[plugin.plugin_id] ?? ''}
+                                  onChange={(event) => setLicenseDrafts((current) => ({
+                                    ...current,
+                                    [plugin.plugin_id]: event.target.value,
+                                  }))}
+                                  placeholder={`RWP1-${pluginLicenseAddonFor(plugin.plugin_id)}-20270630-XXXXXXXXXX`}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  inputMode="text"
+                                />
+                                <button type="submit" className={styles.activate} disabled={licenseSavingId === plugin.plugin_id}>
+                                  {licenseSavingId === plugin.plugin_id ? 'Saving…' : 'Save key'}
+                                </button>
+                                <button type="button" className={styles.deactivate} onClick={() => setLicenseOpenId('')}>
+                                  Close
+                                </button>
+                              </div>
+                              <p className={styles.licenseNote}>{licenseDetail(report)}</p>
+                              <p className={styles.licenseNote}>
+                                Only this plugin is affected: everything else on the site, including setup, stays free.
+                                Leave the field empty and save to remove the stored key.
+                              </p>
+                            </form>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>}

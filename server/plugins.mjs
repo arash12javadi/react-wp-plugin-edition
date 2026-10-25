@@ -21,8 +21,25 @@
  * server reaches `system_settings` — and a site's key lives in the database rather than in an
  * environment variable. It is a function, not a value: a route that does not call it (a form
  * submission, a webhook) pays nothing for it.
+ *
+ * Commercial plugins are gated here, and only here. The list is `COMMERCIAL_PLUGIN_ADDONS` in
+ * `src/lib/pluginLicense.js` - `rwp-page-builder`, `rwp-shop`, `rwp-chat` and `rwp-code-snippets` - and
+ * each of them answers 402 to every route until the key stored for it in the `rwp_plugin_licenses`
+ * option verifies. Everything else - the setup wizard, site provisioning, and every plugin that is not
+ * on that list - is untouched, and a plugin cannot join the list by declaring anything itself.
+ * `GET <plugin-id>/license` reports the state (never the key) for every plugin, so the Plugins screen
+ * can tell a free plugin (`required: false`) from a locked one; a plugin that declares that route
+ * itself keeps it.
+ *
+ * Two plugins - `rwp-ai-factory` and `rwp-saas-installer` - belong to the development edition only
+ * (`src/lib/pluginEdition.js`) and are not registered at all when this is built as a public site
+ * (`RWP_EDITION=public`), so their routes answer 404 there whatever is in `plugins/`.
  */
 import { readAiConfig } from './integrationAi.mjs';
+import { currentEdition, editionKeepsPlugin } from '../src/lib/pluginEdition.js';
+import {
+  PLUGIN_LICENSES_OPTION, pluginLicenseAddonFor, pluginLicenseGate, pluginLicenseState, readPluginLicenses,
+} from './pluginLicense.mjs';
 
 const loaded = await Promise.allSettled([
   // rwp:server-plugin-imports:start
@@ -34,7 +51,7 @@ const loaded = await Promise.allSettled([
   // rwp:server-plugin-imports:end
 ]);
 
-const serverPlugins = loaded.flatMap((result) => {
+const bundledPlugins = loaded.flatMap((result) => {
   if (result.status === 'fulfilled') return [result.value.default];
   // A deleted plugin folder is expected; anything else is a real error in the plugin.
   const folderDeleted = result.reason?.code === 'ERR_MODULE_NOT_FOUND' && /Cannot find module .*server\.mjs'/.test(String(result.reason?.message));
@@ -42,11 +59,42 @@ const serverPlugins = loaded.flatMap((result) => {
   return [];
 });
 
-const activeCache = { at: 0, ids: null };
+/**
+ * The plugins this deployment serves.
+ *
+ * The two development-edition plugins (`src/lib/pluginEdition.js`) are dropped on a public build rather
+ * than merely hidden in the UI: their import stays above so the development edition keeps them, but a
+ * site deployed with `RWP_EDITION=public` answers 404 for every one of their routes - including the
+ * installer's provisioning endpoint - even if the folder was copied into `plugins/` by hand. The log
+ * line is for the person who did that, who would otherwise see a 404 and look for a routing bug.
+ */
+const edition = currentEdition();
+const serverPlugins = bundledPlugins.filter((plugin) => {
+  if (editionKeepsPlugin(plugin.id, edition)) return true;
+  console.warn(`[plugin-edition] ${plugin.id} is a development-edition plugin and is not served by a ${edition} deployment.`);
+  return false;
+});
 
-/** Mirrors App.tsx: a missing rwp_active_plugins option means every bundled plugin is active. */
-async function readActivePluginIds(supabaseUrl, supabaseKey) {
-  if (Date.now() - activeCache.at < 30_000) return activeCache.ids;
+/**
+ * The options a plugin request depends on, read together and cached for half a minute.
+ *
+ * `active: null` means the option is absent, which App.tsx reads as "every bundled plugin is active".
+ * `licenses: null` means the license option could not be read at all, which the gate treats as
+ * "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
+ */
+const optionCache = { at: 0, active: null, licenses: null };
+const OPTION_CACHE_MS = 30_000;
+
+/**
+ * Mirrors App.tsx: a missing rwp_active_plugins option means every bundled plugin is active.
+ *
+ * `fresh` re-reads both options instead of trusting the cache. `GET <plugin>/license` asks for a fresh
+ * read so an administrator who has just saved a key sees the truth immediately, and that read also
+ * refreshes the cache the gate uses, so activating the plugin right afterwards is not refused by a
+ * copy of the option that is 30 seconds old.
+ */
+async function readPluginOptions(supabaseUrl, supabaseKey, { fresh = false } = {}) {
+  if (!fresh && Date.now() - optionCache.at < OPTION_CACHE_MS) return optionCache;
   const base = supabaseUrl.replace(/\/$/, '');
   const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
   const read = async (name) => {
@@ -55,17 +103,26 @@ async function readActivePluginIds(supabaseUrl, supabaseKey) {
     const [row] = await response.json();
     if (!row) return null;
     try {
-      const parsed = JSON.parse(row.option_value);
-      return Array.isArray(parsed) ? parsed : [];
+      return JSON.parse(row.option_value);
     } catch {
-      return [];
+      return null;
     }
   };
-  const active = await read('rwp_active_plugins');
-  const ids = active ?? serverPlugins.map((plugin) => plugin.id);
-  activeCache.at = Date.now();
-  activeCache.ids = ids;
-  return ids;
+  // The activation option decides whether a plugin answers at all, so failing to read it is an error.
+  // The license option only decides whether a *commercial* plugin answers: taking a working shop down
+  // because the key store hiccuped would be worse than honouring what is already known, so that
+  // failure is logged and the previous answer (or "unknown") is kept.
+  const [active, licenses] = await Promise.all([
+    read('rwp_active_plugins'),
+    read(PLUGIN_LICENSES_OPTION).catch((error) => {
+      console.error('The plugin license option could not be read:', error);
+      return undefined;
+    }),
+  ]);
+  optionCache.at = Date.now();
+  optionCache.active = Array.isArray(active) ? active : null;
+  if (licenses !== undefined) optionCache.licenses = readPluginLicenses(licenses);
+  return optionCache;
 }
 
 const matchRoute = (routes, method, path) => {
@@ -107,13 +164,74 @@ export async function handlePluginRequest(request) {
     return { status: 501, body: { error: 'This site is not installed, so plugin endpoints are unavailable.' } };
   }
 
-  const activeIds = await readActivePluginIds(request.supabase.url, request.supabase.publishableKey);
+  const routePath = rest.join('/');
+  const addon = pluginLicenseAddonFor(plugin);
+  const readOptions = (options) => readPluginOptions(request.supabase.url, request.supabase.publishableKey, options);
+
+  // The license report, for the Plugins screen. It is host-owned, read-only, public and safe to cache
+  // nowhere: it says whether this plugin needs a key and whether the stored one still holds, and never
+  // returns a key. It is answered before the activation and license checks on purpose - an inactive or
+  // locked plugin is exactly when the screen needs to say why - and `fresh` refreshes the cache the
+  // gate reads, so a key saved a second ago is already in force for the next request.
+  //
+  // Every plugin answers here, not only a commercial one: `required: false` is how the screen learns a
+  // plugin is free, which is the common case and the one that must never look locked. A plugin that
+  // declares `GET license` itself keeps it - the host only claims the path when nothing else does.
+  const pluginOwnsLicenseRoute = Boolean(plugin.routes?.['GET license'])
+    || Boolean(matchRoute(plugin.routes || {}, 'GET', 'license'));
+  if (request.method === 'GET' && routePath === 'license' && !pluginOwnsLicenseRoute) {
+    if (!addon) {
+      return {
+        status: 200,
+        body: {
+          success: true,
+          required: false,
+          licensed: true,
+          status: 'free',
+          addon: '',
+          pluginId: plugin.id,
+          message: `${plugin.id} is free: it needs no license key.`,
+        },
+      };
+    }
+    const licenseOptions = await readOptions({ fresh: true });
+    if (licenseOptions.licenses === null) {
+      return {
+        status: 200,
+        body: {
+          success: true,
+          required: true,
+          licensed: false,
+          status: 'unknown',
+          addon,
+          pluginId: plugin.id,
+          message: `The stored license keys could not be read, so ${plugin.id} keeps answering as it did. Reload this screen in a moment.`,
+        },
+      };
+    }
+    const state = pluginLicenseState({ pluginId: plugin.id, key: licenseOptions.licenses[plugin.id], addon });
+    return { status: 200, body: { success: true, required: true, ...state } };
+  }
+
+  const options = await readOptions();
+  const activeIds = options.active ?? serverPlugins.map((item) => item.id);
   if (!activeIds.includes(plugin.id)) {
     return { status: 404, body: { error: `The plugin "${plugin.id}" is not active. Activate it under Plugins.` } };
   }
 
-  const route = matchRoute(plugin.routes, request.method, rest.join('/'));
-  if (!route) return { status: 404, body: { error: `${plugin.id} has no route ${request.method} ${rest.join('/')}.` } };
+  // A commercial plugin answers nothing until its key verifies. 402 rather than 403: the request is
+  // well formed and nothing is forbidden - what is missing is this site's right to use the plugin. The
+  // body carries the same sentence the Plugins screen shows, so a plugin's own UI can display it.
+  const gate = pluginLicenseGate({ plugin, licenses: options.licenses });
+  if (gate && !gate.licensed) {
+    return {
+      status: 402,
+      body: { error: gate.message, plugin: plugin.id, addon: gate.addon, license: gate },
+    };
+  }
+
+  const route = matchRoute(plugin.routes, request.method, routePath);
+  if (!route) return { status: 404, body: { error: `${plugin.id} has no route ${request.method} ${routePath}.` } };
 
   let parsed;
   const json = () => {

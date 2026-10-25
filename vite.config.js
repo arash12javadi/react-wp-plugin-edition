@@ -2,6 +2,7 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { publicConfig } from './server/config.mjs'
 import { resolveSiteConfig } from './server/autoSetup.mjs'
+import { resolveEdition } from './src/lib/pluginEdition.js'
 import { generateScopedName } from './vite.cssModules.mjs'
 import { apiPort, devApiServer } from './vite.devApi.mjs'
 
@@ -29,6 +30,20 @@ export default defineConfig({
    */
   css: {
     modules: { generateScopedName },
+  },
+  /**
+   * The edition the browser bundle is built for, inlined into `src/lib/pluginEdition.js`.
+   *
+   * `RWP_EDITION=public npm run build` produces a customer's build, in which `rwp-ai-factory` and
+   * `rwp-saas-installer` refuse to register; the default - no variable, or anything unrecognised - is
+   * the development edition, which is this repository's whole point. The Node server reads the same
+   * variable at runtime (`server/plugins.mjs`), so a self-hosted deployment needs no rebuild to change
+   * its mind, while a static bundle has to be told at build time. Inlined rather than read from
+   * `import.meta.env` because Vite only exposes `VITE_`-prefixed variables to the browser, and this one
+   * is a build decision, not a site setting.
+   */
+  define: {
+    __RWP_EDITION__: JSON.stringify(resolveEdition(process.env.RWP_EDITION)),
   },
   build: {
     // Split the always-loaded third-party libraries into their own long-lived

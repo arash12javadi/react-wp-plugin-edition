@@ -113,7 +113,67 @@ function by tracing its imports, so a module found with `readdir` at runtime (an
 packages it imports) would be missing from the deployment. Routes of a plugin that is not
 active under Plugins return 404.
 
-## Test plugin
+## Licensing a plugin
+
+Every plugin is free unless it is one of the four sold ones, listed in `COMMERCIAL_PLUGIN_ADDONS` in
+`src/lib/pluginLicense.js`:
+
+| Plugin id           | Key addon       |
+| ------------------- | --------------- |
+| `rwp-page-builder`  | `PAGE-BUILDER`  |
+| `rwp-shop`          | `SHOP`          |
+| `rwp-chat`          | `CHAT`          |
+| `rwp-code-snippets` | `CODE-SNIPPETS` |
+
+Each of those answers `402` on every one of its own **server routes** until the key stored for it
+verifies; nothing else on the site is affected. Every other plugin is free for good: the requirement is
+never read from the plugin itself, so a `server.mjs` cannot opt itself in and a manifest that arrived
+inside an uploaded ZIP cannot opt itself out. Adding an id to that map is the only way to sell a
+plugin, and `npm run check:plugins` fails if the map, the folders and the manifests disagree — a sold
+plugin with no `server.mjs` to gate, a sold plugin whose addon does not match its id, or a free plugin
+still carrying an old `license` declaration.
+
+`GET <plugin-id>/license` is answered for every plugin — free ones answer `required: false` — before
+the activation and license checks, so a locked or inactive plugin's row can still say why. A plugin's
+own `GET license` route wins over the host's.
+
+Keys read `RWP1-ADDON-YYYYMMDD-SIGNATURE`, are case-insensitive, and are signed with HMAC-SHA256 over
+`RWP1|ADDON|YYYYMMDD` (`server/pluginLicense.mjs`, mirrored for the browser in
+`src/lib/pluginLicense.js`), so a key cannot be re-scoped to another addon or moved between plugins.
+Mint and verify one from a shell:
+
+```bash
+node server/pluginLicense.mjs mint --plugin rwp-shop --days 365
+node server/pluginLicense.mjs verify RWP1-SHOP-20270630-0VX7JSKV7Z
+```
+
+The default signing secret ships with the site on purpose — the check has to work offline, with no
+license server and no phone home — which makes a key an entitlement record rather than a cryptographic
+paywall. `PLUGIN_LICENSE_SECRET` replaces it for an installation whose keys only it should be able to
+mint; `mint` prints which secret signed the key and warns when the key is already expired.
+
+Keys are entered under **Plugins**, one per plugin, and stored together in the `rwp_plugin_licenses`
+option as `{ "<plugin-id>": "<key>" }`. A saved key is in force for the next request — no restart.
+When the option cannot be read at all the state is *unknown*, and an unknown state lets the request
+through and logs: a database hiccup must never take a working shop down.
+
+## Development-edition plugins
+
+`rwp-ai-factory` and `rwp-saas-installer` never ship to a customer: they are the central
+administration's own tools, listed in `DEV_EDITION_PLUGINS` (`src/lib/pluginEdition.js`) and marked
+`"edition": "dev"` in their manifest.
+
+- `.gitattributes` marks both folders `export-ignore`, so `git archive`, GitHub's "Download ZIP", a
+  template export and `npm pack` leave them out. A clone of this repository — the development
+  edition — still has them.
+- `RWP_EDITION=public` drops them: the server answers `404` for their routes (`server/plugins.mjs`) and
+  a build made with the same variable refuses to register them (`registerPlugin` in `src/lib/rwp.tsx`),
+  so they cannot appear under Plugins or add an admin screen either.
+- `npm run check:plugins` fails if the list, the two manifests or the two `export-ignore` lines drift
+  apart, and prints the license and edition of every plugin folder.
+
+Adding a plugin to this edition is a three-file change: its id in `DEV_EDITION_PLUGINS`,
+`"edition": "dev"` in its `manifest.json`, and `plugins/<id> export-ignore` in `.gitattributes`.
 
 The `sample-rwp-plugin` folder is a working example. It registers an admin
 page, a dashboard widget, and a site-title filter. It is discovered by the
@@ -151,21 +211,11 @@ plugin's `server.mjs` proves the Vercel and Supabase credentials it was handed, 
 its schema, then deploys the template repository the installer card saves. It also carries the release
 lifecycle (`GET versions`, `POST update`, `POST rollback`) for sites that already exist.
 
-**The license is verified offline.** `plugins/rwp-saas-installer/license.mjs` signs and checks
-`RWP1-PLAN-SEATS-YYYYMMDD-SIGNATURE` keys with HMAC-SHA256, so activation answers without a license
-server and nothing phones home. Mint and check a key from a shell:
-
-```bash
-node plugins/rwp-saas-installer/license.mjs mint --plan AGENCY --seats 25 --expires 2027-06-30
-node plugins/rwp-saas-installer/license.mjs verify RWP1-AGENCY-25-20270630-0VX7JSKV7Z
-```
-
-The default signing secret ships in that file on purpose — a key is an entitlement record, not a
-paywall — and `SAAS_LICENSE_SECRET` replaces it for an installation whose keys only it should be able
-to mint; `mint` prints which of the two signed the key, and warns when the key is already expired.
-`GET license/status` and `POST license/activate` are the only routes that read it, and both mask the key.
-Without a valid key `POST provision` answers `402` before a Vercel or Supabase credential is used, so a
-wizard that cannot provision costs nothing.
+**Provisioning is free.** The wizard needs no license key and stores none: it proves the Vercel and
+Supabase credentials it was handed, creates the project, and reports how many installations this site
+has handed out through `GET installs/status` (`{ usage: { total, active, days }, message }`), which is
+public and counts only. Commercial licensing is a separate, per-plugin question — see
+[Licensing a plugin](#licensing-a-plugin).
 
 **Installations are counted in `public.saas_installer_installations`**, created by
 `plugins/rwp-saas-installer/schema.sql` when the plugin is activated (`uninstall.sql` drops it, and

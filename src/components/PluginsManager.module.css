@@ -302,3 +302,93 @@ button:disabled {
 .rowSelected td {
   background: #eef2ff;
 }
+
+/*
+ * License column. A free plugin says so and says nothing more - that is the common case, and the one
+ * that must never look like a problem. A commercial plugin's badge is a button, because the only thing
+ * an administrator can do about a locked key is enter a better one.
+ */
+.licenseFree,
+.licenseUnlocked,
+.licenseLocked {
+  display: inline-block;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.licenseFree {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.licenseUnlocked {
+  color: #166534;
+  background: #dcfce7;
+  cursor: pointer;
+}
+
+.licenseLocked {
+  color: #9a3412;
+  background: #ffedd5;
+  cursor: pointer;
+}
+
+.licenseExpiry {
+  display: block;
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 0.73rem;
+  white-space: nowrap;
+}
+
+/* The key field opens under its own row, so a table of free plugins stays a table. */
+.licenseRow td {
+  padding: 0 14px 16px;
+  background: #f8fafc;
+}
+
+.licenseForm {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  padding: 14px;
+  background: #fff;
+}
+
+.licenseForm label {
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.licenseEntry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.licenseInput {
+  flex: 1 1 320px;
+  min-width: 0;
+  border: 1px solid #dbe1ea;
+  border-radius: 7px;
+  padding: 9px 11px;
+  color: #1e293b;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+}
+
+.licenseNote {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}

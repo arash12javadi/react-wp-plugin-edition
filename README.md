@@ -169,18 +169,26 @@ pair from `.env.local` too, so a project that already has the schema applied nee
 <details>
 <summary><b>Bundled plugins</b></summary>
 
-| Plugin | Folder | Purpose |
-|---|---|---|
-| Page Builder | `plugins/rwp-page-builder` | Visual editor, site templates, widgets, AI Section Refine, AI page generator, AI code assistant |
-| Shop | `plugins/rwp-shop` | Products, cart, checkout, coupons, stock, backup/import |
-| Chat | `plugins/rwp-chat` | Live chat, Telegram/WhatsApp hand-off, AI assistant |
-| Code Snippets | `plugins/rwp-code-snippets` | PHP-style snippets and an AI developer assistant |
-| Persian Origins | `plugins/persian-origins` | Bilingual (EN/FA) content and site text translation |
-| Sample Plugin | `plugins/rwp-sample-plugin` | Minimal starting point for your own plugin |
+| Plugin | Folder | License | Purpose |
+|---|---|---|---|
+| Page Builder | `plugins/rwp-page-builder` | `RWP1` key | Visual editor, site templates, widgets, AI Section Refine, AI page generator, AI code assistant |
+| Shop | `plugins/rwp-shop` | `RWP1` key | Products, cart, checkout, coupons, stock, backup/import |
+| Chat | `plugins/rwp-chat` | `RWP1` key | Live chat, Telegram/WhatsApp hand-off, AI assistant |
+| Code Snippets | `plugins/rwp-code-snippets` | `RWP1` key | PHP-style snippets and an AI developer assistant |
+| Persian Origins | `plugins/persian-origins` | Free | Bilingual (EN/FA) content and site text translation |
+| Sample Plugin | `plugins/rwp-sample-plugin` | Free | Minimal starting point for your own plugin |
+
+Those four keys, and nothing else, are the whole licensing policy — see
+[Licensing a commercial plugin](#licensing-a-commercial-plugin). Every other plugin is free and can
+never be locked.
 
 Each plugin that owns tables ships `schema.sql` (run on activation) and `uninstall.sql`
 (run only when an administrator explicitly wipes its data). A site that never enables the shop
 never gets its `shop_*` tables.
+
+Two plugins are deliberately absent: `rwp-ai-factory` and `rwp-saas-installer` belong to the
+development edition and never ship — see
+[Development-edition plugins](#development-edition-plugins-exclusive-never-shipped).
 
 </details>
 
@@ -755,6 +763,67 @@ Note that this applies to files uploaded *after* this convention existed. Shop p
 Both wiping options require typing `DELETE`, which the server checks too. The order on the server is fixed — export, then drop, then remove the folder — so nobody ends up with wiped tables and no backup file. Dropping runs the plugin's `uninstall.sql` in one transaction and then verifies the declared tables are actually gone; if any survived, the whole thing rolls back. Each `uninstall.sql` documents what it deliberately keeps, such as saved page layouts (core columns) and the shop's site templates (ordinary pages an administrator may have hand-edited).
 
 Where the site is built from a repository, removing the code is a commit rather than a `rm` (`server/pluginGitUninstall.mjs`): the folder leaves `plugins/<id>/` on the branch in one commit, and the saved deploy hook is then called, exactly as it is after an upload — so the plugin is gone from the deployed build rather than only from the branch. A host with its own disk removes the folder and rebuilds nothing, because the folder *is* the install.
+
+### Licensing a commercial plugin
+
+The setup wizard, site provisioning and every bundled screen are free: nothing about installing or
+running the site waits on a key. Licensing is **per plugin**, and the policy is one list —
+`COMMERCIAL_PLUGIN_ADDONS` in [`src/lib/pluginLicense.js`](./src/lib/pluginLicense.js). Exactly four
+plugins are sold:
+
+| Plugin | Folder | Key addon |
+|---|---|---|
+| Page Builder | `plugins/rwp-page-builder` | `PAGE-BUILDER` |
+| Shop | `plugins/rwp-shop` | `SHOP` |
+| Chat | `plugins/rwp-chat` | `CHAT` |
+| Code Snippets | `plugins/rwp-code-snippets` | `CODE-SNIPPETS` |
+
+Every other plugin is free, and it can never be locked: the requirement is never read from the plugin
+itself, so neither a flag in a `server.mjs` nor a manifest that travelled inside an uploaded ZIP can
+make a customer's free plugin ask for a key. Adding a plugin to that list is the only way to sell one,
+and `npm run check:plugins` refuses a list that disagrees with the folders — a sold plugin without a
+`server.mjs` to gate, a sold plugin whose addon does not match its id, or a free plugin still carrying
+an old `license` declaration.
+
+Each of the four answers `402` on every one of its own routes until the key stored for it verifies; no
+other plugin, page or endpoint is affected. `GET <plugin-id>/license` is always answered — before the
+activation and license checks, which is exactly when a screen needs to say why — and it returns a
+masked key only. A free plugin answers `{ "required": false }` there.
+
+Keys read `RWP1-ADDON-YYYYMMDD-SIGNATURE`, are case-insensitive, and are signed with HMAC-SHA256 over `RWP1|ADDON|YYYYMMDD`, so a key cannot be re-scoped to another addon or moved between plugins. Mint and verify one from a shell:
+
+```bash
+node server/pluginLicense.mjs mint --plugin rwp-shop --days 365
+node server/pluginLicense.mjs verify RWP1-SHOP-20270630-0VX7JSKV7Z
+```
+
+The default signing secret ships with the site on purpose — the check has to work offline, with no license server and no phone home — which makes a key an entitlement record rather than a cryptographic paywall. `PLUGIN_LICENSE_SECRET` replaces it for an installation whose keys only it should be able to mint; `mint` prints which secret signed the key and warns when the key is already expired.
+
+Enter keys under **Plugins**, where every row carries a **License** cell: **Free** for a plugin that needs nothing, **Locked** or **Unlocked** for one that does, with the expiry date under an unlocked badge and the server's own explanation inside the field. Keys are stored together in the `rwp_plugin_licenses` option as `{ "<plugin-id>": "<key>" }`, so one row holds them all and an administrator can hand a site to someone else without retyping anything. A saved key is in force for the next request, with no restart. If the option cannot be read at all, the gate lets requests through and logs: an unknown state must never take a working shop down.
+
+### Development-edition plugins (exclusive, never shipped)
+
+This repository is the **development edition** — the central administration — and two plugins exist
+only here. `rwp-ai-factory` turns a description into a code snippet or a packaged plugin ZIP;
+`rwp-saas-installer` provisions new sites on a visitor's own Vercel and Supabase accounts and pushes
+releases to sites that already exist. They are the storefront, not something a customer runs, and a
+public copy of this repository must not carry them.
+
+That is enforced in three places, all reading one list (`DEV_EDITION_PLUGINS` in
+[`src/lib/pluginEdition.js`](./src/lib/pluginEdition.js)):
+
+- **Archives.** `.gitattributes` marks both folders `export-ignore`, so `git archive`, GitHub's
+  "Download ZIP", a template export or `npm pack` never contains them. A `git clone` of this
+  repository — the development edition — still has them.
+- **The server.** `RWP_EDITION=public` drops them from the plugin registry (`server/plugins.mjs`), so
+  their routes answer `404` on a public deployment even if the folder was copied in by hand, including
+  the installer's provisioning endpoint.
+- **The browser.** A build made with `RWP_EDITION=public` refuses to register them (`registerPlugin` in
+  `src/lib/rwp.tsx`), so they cannot appear under Plugins, add an admin screen or claim a shortcode
+  there.
+
+`npm run check:plugins` verifies the list, both manifests (`"edition": "dev"`) and the two
+`export-ignore` lines, and prints the license and edition of every plugin folder.
 
 ### Settings → Advanced → Reset Website
 

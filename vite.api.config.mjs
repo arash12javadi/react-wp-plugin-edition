@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import pluginCatalogueDefine from './vite.pluginCatalogue.mjs'
+import { resolveEdition } from './src/lib/pluginEdition.js'
 
 /**
  * Builds the universal Hono API (`src/server/**` + `src/lib/**`) into one self-contained ES module.
@@ -64,6 +65,10 @@ export default defineConfig(async () => ({
   define: {
     __RWP_SCHEMA_SQL__: JSON.stringify(supabaseSchema),
     ...await pluginCatalogueDefine(),
+    // The same edition the browser bundle inlines (`vite.config.js`), so the bundled API and the SPA of
+    // one build agree on which plugins exist. A self-hosted `npm start` reads `RWP_EDITION` directly
+    // instead (`server/plugins.mjs`).
+    __RWP_EDITION__: JSON.stringify(resolveEdition(process.env.RWP_EDITION)),
   },
   // Pure module build: no index.html, no client-side transforms.
   appType: 'custom',
