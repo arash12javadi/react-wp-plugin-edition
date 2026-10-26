@@ -190,6 +190,24 @@
   background: #fef2f2;
 }
 
+/* Informational, so it reads quieter than the two actions that change something. */
+.details {
+  margin-left: 6px;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #4338ca;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.details:hover {
+  background: #eef2ff;
+}
+
 .activate {
   background: #4f46e5;
 }

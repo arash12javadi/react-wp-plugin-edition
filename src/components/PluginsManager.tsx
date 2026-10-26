@@ -14,6 +14,7 @@ import {
 import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './BulkActions';
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
 import PluginUninstallModal from './PluginUninstallModal';
+import PluginDetailsModal from './PluginDetailsModal';
 import { installPluginSchema, isEndpointUnavailable } from '../lib/pluginSchema';
 import styles from './PluginsManager.module.css';
 
@@ -146,6 +147,8 @@ export default function PluginsManager() {
   const [files, setFiles] = useState<PluginFiles>({ available: false, onDisk: [], notBuilt: [], problems: [] });
   /** The plugin whose uninstall dialog is open, or null. */
   const [uninstalling, setUninstalling] = useState<PluginRow | null>(null);
+  /** The plugin whose Details dialog is open, or null. */
+  const [details, setDetails] = useState<PluginRow | null>(null);
   const [pendingInstall] = useState(readPendingInstallResult);
   const [uploadOpen, setUploadOpen] = useState(pendingInstall !== null);
   /** Bumped after an upload so the disk listing (and its "restart to load" notice) is re-read. */
@@ -566,6 +569,9 @@ export default function PluginsManager() {
           }}
         />
       )}
+      {details && (
+        <PluginDetailsModal plugin={details} onClose={() => setDetails(null)} />
+      )}
       {error && <div className={styles.error} role="alert">{error}</div>}
       {feedback && <div className={styles.feedback} role="status">{feedback}</div>}
       <div className={styles.notice}>
@@ -683,6 +689,14 @@ export default function PluginsManager() {
                             onClick={() => { setError(''); setFeedback(''); setUninstalling(plugin); }}
                           >
                             Uninstall
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.details}
+                            onClick={() => setDetails(plugin)}
+                            title={`What ${plugin.name} does, and what it needs before it works`}
+                          >
+                            Details
                           </button>
                         </td>
                       </tr>

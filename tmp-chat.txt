@@ -1,0 +1,13 @@
+﻿113: function Panel({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+162: <Panel title="The widget">
+172: <input type="text" value={settings.chat_launcher_label} maxLength={40} placeholder="e.g. Chat with us"
+246: <Panel title="Pre-chat form" hint="Collects the visitor's details before the conversation starts, so a lead is captured even if they leave straight afterwards.">
+274: <Panel title="Proactive invitation" hint="A speech bubble above the launcher. It is shown at most once per visit and never covers the page.">
+348: <Panel title="How a visitor reaches a person">
+374: <input type="text" inputMode="numeric" placeholder="e.g. 447700900000"
+392: <input type="password" autoComplete="off" placeholder="Leave empty to keep the stored token" {...field('telegram_bot_token')} />
+396: <input type="text" autoComplete="off" placeholder="e.g. -1001234567890" {...field('telegram_chat_id')} />
+408: <input type="url" autoComplete="off" placeholder="https://api.ultramsg.com/instanceXXXX/messages/chat" {...field('whatsapp_api_url')} />
+413: <input type="password" autoComplete="off" placeholder="Leave empty to keep the stored token" {...field('whatsapp_api_token')} />
+417: <input type="text" autoComplete="off" placeholder={secrets?.whatsapp_api_instance || ''} {...field('whatsapp_api_instance')} />
+422: placeholder={secrets?.whatsapp_admin_number || 'e.g. 447700900000'} {...field('whatsapp_admin_number')} />
