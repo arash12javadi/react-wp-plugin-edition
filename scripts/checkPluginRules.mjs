@@ -40,7 +40,7 @@ const EXPECTED_COMMERCIAL = [
 ];
 
 /** The development-edition set, likewise fixed here. */
-const EXPECTED_DEV = ['rwp-ai-factory', 'rwp-saas-installer'];
+const EXPECTED_DEV = ['rwp-ai-factory', 'rwp-saas-installer', 'rwp-plugin-marketplace'];
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginsRoot = path.join(root, 'plugins');
@@ -200,6 +200,6 @@ if (problems.length) {
   for (const problem of problems) console.error(`  - ${problem}`);
   process.exitCode = 1;
 } else {
-  console.log('\nLicensing and edition rules hold: four commercial plugins, everything else free, two development-edition plugins kept out of every archive.');
+  console.log('\nLicensing and edition rules hold: four commercial plugins, everything else free, every development-edition plugin kept out of every archive.');
 }
 

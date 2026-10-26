@@ -31,8 +31,8 @@
  * can tell a free plugin (`required: false`) from a locked one; a plugin that declares that route
  * itself keeps it.
  *
- * Two plugins - `rwp-ai-factory` and `rwp-saas-installer` - belong to the development edition only
- * (`src/lib/pluginEdition.js`) and are not registered at all when this is built as a public site
+ * The development-edition plugins (`rwp-ai-factory`, `rwp-saas-installer` and `rwp-plugin-marketplace`,
+ * listed in `src/lib/pluginEdition.js`) are not registered at all when this is built as a public site
  * (`RWP_EDITION=public`), so their routes answer 404 there whatever is in `plugins/`.
  */
 import { readAiConfig } from './integrationAi.mjs';
@@ -49,6 +49,7 @@ const loaded = await Promise.allSettled([
   import('../plugins/rwp-saas-installer/server.mjs'),
   import('../plugins/rwp-page-builder/server.mjs'),
   import('../plugins/rwp-shop/server.mjs'),
+  import('../plugins/rwp-plugin-marketplace/server.mjs'),
   // rwp:server-plugin-imports:end
 ]);
 

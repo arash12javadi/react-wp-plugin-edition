@@ -3,9 +3,10 @@
  * **development** edition this repository is - the central administration, where the vendor's own
  * tools live.
  *
- * Two plugins exist only here and must never travel: `rwp-ai-factory` (writes code and packaged plugin
- * ZIPs) and `rwp-saas-installer` (provisions new sites on a visitor's own Vercel and Supabase accounts,
- * and releases to sites that already exist). They are labeled "exclusive" in the product for the same
+ * Three plugins exist only here and must never travel: `rwp-ai-factory` (writes code and packaged
+ * plugin ZIPs), `rwp-saas-installer` (provisions new sites on a visitor's own Vercel and Supabase
+ * accounts, and releases to sites that already exist) and `rwp-plugin-marketplace` (the public plugin
+ * storefront and its owner control panel). They are labeled "exclusive" in the product for the same
  * reason: they are the storefront, not a thing a customer runs on their own site.
  *
  * Isolation is enforced in three places, all reading this list:
@@ -38,7 +39,7 @@ export const PUBLIC_EDITION = 'public';
  * Adding an id here is a promise that the folder is also `export-ignore` in `.gitattributes` and that
  * its manifest says `"edition": "dev"`; `npm run check:plugins` fails if the three disagree.
  */
-export const DEV_EDITION_PLUGINS = Object.freeze(['rwp-ai-factory', 'rwp-saas-installer']);
+export const DEV_EDITION_PLUGINS = Object.freeze(['rwp-ai-factory', 'rwp-saas-installer', 'rwp-plugin-marketplace']);
 
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
