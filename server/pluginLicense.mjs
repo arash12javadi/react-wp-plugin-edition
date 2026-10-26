@@ -133,6 +133,35 @@ export const signPluginLicense = ({ plugin, expiresOn, days, secret } = {}) => {
 };
 
 /**
+ * The addon a marketplace catalogue slug names, when that slug is one of the four sold plugins.
+ *
+ * The marketplace lists plugins by `slug` (`rwp-shop`, or a slug whose addon is `SHOP`), not by the
+ * id `pluginLicenseAddonFor` keys off. Matching a slug to its commercial addon here is what lets the
+ * marketplace mint the same `RWP1-…` key the plugin's own gate verifies, without the browser or the
+ * database ever holding the signing secret. A slug that is not a sold plugin returns `''`, and the
+ * marketplace keeps issuing its opaque `RWPM-…` update token for it.
+ */
+export const marketplaceAddonFor = (slug) => {
+  const id = str(slug);
+  if (Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) return COMMERCIAL_PLUGIN_ADDONS[id];
+  const addon = pluginLicenseAddon(id);
+  return Object.values(COMMERCIAL_PLUGIN_ADDONS).includes(addon) ? addon : '';
+};
+
+/**
+ * The key the marketplace hands a buyer for one plugin, and the addon it unlocks.
+ *
+ * For a sold plugin this is the signed `RWP1-ADDON-YYYYMMDD-SIGNATURE` key `pluginLicenseState`
+ * verifies, so pasting it into a site's Plugins screen lifts the gate immediately - no restart, no
+ * re-upload. For any other plugin both fields are empty and the caller keeps its opaque token.
+ */
+export const marketplacePluginKey = ({ slug, days, expiresOn, secret } = {}) => {
+  const addon = marketplaceAddonFor(slug);
+  if (!addon) return { addon: '', key: '' };
+  return { addon, key: signPluginLicense({ plugin: addon, days, expiresOn, secret }) };
+};
+
+/**
  * The verdict on one plugin's stored key, in one object, so every caller says the same thing about the
  * same key: the Plugins screen, `GET <plugin>/license` and the 402 a locked plugin's routes answer.
  *
