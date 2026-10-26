@@ -157,6 +157,11 @@ option as `{ "<plugin-id>": "<key>" }`. A saved key is in force for the next req
 When the option cannot be read at all the state is *unknown*, and an unknown state lets the request
 through and logs: a database hiccup must never take a working shop down.
 
+A sold plugin without a verifying key is **inactive** as well as refused: the Plugins screen shows it
+**Inactive** with **Activate** disabled, `App.tsx` does not run it, and `server/plugins.mjs` drops it
+from the active set (`licensedActivePluginIds`) even when `rwp_active_plugins` lists it. Opening the
+screen with such a row writes that verdict back, so the stored state matches what runs.
+
 ## Development-edition plugins
 
 `rwp-ai-factory` and `rwp-saas-installer` never ship to a customer: they are the central

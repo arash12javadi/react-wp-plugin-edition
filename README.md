@@ -790,6 +790,15 @@ other plugin, page or endpoint is affected. `GET <plugin-id>/license` is always 
 activation and license checks, which is exactly when a screen needs to say why — and it returns a
 masked key only. A free plugin answers `{ "required": false }` there.
 
+Without a key a sold plugin is also **inactive**, not merely refused, because **Active** is a state a
+site either may be in or may not. The Plugins screen paints one of the four **Inactive** with its
+**Activate** button disabled until a key verifies, `App.tsx` refuses to run it, and
+`server/plugins.mjs` drops it from the active set on every request (`licensedActivePluginIds`) even
+when `rwp_active_plugins` still lists it. Opening Plugins with such a row writes the verdict back — the
+`plugins` row, the option and the plugin's own deactivation hooks — so the stored state stops
+disagreeing with what runs. Only a settled verdict does that: a host that does not answer, or a key
+option that cannot be read, leaves the stored choice alone.
+
 Keys read `RWP1-ADDON-YYYYMMDD-SIGNATURE`, are case-insensitive, and are signed with HMAC-SHA256 over `RWP1|ADDON|YYYYMMDD`, so a key cannot be re-scoped to another addon or moved between plugins. Mint and verify one from a shell:
 
 ```bash

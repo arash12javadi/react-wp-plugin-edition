@@ -27,9 +27,11 @@
  * each of them answers 402 to every route until the key stored for it in the `rwp_plugin_licenses`
  * option verifies. Everything else - the setup wizard, site provisioning, and every plugin that is not
  * on that list - is untouched, and a plugin cannot join the list by declaring anything itself.
- * `GET <plugin-id>/license` reports the state (never the key) for every plugin, so the Plugins screen
- * can tell a free plugin (`required: false`) from a locked one; a plugin that declares that route
- * itself keeps it.
+ * The activation check below is license-aware too (`licensedActivePluginIds`): one of the four with no
+ * verified key is inactive even when `rwp_active_plugins` still lists it, because "Active" is a state a
+ * site either may be in or may not. `GET <plugin-id>/license` reports the state (never the key) for
+ * every plugin, so the Plugins screen can tell a free plugin (`required: false`) from a locked one; a
+ * plugin that declares that route itself keeps it.
  *
  * The development-edition plugins (`rwp-ai-factory`, `rwp-saas-installer` and `rwp-plugin-marketplace`,
  * listed in `src/lib/pluginEdition.js`) are not registered at all when this is built as a public site
@@ -38,8 +40,8 @@
 import { readAiConfig } from './integrationAi.mjs';
 import { currentEdition, editionKeepsPlugin } from '../src/lib/pluginEdition.js';
 import {
-  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds, pluginLicenseAddonFor,
-  pluginLicenseGate, pluginLicenseState, readPluginLicenses,
+  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds, licensedActivePluginIds,
+  pluginLicenseAddonFor, pluginLicenseGate, pluginLicenseState, readPluginLicenses,
 } from './pluginLicense.mjs';
 
 const loaded = await Promise.allSettled([
@@ -82,8 +84,10 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
  *
  * `active: null` means the option is absent, which App.tsx reads as "every free plugin is active and
  * none of the sold ones is" (`defaultActivePluginIds`), so the four commercial plugins are off until
- * somebody activates them. `licenses: null` means the license option could not be read at all, which
- * the gate treats as "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
+ * somebody activates them; when the option is present, `licensedActivePluginIds` drops any sold plugin
+ * whose key does not verify, so "active" here is always a state the site is allowed to be in.
+ * `licenses: null` means the license option could not be read at all, which the gate treats as
+ * "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
  */
 const optionCache = { at: 0, active: null, licenses: null };
 const OPTION_CACHE_MS = 30_000;
@@ -218,17 +222,23 @@ export async function handlePluginRequest(request) {
   }
 
   const options = await readOptions();
+  // A sold plugin whose key does not verify is inactive here even when `rwp_active_plugins` still lists
+  // it: the state is forced rather than merely refused, so no route of an unlicensed plugin can run and
+  // the answer is the same one an administrator sees on the Plugins screen, which writes the correction
+  // back (it has the administrator's own token; this server holds the publishable key and may not).
   // Nothing chosen yet: the free plugins answer and the four sold ones do not, so a site handed out
   // by the installer never runs a plugin nobody licensed. Activating one writes the option.
-  const activeIds = options.active ?? defaultActivePluginIds(serverPlugins.map((item) => item.id));
-  if (!activeIds.includes(plugin.id)) {
-    return { status: 404, body: { error: `The plugin "${plugin.id}" is not active. Activate it under Plugins.` } };
-  }
+  const activeIds = licensedActivePluginIds(
+    options.active ?? defaultActivePluginIds(serverPlugins.map((item) => item.id)),
+    options.licenses,
+  );
 
   // A commercial plugin answers nothing until its key verifies. 402 rather than 403: the request is
   // well formed and nothing is forbidden - what is missing is this site's right to use the plugin. The
   // body carries the same sentence the Plugins screen shows, so a plugin's own UI can display it, plus
-  // a `code` a client can branch on without matching prose, and the address a key comes from.
+  // a `code` a client can branch on without matching prose, and the address a key comes from. Asked
+  // before the activation check because "this site has no key" is the more useful answer for one of the
+  // four, and because it is the same verdict that emptied `activeIds` above.
   const gate = pluginLicenseGate({ plugin, licenses: options.licenses });
   if (gate && !gate.licensed) {
     return {
@@ -242,6 +252,10 @@ export async function handlePluginRequest(request) {
         shop: PLUGIN_LICENSE_SHOP_URL,
       },
     };
+  }
+
+  if (!activeIds.includes(plugin.id)) {
+    return { status: 404, body: { error: `The plugin "${plugin.id}" is not active. Activate it under Plugins.` } };
   }
 
   const route = matchRoute(plugin.routes, request.method, routePath);

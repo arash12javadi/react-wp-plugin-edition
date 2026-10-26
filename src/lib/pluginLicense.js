@@ -202,6 +202,48 @@ export const pluginLicenseAddonFor = (plugin) => {
 export const isCommercialPlugin = (plugin) => pluginLicenseAddonFor(plugin) !== '';
 
 /**
+ * True when a plugin may not be active because its key has not verified.
+ *
+ * `licensed` is the host's own verdict - the `licensed` field of `GET <plugin>/license` - and anything
+ * other than a literal `true` counts as unverified, including "no verdict yet" and "the host did not
+ * answer". That strictness is the point: a sold plugin is inactive until a key checks out, so there is
+ * no moment in which the Plugins screen could paint a green **Active** badge beside a **Locked** one.
+ * Free plugins are never locked, which is why this reads `COMMERCIAL_PLUGIN_ADDONS` and never the
+ * report alone - a host that answers nothing must not turn a free plugin into a locked one.
+ *
+ * One predicate for the places that decide what runs:
+ *   - the Plugins screen, for the badge, the Activate button and the state it writes back;
+ *   - `server/plugins.mjs`, through `licensedActivePluginIds()` in `server/pluginLicense.mjs`;
+ *   - `App.tsx`, which refuses to run a sold plugin on a settled "no". It uses the same rule but reads
+ *     "no answer" and `status: 'unknown'` as "keep the stored choice", because a published page must not
+ *     lose a renderer to a request that failed - and the routes are still gated on the server, so a
+ *     tolerated answer is never an unlocked one.
+ */
+export const pluginActivationLocked = (plugin, licensed) => isCommercialPlugin(plugin) && licensed !== true;
+
+/**
+ * The host's verdict on one plugin's license, or `null` when the host could not be asked.
+ *
+ * `null` is not "free": it is "no answer", and each caller decides what that means for the plugin in
+ * front of it. The Plugins screen reads it as locked for a sold plugin (`pluginActivationLocked`),
+ * because a plugin nobody verified may not be shown as active; `App.tsx` keeps the stored choice,
+ * because a public page must not lose its renderer to a request that failed. The server still gates
+ * every route of the four sold plugins either way, so no answer is never an unlock.
+ *
+ * `GET <plugin>/license` is host-owned and read-only (see `server/plugins.mjs`): it reports whether the
+ * plugin needs a key and whether the stored one still holds, and never returns a key.
+ */
+export const fetchPluginLicenseReport = async (pluginId) => {
+  try {
+    const response = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/license`, { cache: 'no-store' });
+    const payload = await response.json().catch(() => null);
+    return response.ok && payload?.success ? payload : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The plugins a site runs when nobody has chosen: every free plugin, and none of the sold ones.
  *
  * A missing `rwp_active_plugins` option used to mean "every bundled plugin is active", which switched

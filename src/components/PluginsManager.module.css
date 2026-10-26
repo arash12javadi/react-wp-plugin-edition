@@ -249,6 +249,16 @@ button:disabled {
   opacity: 0.65;
 }
 
+/*
+ * A locked plugin's Activate button is disabled because there is no key, not because something is
+ * happening: `button:disabled` above says "wait", which would read as "your click is being processed"
+ * beside a key that was never entered. It keeps the disabled look and gets the honest cursor.
+ */
+.activateLocked:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .empty,
 .status {
   display: grid;

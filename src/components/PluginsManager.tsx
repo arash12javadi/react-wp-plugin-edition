@@ -1,11 +1,13 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { describeDbError, client, getOption, updateOption } from '../lib/db';
 import { rwp, type RwpInstalledPlugin } from '../lib/rwp';
 import {
   PLUGIN_LICENSES_OPTION,
   PLUGIN_LICENSE_SHOP_URL,
   defaultActivePluginIds,
+  fetchPluginLicenseReport,
   isCommercialPlugin,
+  pluginActivationLocked,
   pluginLicenseAddonFor,
   pluginLicenseKeyFrom,
   pluginLicenseParts,
@@ -100,22 +102,16 @@ const readOptionIds = (value: string | null | undefined): string[] => {
 };
 
 /**
- * The host's verdict on one plugin's license.
+ * The host's verdict on one plugin's license, typed for this screen.
  *
- * `null` means "no report": a plugin with no `server.mjs` has nothing to gate, and a host that cannot
- * answer (a static build with no `/api/plugins`) must not make a free plugin look locked. This screen
- * therefore reads a missing report as free, which is what it is — the gate lives in the server, so a
- * plugin that answers nothing here cannot be refused there either.
+ * `null` means "no report", which is **not** a licence: for one of the four sold plugins the row then
+ * shows **Locked** and **Inactive**, because `pluginActivationLocked` treats anything but a literal
+ * `true` as unverified. A free plugin is free because `isCommercialPlugin` says so, never because a
+ * request failed. The fetching is `fetchPluginLicenseReport` in `src/lib/pluginLicense.js`, so `App.tsx`
+ * asks the same question in the same way.
  */
-const fetchPluginLicense = async (pluginId: string): Promise<PluginLicenseReport | null> => {
-  try {
-    const response = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/license`, { cache: 'no-store' });
-    const payload = (await response.json().catch(() => null)) as PluginLicenseReport | null;
-    return response.ok && payload?.success ? payload : null;
-  } catch {
-    return null;
-  }
-};
+const fetchPluginLicense = async (pluginId: string): Promise<PluginLicenseReport | null> =>
+  await fetchPluginLicenseReport(pluginId) as PluginLicenseReport | null;
 
 /**
  * The keys in one line for a locked plugin: what is stored (masked) and what to do about it.
@@ -155,7 +151,10 @@ export default function PluginsManager() {
   const [reloadKey, setReloadKey] = useState(0);
   /** Every stored key, `{ [pluginId]: key }`, as the `rwp_plugin_licenses` option holds them. */
   const [licenseKeys, setLicenseKeys] = useState<Record<string, string>>({});
-  /** The host's verdict per plugin. A plugin with no entry has no server module, so nothing gates it. */
+  /**
+   * The host's verdict per plugin. A plugin with no entry is one the host did not report on - free,
+   * unless it is one of the four sold plugins, which stay locked until an entry says otherwise.
+   */
   const [licenseReports, setLicenseReports] = useState<Record<string, PluginLicenseReport>>({});
   /** The key being typed, per plugin: a draft, so a saved key is not overwritten by a re-read. */
   const [licenseDrafts, setLicenseDrafts] = useState<Record<string, string>>({});
@@ -163,16 +162,39 @@ export default function PluginsManager() {
   const [licenseOpenId, setLicenseOpenId] = useState('');
   const [licenseSavingId, setLicenseSavingId] = useState('');
 
+  /**
+   * The table's truth: a sold plugin whose key does not verify is **inactive**, whatever its row says.
+   *
+   * `licenseReports` starts empty, so the first paint already shows one of the four as Inactive instead
+   * of flipping a moment later - a row left `active` by an earlier visit can never sit beside a
+   * **Locked** badge. The verdict is `pluginActivationLocked`, the same predicate `server/plugins.mjs`
+   * applies through `licensedActivePluginIds`, so the table and the gate cannot disagree; "no report
+   * yet" is passed through as `undefined`, and unverified is locked. `App.tsx` applies the same rule at
+   * boot but tolerates a failed request, because a public page must not lose a renderer to one.
+   *
+   * This decides what is painted and what may be clicked, not what is stored - the write-back effect
+   * below stores the correction, so a failed read cannot quietly take away a stored choice. Filter
+   * counts, the Activate button and the Delete guard all read these rows, so a screen cannot show a
+   * plugin as Inactive and then refuse to act on it because a hidden column says Active.
+   */
+  const rows = useMemo(() => plugins.map((plugin) => (
+    pluginActivationLocked(plugin.plugin_id, licenseReports[plugin.plugin_id]?.licensed)
+      ? { ...plugin, active: false }
+      : plugin
+  )), [plugins, licenseReports]);
+  /** Plugin ids whose forced-inactive state is being written back, so a re-render cannot write twice. */
+  const correcting = useRef(new Set<string>());
+
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return plugins.filter((plugin) =>
+    return rows.filter((plugin) =>
       (statusFilter === 'all' || (statusFilter === 'active') === Boolean(plugin.active))
       && (!term || [plugin.name, plugin.plugin_id, plugin.description, plugin.author, plugin.version]
         .filter(Boolean).join(' ').toLowerCase().includes(term)));
-  }, [plugins, search, statusFilter]);
+  }, [rows, search, statusFilter]);
   const visibleIds = useMemo(() => visible.map((plugin) => plugin.plugin_id), [visible]);
   const selection = useBulkSelection(visibleIds);
-  const activeCount = plugins.filter((plugin) => plugin.active).length;
+  const activeCount = rows.filter((plugin) => plugin.active).length;
 
   useEffect(() => rwp.subscribe(() => refresh((value) => value + 1)), []);
 
@@ -276,10 +298,21 @@ export default function PluginsManager() {
         setPlugins(mergedRows);
         registeredPlugins.forEach((plugin) => {
           const row = mergedRows.find((item) => item.plugin_id === plugin.id);
-          if (row?.active && !plugin.active) rwp.activatePlugin(plugin.id);
+          // A sold plugin is never switched on from a stored row: the row can be out of date and the key
+          // can have lapsed. Its license report is what decides, `rows` paints that verdict, and App.tsx
+          // has already applied the same rule at boot - so this only ever switches free plugins on.
+          if (row?.active && !plugin.active && !isCommercialPlugin(plugin.id)) rwp.activatePlugin(plugin.id);
           if (!row?.active && plugin.active) rwp.deactivatePlugin(plugin.id);
         });
-        setPlugins(mergedRows.map((row) => ({ ...row, active: rwp.getPlugins().find((plugin) => plugin.id === row.plugin_id)?.active ?? row.active })));
+        // The runtime flag is what actually runs, so a free plugin's row follows it. A sold plugin keeps
+        // the stored value instead: what runs for it is `rows` (forced by its license report), and keeping
+        // the stored truth here is what lets the write-back effect below see - and fix - a row that
+        // disagrees with its verdict. Overwriting it with the runtime "off" would hide that disagreement.
+        setPlugins(mergedRows.map((row) => {
+          if (isCommercialPlugin(row.plugin_id)) return row;
+          const runtime = rwp.getPlugins().find((plugin) => plugin.id === row.plugin_id)?.active;
+          return { ...row, active: runtime ?? row.active };
+        }));
       })
       .catch((loadError: unknown) => {
         if (mounted) {
@@ -306,8 +339,8 @@ export default function PluginsManager() {
    *
    * Two reads rather than one: the keys come from the options row this screen may write, and the verdict
    * comes from the server, which is the only side that can check a signature. A plugin whose report
-   * cannot be fetched keeps no entry, and the table reads that as free - the gate is in the server, so a
-   * plugin that answers nothing here cannot be refused there either.
+   * cannot be fetched keeps no entry, which for one of the four sold plugins means locked (`rows`) and
+   * for anything else means free - the gate is in the server either way.
    */
   useEffect(() => {
     if (loading) return;
@@ -325,6 +358,64 @@ export default function PluginsManager() {
     })();
     return () => { mounted = false; };
   }, [loading, plugins]);
+
+  /**
+   * Writes the forced state back: a sold plugin whose key does not verify is stored inactive.
+   *
+   * `rows` already paints it that way and the server refuses its routes, so this is what stops the
+   * stored state from disagreeing with both - the `plugins` row and `rwp_active_plugins` are switched
+   * off, the plugin's own deactivation hooks run, and every screen and every boot from here reads one
+   * answer. It runs in the browser rather than in `server/plugins.mjs` because that server holds the
+   * publishable key, which may not write `options`; the administrator's own token, which got them to
+   * this screen, may.
+   *
+   * Only a settled verdict is written. No report at all (the host did not answer) and `unknown` (the
+   * license option could not be read) say nothing about the key, so the row is left exactly as the
+   * administrator left it - a key store that is briefly unreadable must not switch a paying site's shop
+   * off. The Activate button is disabled for the same rows, so this is a correction, not a race.
+   */
+  useEffect(() => {
+    if (loading) return;
+    const stale = plugins.filter((plugin) => {
+      const report = licenseReports[plugin.plugin_id];
+      return plugin.active && Boolean(report?.required) && !report?.licensed && report?.status !== 'unknown';
+    });
+    const ids = stale
+      .map((plugin) => plugin.plugin_id)
+      .filter((pluginId) => !correcting.current.has(pluginId));
+    if (!ids.length) return;
+    ids.forEach((pluginId) => correcting.current.add(pluginId));
+    let mounted = true;
+    void (async () => {
+      const supabase = client;
+      try {
+        const { data, error: updateError } = await supabase
+          .from('plugins')
+          .update({ active: false, updated_at: new Date().toISOString() })
+          .in('plugin_id', ids)
+          .select('plugin_id');
+        if (updateError) throw updateError;
+        if ((data || []).length < ids.length) {
+          throw new Error(`The database switched off ${(data || []).length} of ${ids.length} plugin rows: row level security skipped the rest. Managing plugins needs the activate_plugins capability.`);
+        }
+        const nextIds = activeIds.filter((id) => !ids.includes(id));
+        if (!(await updateOption(activationOption, nextIds))) {
+          throw new Error('The plugins were switched off in the table, but the activation state could not be saved.');
+        }
+        ids.forEach((id) => rwp.deactivatePlugin(id));
+        if (!mounted) return;
+        setActiveIds(nextIds);
+        setPlugins((current) => current.map((item) => (ids.includes(item.plugin_id) ? { ...item, active: false } : item)));
+        const names = plugins.filter((plugin) => ids.includes(plugin.plugin_id));
+        setFeedback(`${describe(names)} ${names.length === 1 ? 'was' : 'were'} switched off: ${names.length === 1 ? 'its license key does not verify' : 'their license keys do not verify'}, and a sold plugin stays inactive until one does. Save a valid key in the License column to activate ${names.length === 1 ? 'it' : 'them'} again.`);
+      } catch (syncError: unknown) {
+        if (mounted) setError(syncError instanceof Error ? syncError.message : describeDbError(syncError));
+      } finally {
+        ids.forEach((pluginId) => correcting.current.delete(pluginId));
+      }
+    })();
+    return () => { mounted = false; };
+  }, [loading, plugins, licenseReports, activeIds]);
 
   /**
    * Stores one plugin's key, or removes it when the field is left empty.
@@ -370,7 +461,7 @@ export default function PluginsManager() {
       });
       setFeedback(report
         ? `${plugin.name}: ${report.message}`
-        : `${plugin.name}: the key was saved. This host reports no license for it, so nothing is gated.`);
+        : `${plugin.name}: the key was saved, but this host reports no license verdict for it, so the plugin stays inactive until it does.`);
       if (report?.licensed) setLicenseOpenId('');
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : describeDbError(saveError));
@@ -387,6 +478,10 @@ export default function PluginsManager() {
    * a browser cannot talk it round - but switching on a plugin that can only answer 402 leaves a site
    * with a shop on the menu and a 402 behind it, so the answer here is the key field plus where to get
    * a key, not an "Active" badge that lies.
+   *
+   * The test is `pluginActivationLocked`, the same one behind the row's badge, so the bulk action and the
+   * disabled per-row button cannot disagree: a report that never arrived counts as no key, because a host
+   * that cannot verify one cannot say the plugin is licensed either.
    */
   const setActive = async (targets: PluginRow[], nextActive: boolean) => {
     const changing = targets.filter((plugin) => plugin.active !== nextActive);
@@ -395,10 +490,9 @@ export default function PluginsManager() {
       return;
     }
     if (nextActive) {
-      const locked = changing.filter((plugin) => {
-        const report = licenseReports[plugin.plugin_id];
-        return Boolean(report?.required) && !report?.licensed;
-      });
+      const locked = changing.filter((plugin) => (
+        pluginActivationLocked(plugin.plugin_id, licenseReports[plugin.plugin_id]?.licensed)
+      ));
       if (locked.length) {
         const names = locked.map((plugin) => `${plugin.name} (${pluginLicenseAddonFor(plugin.plugin_id)})`).join(', ');
         setFeedback('');
@@ -519,7 +613,7 @@ export default function PluginsManager() {
   };
 
   const onBulk = (action: string, ids: string[]) => {
-    const targets = plugins.filter((plugin) => ids.includes(plugin.plugin_id));
+    const targets = rows.filter((plugin) => ids.includes(plugin.plugin_id));
     if (action === 'activate') void setActive(targets, true);
     if (action === 'deactivate') void setActive(targets, false);
     if (action === 'delete') void deletePlugins(targets);
@@ -575,7 +669,7 @@ export default function PluginsManager() {
       {error && <div className={styles.error} role="alert">{error}</div>}
       {feedback && <div className={styles.feedback} role="status">{feedback}</div>}
       <div className={styles.notice}>
-        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one. They arrive <strong>inactive</strong> and stay that way until their key checks out, so a new site carries nothing it cannot use. <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">Buy a key</a> when you want one.
+        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one. They arrive <strong>inactive</strong> and stay that way until their key checks out, so a new site carries nothing it cannot use; if a key later stops verifying, the plugin is switched back to <strong>inactive</strong> here and on the server, and nothing of it runs. <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">Buy a key</a> when you want one.
       </div>
       {!files.available && files.reason && (
         <div className={styles.notice} role="status">Plugin folders could not be checked, so Delete is unavailable: {files.reason}</div>
@@ -626,6 +720,13 @@ export default function PluginsManager() {
                 {visible.map((plugin) => {
                   const report = licenseReports[plugin.plugin_id];
                   const open = licenseOpenId === plugin.plugin_id;
+                  // One of the four is locked until a report says its key verifies. `isCommercialPlugin`
+                  // rather than `report.required`, so a host that answered nothing shows **Locked** rather
+                  // than **Free** - the plugin is sold either way, and a free plugin is never locked by a
+                  // missing answer.
+                  const needsKey = isCommercialPlugin(plugin.plugin_id) || Boolean(report?.required);
+                  const unlocked = Boolean(report?.licensed);
+                  const locked = needsKey && !unlocked;
                   return (
                     <Fragment key={plugin.plugin_id}>
                       <tr className={selection.isSelected(plugin.plugin_id) ? styles.rowSelected : undefined}>
@@ -636,7 +737,7 @@ export default function PluginsManager() {
                         <td>{plugin.author || '—'}</td>
                         <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
                         <td>
-                          {!report || !report.required ? (
+                          {!needsKey ? (
                             <span
                               className={styles.licenseFree}
                               title={report?.message || 'This plugin has no server routes, so there is nothing to gate.'}
@@ -647,17 +748,17 @@ export default function PluginsManager() {
                             <div className={styles.licenseCell}>
                               <button
                                 type="button"
-                                className={report.licensed ? styles.licenseUnlocked : styles.licenseLocked}
+                                className={unlocked ? styles.licenseUnlocked : styles.licenseLocked}
                                 onClick={() => setLicenseOpenId(open ? '' : plugin.plugin_id)}
                                 aria-expanded={open}
-                                title={report.message}
+                                title={report?.message || 'Sold separately: paste the key this plugin was issued.'}
                               >
-                                {report.licensed ? 'Unlocked' : 'Locked'}
+                                {unlocked ? 'Unlocked' : 'Locked'}
                               </button>
-                              {report.licensed && report.expiresOn
+                              {unlocked && report?.expiresOn
                                 ? <small className={styles.licenseExpiry}>to {report.expiresOn}</small>
                                 : null}
-                              {!report.licensed ? (
+                              {!unlocked ? (
                                 <a
                                   className={styles.shopLink}
                                   href={SHOP_URL}
@@ -673,11 +774,11 @@ export default function PluginsManager() {
                         <td>
                           <button
                             type="button"
-                            className={plugin.active ? styles.deactivate : styles.activate}
-                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
+                            className={plugin.active ? styles.deactivate : `${styles.activate}${locked ? ` ${styles.activateLocked}` : ''}`}
+                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id || (!plugin.active && locked)}
                             onClick={() => void setActive([plugin], !plugin.active)}
-                            title={!plugin.active && report?.required && !report.licensed
-                              ? 'Sold separately: save a key in the License column, then activate.'
+                            title={!plugin.active && locked
+                              ? `Sold separately: save a key in the License column, then activate. Keys are sold at ${SHOP_URL}.`
                               : undefined}
                           >
                             {savingId === plugin.plugin_id ? 'Saving…' : plugin.active ? 'Deactivate' : 'Activate'}
@@ -700,7 +801,7 @@ export default function PluginsManager() {
                           </button>
                         </td>
                       </tr>
-                      {open && report ? (
+                      {open ? (
                         <tr className={styles.licenseRow}>
                           <td colSpan={8}>
                             <form
@@ -731,7 +832,11 @@ export default function PluginsManager() {
                                   Close
                                 </button>
                               </div>
-                              <p className={styles.licenseNote}>{licenseDetail(report)}</p>
+                              <p className={styles.licenseNote}>
+                                {report
+                                  ? licenseDetail(report)
+                                  : 'This host did not report a license verdict for this plugin, so it cannot be activated until it does. The key is saved either way.'}
+                              </p>
                               <p className={styles.licenseNote}>
                                 Only this plugin is affected: everything else on the site, including setup, stays free.
                                 Leave the field empty and save to remove the stored key.{' '}

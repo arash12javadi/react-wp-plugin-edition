@@ -26,7 +26,7 @@ import { pageViewLink } from './lib/contentBulk';
 import { accountPageByPath, accountTarget, signOutAndRedirect, type AccountPageKey } from './lib/account';
 import { startSessionGovernor } from './lib/session';
 import { useCurrentProfile } from './lib/profiles';
-import { defaultActivePluginIds } from './lib/pluginLicense';
+import { defaultActivePluginIds, fetchPluginLicenseReport, isCommercialPlugin } from './lib/pluginLicense';
 import { describeDbError } from './lib/db';
 import { bootDatabase, checkInstallOnServer, clearStoredSession, type BootFailure } from './lib/boot';
 import {
@@ -92,8 +92,25 @@ const initializePlugins = async (supabase: Client) => {
   const activeIds = activeRow
     ? readPluginIds(activeRow.option_value)
     : defaultActivePluginIds(registered.map((plugin) => plugin.id));
+
+  // A sold plugin runs only while the host's own report says its key verifies: unlicensed is inactive,
+  // here as on the Plugins screen and in `server/plugins.mjs`. Only a settled "no" switches one off -
+  // a missing report (the API did not answer) and `status: 'unknown'` (the key store could not be read)
+  // are not verdicts, and a published page must not lose its shop's renderer to a request that failed.
+  // The stored state itself is corrected by the Plugins screen, which writes with the administrator's
+  // own token; this boot only decides what to run.
+  const refused = new Set<string>();
+  await Promise.all(registered
+    .filter((plugin) => activeIds.includes(plugin.id) && isCommercialPlugin(plugin.id))
+    .map(async (plugin) => {
+      const report = await fetchPluginLicenseReport(plugin.id) as {
+        required?: boolean; licensed?: boolean; status?: string;
+      } | null;
+      if (report?.required && !report.licensed && report.status !== 'unknown') refused.add(plugin.id);
+    }));
+
   registered.forEach((plugin) => {
-    if (activeIds.includes(plugin.id)) rwp.activatePlugin(plugin.id);
+    if (activeIds.includes(plugin.id) && !refused.has(plugin.id)) rwp.activatePlugin(plugin.id);
   });
 };
 

@@ -256,6 +256,28 @@ export const pluginLicenseGate = ({ plugin, licenses, now, secret } = {}) => {
 };
 
 /**
+ * The active ids a site may actually run: every free plugin, plus a sold one only while its key holds.
+ *
+ * `rwp_active_plugins` is where an administrator's choice is written, but it is not the last word: a
+ * commercial plugin whose key is missing, expired or for another addon is *inactive*, whatever that
+ * option or the `plugins` row still says. `server/plugins.mjs` calls this before it answers a route,
+ * so the forced state is what a request sees, and the Plugins screen writes the same verdict back so
+ * the stored state stops disagreeing.
+ *
+ * `licenses === null` means the key store could not be read, and unknown is not unlicensed: the list
+ * is returned untouched, because a database hiccup must not take a working shop down. A site that has
+ * simply never stored a key is `{}` - not null - and every sold id in `activeIds` then drops out.
+ */
+export const licensedActivePluginIds = (activeIds, licenses, { now, secret } = {}) => {
+  if (!Array.isArray(activeIds)) return activeIds;
+  if (licenses === null || licenses === undefined) return activeIds;
+  return activeIds.filter((pluginId) => {
+    const gate = pluginLicenseGate({ plugin: { id: pluginId }, licenses, now, secret });
+    return !gate || gate.licensed;
+  });
+};
+
+/**
  * The command line, for the vendor who issues keys.
  *
  * Argv is parsed by hand rather than with `util.parseArgs` so `node server/pluginLicense.mjs mint
