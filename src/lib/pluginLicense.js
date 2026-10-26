@@ -45,9 +45,11 @@ export const PLUGIN_LICENSE_PREFIX = 'RWP1';
  *
  * One constant, because it is said in three places that must not disagree: the Plugins screen beside a
  * locked plugin, the sentence a plugin's own 402 carries, and the "no key stored" verdict the license
- * route returns. A browser-side constant is enough - nothing here is a secret or per-site.
+ * route returns. It points at the plugins page, not the shop's cart: a customer arriving from a locked
+ * plugin wants to read what the plugin does and pick the one they need, and the shop is one click from
+ * there. A browser-side constant is enough - nothing here is a secret or per-site.
  */
-export const PLUGIN_LICENSE_SHOP_URL = 'https://react-wp.com/shop';
+export const PLUGIN_LICENSE_SHOP_URL = 'https://react-wp.com/plugins';
 
 /**
  * The plugins that are sold, and the addon code each one's key carries.

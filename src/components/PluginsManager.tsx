@@ -23,8 +23,10 @@ import styles from './PluginsManager.module.css';
 const activationOption = 'rwp_active_plugins';
 
 /**
- * Where a key is bought, named once in `src/lib/pluginLicense.js` because the server says the same
- * address in the 402 a locked plugin answers and in its "no key stored" verdict.
+ * Where the sold plugins and their keys are offered, named once in `src/lib/pluginLicense.js` because
+ * the server says the same address in the 402 a locked plugin answers and in its "no key stored"
+ * verdict. It is the plugins page rather than the shop: a customer who followed a link out of a locked
+ * plugin row wants to see what the plugin does before they buy.
  */
 const SHOP_URL = PLUGIN_LICENSE_SHOP_URL;
 
@@ -758,16 +760,32 @@ export default function PluginsManager() {
                               {unlocked && report?.expiresOn
                                 ? <small className={styles.licenseExpiry}>to {report.expiresOn}</small>
                                 : null}
-                              {!unlocked ? (
-                                <a
-                                  className={styles.shopLink}
-                                  href={SHOP_URL}
-                                  target="_blank"
-                                  rel="noreferrer noopener"
+                              {/*
+                                The named way into the key field. The badge above toggles it too, but a badge
+                                says what the state is; a customer looking for where to paste a key needs a
+                                control that says what it does.
+                              */}
+                              <div className={styles.licenseActions}>
+                                <button
+                                  type="button"
+                                  className={styles.enterKey}
+                                  onClick={() => { setError(''); setLicenseOpenId(open ? '' : plugin.plugin_id); }}
+                                  aria-expanded={open}
+                                  aria-controls={`license-${plugin.plugin_id}`}
                                 >
-                                  Buy a key
-                                </a>
-                              ) : null}
+                                  {open ? 'Hide key field' : 'Enter license key'}
+                                </button>
+                                {!unlocked ? (
+                                  <a
+                                    className={styles.shopLink}
+                                    href={SHOP_URL}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                  >
+                                    Buy a key
+                                  </a>
+                                ) : null}
+                              </div>
                             </div>
                           )}
                         </td>
@@ -824,6 +842,7 @@ export default function PluginsManager() {
                                   autoComplete="off"
                                   spellCheck={false}
                                   inputMode="text"
+                                  autoFocus
                                 />
                                 <button type="submit" className={styles.activate} disabled={licenseSavingId === plugin.plugin_id}>
                                   {licenseSavingId === plugin.plugin_id ? 'Saving…' : 'Save key'}

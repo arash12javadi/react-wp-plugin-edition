@@ -373,6 +373,38 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* The badge and the named control share a line; "Enter license key" is what a locked row invites. */
+.licenseActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.enterKey {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #1e293b;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.enterKey:hover,
+.enterKey:focus-visible {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.enterKey[aria-expanded='true'] {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 /*
  * Badge plus the way out of the badge. A locked plugin is the one place a price is mentioned, so it
  * carries the shop link itself rather than sending an administrator to hunt for one.
