@@ -3,9 +3,14 @@ import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import AppProvider from './context/AppContext.tsx'
 import { registerBuiltinShortcodes } from './lib/builtin-shortcodes.tsx'
+import { bootRemotePlugins } from './lib/remotePlugins'
 import './index.css'
 
 registerBuiltinShortcodes()
+
+// Hybrid architecture: ask the central server which premium plugins this site is licensed for, and
+// inject their bundles. A no-op for the free core (no stored identity) and on any failure.
+bootRemotePlugins()
 
 // Bundled plugins are discovered by folder convention at build time.
 import.meta.glob('../plugins/*/index.tsx', { eager: true })
