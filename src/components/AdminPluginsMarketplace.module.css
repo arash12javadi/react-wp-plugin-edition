@@ -1,0 +1,178 @@
+.wrap {
+  max-width: 1080px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #172033;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  font-size: 0.86rem;
+  color: #475569;
+}
+
+.banner,
+.notice,
+.error,
+.muted {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+}
+
+.banner {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.notice {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.error {
+  color: #b32d2e;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.muted {
+  color: #64748b;
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+}
+
+.cardTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.category {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #2271b1;
+}
+
+.name {
+  font-size: 0.98rem;
+  color: #172033;
+}
+
+.version {
+  font-size: 0.75rem;
+  font-style: normal;
+  color: #94a3b8;
+}
+
+.description {
+  margin: 0;
+  flex: 1;
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.cardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.price {
+  font-size: 0.95rem;
+  color: #172033;
+}
+
+.owned {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #166534;
+}
+
+.primary,
+.secondary {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary {
+  color: #fff;
+  background: #2271b1;
+}
+
+.primary:hover:not(:disabled),
+.primary:focus-visible {
+  background: #1a5a8a;
+}
+
+.primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.secondary {
+  color: #172033;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+}
+
+.secondary:hover:not(:disabled),
+.secondary:focus-visible {
+  background: #f1f5f9;
+}
+
+.secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.footerNote {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}

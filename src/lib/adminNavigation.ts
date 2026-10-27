@@ -58,7 +58,13 @@ const coreNavigation: AdminNavItem[] = [
     ],
   },
   { id: 'users', label: 'Users', icon: '👥', capability: 'list_users' },
-  { id: 'plugins', label: 'Plugins', icon: '🔌', capability: 'manage_options' },
+  {
+    id: 'plugins', label: 'Plugins', icon: '🔌', capability: 'manage_options',
+    submenu: [
+      { id: 'installed', label: 'Installed Plugins', icon: '🧩' },
+      { id: 'marketplace', label: 'Plugins Marketplace', icon: '🛍️' },
+    ],
+  },
   {
     id: 'settings', label: 'Settings', icon: '⚙️', capability: 'manage_options',
     submenu: [

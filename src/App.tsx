@@ -8,6 +8,7 @@ import MenusScreen from './components/MenusScreen';
 import CommentsManager from './components/CommentsManager';
 import ProfileManager from './components/ProfileManager';
 import PluginsManager from './components/PluginsManager';
+import AdminPluginsMarketplace from './components/AdminPluginsMarketplace';
 import PagesList from './components/PagesList';
 import PageEditor from './components/PageEditor';
 import CategoriesManager from './components/CategoriesManager';
@@ -407,7 +408,7 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
       </Suspense>
     );
   } else if (section === 'plugins') {
-    content = <PluginsManager />;
+    content = subsection === 'marketplace' ? <AdminPluginsMarketplace /> : <PluginsManager />;
   } else if (section === 'comments') {
     content = <CommentsManager />;
   } else if (section === 'profile') {

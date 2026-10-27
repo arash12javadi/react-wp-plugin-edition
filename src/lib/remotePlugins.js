@@ -147,6 +147,50 @@ export const activateRemoteLicense = async (licenseKey, domain = window.location
   }
 };
 
+/**
+ * The central marketplace catalogue (metadata only). Never throws, so the admin tab can render a
+ * friendly "the licensing server is unreachable" state instead of crashing the screen.
+ */
+export const fetchRemoteCatalog = async () => {
+  const base = remoteLicenseBaseUrl();
+  if (!base) return { ok: false, reason: 'not_configured', items: [] };
+  try {
+    const response = await fetch(`${remoteRoute('catalog')}`, { cache: 'no-store' });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      return { ok: false, reason: payload?.reason || 'http_error', items: [] };
+    }
+    return { ok: true, items: Array.isArray(payload.items) ? payload.items : [] };
+  } catch {
+    return { ok: false, reason: 'network_error', items: [] };
+  }
+};
+
+/**
+ * Opens a NOWPayments invoice for one plugin, authenticated by the site identity already stored in
+ * this browser. A GET on purpose (see the server's `remote/checkout`), so the cross-origin request
+ * needs no CORS preflight. Returns `{ ok, paymentUrl, orderId, pluginId }` or a reason to show.
+ */
+export const startRemoteCheckout = async (pluginId, domain = window.location.origin) => {
+  const identity = readSiteIdentity();
+  const base = remoteLicenseBaseUrl();
+  if (!base) return { ok: false, reason: 'not_configured' };
+  if (!identity.siteToken || !identity.licenseKey) return { ok: false, reason: 'not_activated' };
+  try {
+    const params = new URLSearchParams({
+      siteToken: identity.siteToken,
+      licenseKey: identity.licenseKey,
+      pluginId,
+      domain,
+    });
+    const response = await fetch(`${remoteRoute('checkout')}?${params.toString()}`, { cache: 'no-store' });
+    const payload = await response.json().catch(() => null);
+    return payload || { ok: false, reason: 'http_error' };
+  } catch {
+    return { ok: false, reason: 'network_error' };
+  }
+};
+
 const injectedScripts = new Map();
 
 /** Injects one remote bundle. Returns a cleanup that removes the script. */
@@ -194,4 +238,32 @@ export const bootRemotePlugins = async () => {
     cleanups.push(injectRemoteScript({ pluginId: plugin.pluginId, entryUrl, integrity: plugin.integrity }));
   }
   return cleanups;
+};
+
+let syncInFlight = null;
+
+/**
+ * A post-purchase "state sync": re-verify the license and inject any plugin that is now entitled but
+ * was not loaded at boot. Used by the admin marketplace after a payment confirms, so a plugin the user
+ * just bought starts working without a page reload. Idempotent; concurrent calls share one request.
+ */
+export const syncRemotePlugins = async () => {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = (async () => {
+    const identity = readSiteIdentity();
+    if (!identity.siteToken || !identity.licenseKey) return [];
+    installRemoteRegistry();
+    const report = await verifyRemoteLicense(identity);
+    if (!report || report.status !== 'active') return [];
+
+    const cleanups = [];
+    for (const plugin of report.plugins || []) {
+      if (!plugin.pluginId || !plugin.assetToken) continue;
+      const entryUrl = `${remoteRoute(`plugins/${encodeURIComponent(plugin.pluginId)}/entry`)}?t=${encodeURIComponent(plugin.assetToken)}`;
+      // injectRemoteScript replaces any previous script for the same plugin id, so re-syncing is safe.
+      cleanups.push(injectRemoteScript({ pluginId: plugin.pluginId, entryUrl, integrity: plugin.integrity }));
+    }
+    return cleanups;
+  })().finally(() => { syncInFlight = null; });
+  return syncInFlight;
 };
