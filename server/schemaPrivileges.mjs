@@ -47,7 +47,26 @@ revoke all on table public.follows from anon;
 revoke all on table public.taxonomy_follows from anon;
 revoke all on table public.bookmarks from anon;
 revoke insert, update, delete on table public.theme_settings from anon;
-revoke insert, update, delete on table public.rwp_translations from anon;`;
+revoke insert, update, delete on table public.rwp_translations from anon;
+
+-- Three system_settings rows are the platform owner's rather than the site's — the GitHub credential
+-- this installation publishes with, the deploy hook that rebuilds it, and the template it provisions new
+-- sites from. The policy is restrictive so it ANDs with the permissive manage_options ones: an
+-- administrator keeps every other row and loses exactly these three. It lives here, with the grants,
+-- because this block runs after whatever schema an install or update applied, so a site built from an
+-- older template release is gated the next time it installs.
+create or replace function public.rwp_platform_setting(setting_key text)
+returns boolean language sql immutable set search_path = public as $platform$
+  select $1 in ('github_config', 'deploy_config', 'saas_installer_config');
+$platform$;
+
+grant execute on function public.rwp_platform_setting(text) to anon, authenticated;
+
+drop policy if exists "Platform settings belong to the platform owner" on public.system_settings;
+create policy "Platform settings belong to the platform owner"
+  on public.system_settings as restrictive for all to authenticated
+  using (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin')
+  with check (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin');`;
 
 /**
  * Runs {@link SCHEMA_PRIVILEGES_SQL} on an open connection.

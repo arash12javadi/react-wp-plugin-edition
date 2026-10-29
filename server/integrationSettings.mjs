@@ -340,3 +340,78 @@ export async function authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, ac
 /** The Settings → Integrations spelling of the check above: the administrator's capability. */
 export const authorizeSettingsManager = (supabaseUrl, supabaseKey, accessToken) =>
   authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, accessToken, 'manage_options');
+
+/** The role that owns the platform, spelled once for the check below and its sentences. */
+const PLATFORM_OWNER_ROLE = 'super_admin';
+
+/** The sentences a platform-owner refusal carries. */
+const PLATFORM_OWNER_MESSAGES = {
+  signedOut: 'Sign in as the platform owner to change what this installation publishes through.',
+  notInstalled: 'This site is not installed, so its publishing settings cannot be managed.',
+  invalidSession: 'Your session is not valid. Sign in again.',
+  roleFailure: (role) =>
+    `Your role cannot change what this installation publishes through: `
+    + (role
+      ? `${role} is not the platform owner (${PLATFORM_OWNER_ROLE}).`
+      : `this account has no role on this site, and only the platform owner (${PLATFORM_OWNER_ROLE}) can.`),
+  unreachable: (detail) => `The site could not be reached to check your permission: ${detail}`,
+};
+
+/**
+ * Confirms the caller is the *platform owner* — the single `super_admin` account — rather than an
+ * administrator of this site.
+ *
+ * `authorizeSettingsManager` above is deliberately not reused here: it asks `user_has_cap`, and
+ * `public.user_has_cap` answers `true` for `administrator` for *every* capability name, so a
+ * `manage_platform` capability would either desync the browser (`isPlatformOwner`, `src/lib/roles.ts`)
+ * from the database or quietly mean nothing. The role is the authority in `public.profiles`, so this
+ * asks `public.current_user_role()` and compares it, which is exactly what the RLS policies on
+ * `system_settings` compare for the rows these routes touch.
+ *
+ * This is the check the platform-owner cards use: the GitHub credential this installation commits with
+ * (`github_config`), the deploy hook that spends a build (`deploy_config`) and the SaaS installer's
+ * template bookkeeping describe what the installation *is*, not how this site is configured, so a
+ * tenant administrator is not the right person to hold them. `messages` overrides any sentence, so a
+ * route's refusal names that route; every field is optional and a function value is called with the
+ * role the caller turned out to hold (`''` when they hold none).
+ *
+ * The role comes back in the answer (`role`), because a route that reports success may also want to say
+ * *who* it recognised rather than re-reading the profile.
+ */
+export async function authorizePlatformOwner(supabaseUrl, supabaseKey, accessToken, messages = {}) {
+  const text = { ...PLATFORM_OWNER_MESSAGES, ...messages };
+  if (!accessToken) {
+    return { ok: false, status: 401, error: text.signedOut };
+  }
+  const baseUrl = String(supabaseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl || !supabaseKey) {
+    return { ok: false, status: 501, error: text.notInstalled };
+  }
+  const headers = { apikey: supabaseKey, Authorization: `Bearer ${accessToken}` };
+  try {
+    const userResponse = await fetch(`${baseUrl}/auth/v1/user`, { headers });
+    if (!userResponse.ok) return { ok: false, status: 401, error: text.invalidSession };
+    const roleResponse = await fetch(`${baseUrl}/rest/v1/rpc/current_user_role`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      // The function takes no arguments; PostgREST still wants a body for a POST.
+      body: '{}',
+    });
+    if (!roleResponse.ok) {
+      return { ok: false, status: 502, error: `Could not check your permission: current_user_role returned HTTP ${roleResponse.status}.` };
+    }
+    // A scalar function answers as a JSON string (or null when the caller has no profile row).
+    const answer = await roleResponse.json();
+    const role = typeof answer === 'string' ? answer.trim() : '';
+    if (role !== PLATFORM_OWNER_ROLE) {
+      return { ok: false, status: 403, error: text.roleFailure(role) };
+    }
+    return { ok: true, role };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      error: text.unreachable(error instanceof Error ? error.message : 'unknown error'),
+    };
+  }
+}

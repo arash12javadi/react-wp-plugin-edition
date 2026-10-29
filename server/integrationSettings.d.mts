@@ -70,3 +70,22 @@ export function authorizeSettingsManager(
   accessToken: string,
 ): Promise<{ ok: boolean; status?: number; error?: string }>;
 
+/**
+ * Confirms the caller is the platform owner (`super_admin`), through
+ * `public.current_user_role()` — a role check, not a capability one, because `user_has_cap` answers
+ * `true` for `administrator` whatever the capability name is. `role` is what the caller turned out to
+ * hold (`''` when they hold none), so a route can say who it recognised.
+ */
+export function authorizePlatformOwner(
+  supabaseUrl: string,
+  supabaseKey: string,
+  accessToken: string,
+  messages?: {
+    signedOut?: string;
+    notInstalled?: string;
+    invalidSession?: string;
+    roleFailure?: (role: string) => string;
+    unreachable?: (detail: string) => string;
+  },
+): Promise<{ ok: boolean; status?: number; error?: string; role?: string }>;
+

@@ -42,6 +42,28 @@ export const INTEGRATION_CONFIG_KEYS = [
   GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, AI_CONFIG_KEY, MEDIA_STORAGE_CONFIG_KEY, EMAIL_CONFIG_KEY,
 ];
 
+/**
+ * The rows that belong to the *installation* rather than to the site: the GitHub credential it
+ * publishes with, the deploy hook that rebuilds it, and the template every new customer site is
+ * provisioned from.
+ *
+ * Unlike every other row above, these are not settings an administrator holds on the site's behalf —
+ * they decide what this installation *is* — so only the platform owner (`super_admin`) may read or
+ * write them. The three places that decision is made have to agree, which is why the list is here:
+ *
+ *   - the browser, through `platformOwnerOnly` on the card that writes the row
+ *     (`src/core/integrations.ts`, filtered by `src/components/settings/IntegrationsHub.tsx`);
+ *   - the server, through `authorizePlatformOwner` (`server/integrationSettings.mjs`) for a plugin's
+ *     own routes, and through the key check in `POST /api/db/query` (`src/server/index.ts`) for a
+ *     browser that writes the row directly on a self-hosted backend;
+ *   - the database, through the restrictive policy in `supabase/schema.sql` (and its copy in
+ *     `server/schemaPrivileges.mjs`), which compares `public.current_user_role()` for these keys.
+ *
+ * A key added here is therefore refused to a site administrator everywhere, so it is a deliberate
+ * decision rather than a description: `admin`, `storage` and `theme_settings` are *not* in it.
+ */
+export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY];
+
 // -- Normalising ---------------------------------------------------------------------------------
 //
 // These rows are read by the server and echoed (presence only) by `GET /api/integrations/status`, so

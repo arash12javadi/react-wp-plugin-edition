@@ -4,24 +4,31 @@
  *   GET  /api/integrations/status        what this site is set up to do: which credentials are saved
  *   POST /api/integrations/ai/test       one call to the chosen AI provider, to prove the saved key
  *   POST /api/integrations/email/test    one message through the saved mail configuration
- *   POST /api/integrations/deploy/test   one POST to the saved deploy hook, so the next plugin upload
- *                                        is not the first time it is used
  *
  * Every credential these answers depend on lives in `system_settings`, written by the signed-in
  * administrator's browser. Each request therefore begins by reading those rows
  * (`server/integrationSettings.mjs` explains the four ways it can do that) and normalising them
  * (`server/integrationConfig.mjs`), and nothing here reads `process.env` for a provider's key.
  *
- * The three POSTs are the only routes on this server that borrow a credential to make an outbound call,
+ * The two POSTs are the only routes on this server that borrow a credential to make an outbound call,
  * so they are the only ones that check who is asking: `authorize` is supplied by the engine (its own
  * authenticated adapter on the universal engine, `user_has_cap('manage_options')` on the classic one).
  * The status read stays public — it describes presence, never a value.
  *
- * The GitHub credential is deliberately not validated here. The hub's GitHub card proves a personal
- * access token by asking GitHub directly from the browser (`src/lib/integrations.ts`), which is where
- * the token already is — RLS lets only the signed-in browser write `system_settings` — so no request of
- * this server's is spent on it, no credential of the site's is borrowed, and no GitHub callback URL has
- * to exist for a site to publish a plugin.
+ * The two *platform-owner* rows have left this module along with the cards that save them:
+ * `github_config` and `deploy_config` are written by the RWP SaaS Installer plugin
+ * (`plugins/rwp-saas-installer/PublishingCard.tsx`), its server tests the hook
+ * (`POST /api/plugins/rwp-saas-installer/deploy/test`), and both are refused to anyone but the platform
+ * owner — `authorizePlatformOwner` (`server/integrationSettings.mjs`) on the server and the
+ * `system_settings` policies in `supabase/schema.sql` (`public.rwp_platform_setting`) in the database.
+ * Their presence is still summarised in the status answer below, because that answer is how a screen
+ * says "this installation has published before"; nothing here spends them any more.
+ *
+ * The GitHub credential is deliberately not validated here. The GitHub card proves a personal
+ * access token by asking GitHub directly from the browser (`plugins/rwp-saas-installer/config.ts`),
+ * which is where the token already is — RLS lets only the platform owner's browser write
+ * `system_settings` — so no request of this server's is spent on it, no credential of the site's is
+ * borrowed, and no GitHub callback URL has to exist for a site to publish a plugin.
  *
  * Returns null for anything it does not own, the contract `handleSecurityRequest` and
  * `handleAdminRequest` follow, so `server.mjs` can keep its routing beside the other handler modules
@@ -35,7 +42,6 @@ import {
   INTEGRATION_CONFIG_KEYS,
   MEDIA_STORAGE_CONFIG_KEY,
   aiConfigFrom,
-  deployHookFrom,
   deployStatusFrom,
   describeIntegrations,
   emailConfigFrom,
@@ -45,16 +51,14 @@ import {
   testAiConnection,
 } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
-import { triggerDeployHook } from './pluginInstaller.mjs';
 
 const STATUS_PATH = '/api/integrations/status';
 const AI_TEST_PATH = '/api/integrations/ai/test';
 const EMAIL_TEST_PATH = '/api/integrations/email/test';
-const DEPLOY_TEST_PATH = '/api/integrations/deploy/test';
 
 /** The paths this module answers, so `server.mjs` can skip the call without repeating the list. */
 export const ownsIntegrationPath = (pathname) =>
-  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH || pathname === DEPLOY_TEST_PATH;
+  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH;
 
 
 /**
@@ -66,11 +70,10 @@ export const ownsIntegrationPath = (pathname) =>
 const loadHubSettings = async (reader) => {
   const rows = await readIntegrationRows(INTEGRATION_CONFIG_KEYS, reader);
   return {
+    // Presence only, for the two rows whose cards now live in a plugin: they say whether this
+    // installation has ever published, and neither the token nor the hook is read out here at all.
     github: githubStatusFrom(rows.settings[GITHUB_CONFIG_KEY]),
     deploy: deployStatusFrom(rows.settings[DEPLOY_CONFIG_KEY]),
-    // The one value read here rather than summarised: the server is what calls a deploy hook, so it is
-    // the only client that can spend one. It travels no further than `triggerDeployHook`.
-    deployHook: deployHookFrom(rows.settings[DEPLOY_CONFIG_KEY]),
     ai: aiConfigFrom(rows.settings[AI_CONFIG_KEY]),
     media: mediaStorageConfigFrom(rows.settings[MEDIA_STORAGE_CONFIG_KEY]),
     email: emailConfigFrom(rows.settings[EMAIL_CONFIG_KEY]),
@@ -94,7 +97,7 @@ const authorize = async ({ authorize: check, headers }) => {
     return {
       ok: false,
       status: 501,
-      error: 'This host cannot authorize integration tests. Test AI, email and deploys on a host running the Node server.',
+      error: 'This host cannot authorize integration tests. Test AI and email on a host running the Node server.',
     };
   }
   return check(bearerToken(headers));
@@ -170,23 +173,10 @@ export async function handleIntegrationsRequest(options) {
     return json(result.ok ? 200 : 400, result.ok ? { message: result.message } : { error: result.error });
   }
 
-  if (pathname === DEPLOY_TEST_PATH && method === 'POST') {
-    const permission = await authorize(options);
-    if (!permission.ok) return json(permission.status || 403, { error: permission.error });
-    const settings = await loadHubSettings(reader);
-    // Only what is stored, and only what a plugin upload would call: the point of the button is to prove
-    // that the hook behind the next install works, not to test a URL the browser has not saved yet.
-    if (!settings.deployHook) {
-      return json(400, { error: 'No deploy hook is saved yet. Paste one under Settings → Integrations → Deployments, then test it.' });
-    }
-    const result = await triggerDeployHook(settings.deployHook);
-    if (result.triggered) {
-      return json(200, {
-        message: `The deploy hook answered HTTP ${result.status}. A new build is on its way — the URL it is served from is on the platform's own dashboard.`,
-      });
-    }
-    return json(400, { error: result.error || 'The deploy hook did not answer.' });
-  }
+  // The deploy hook is no longer tested from here: the hook, the GitHub credential and the template it
+  // publishes belong to the installation rather than the site, so the route moved to the plugin that
+  // owns the card — `POST /api/plugins/rwp-saas-installer/deploy/test`
+  // (`plugins/rwp-saas-installer/server.mjs`), behind `authorizePlatformOwner`.
 
   // Ours, wrong verb: a null the engine turns into a 405 with an Allow header. A path that is not ours
   // at all also lands here, and the exported predicate above is the single list of both cases.

@@ -33,6 +33,8 @@ export const GITHUB_CONFIG_KEY: string;
 export const DEPLOY_CONFIG_KEY: string;
 export const SAAS_INSTALLER_CONFIG_KEY: string;
 export const INTEGRATION_CONFIG_KEYS: string[];
+/** The rows only the platform owner may read or write; see `PLATFORM_SETTING_KEYS` in the implementation. */
+export const PLATFORM_SETTING_KEYS: string[];
 
 export const AI_PROVIDERS: AiProvider[];
 export const MEDIA_STORAGE_PROVIDERS: MediaStorageProvider[];

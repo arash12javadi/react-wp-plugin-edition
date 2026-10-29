@@ -3084,4 +3084,30 @@ revoke all on table public.bookmarks from anon;
 revoke insert, update, delete on table public.theme_settings from anon;
 revoke insert, update, delete on table public.rwp_translations from anon;
 
+-- Three `system_settings` rows are not this site's settings but the installation's: the GitHub
+-- credential it publishes with, the deploy hook that rebuilds it, and the template it provisions new
+-- sites from. They are the platform owner's, and only the platform owner's: holding manage_options
+-- must not mean holding the credential this installation commits with.
+--
+-- A *restrictive* policy is the right shape, because "Settings managers read/write system settings"
+-- above are permissive and OR together — this one ANDs with them, so a site administrator keeps every
+-- other row and loses exactly these three. The role is compared rather than a capability because
+-- public.user_has_cap answers true for 'administrator' whatever it is asked about.
+--
+-- It lives in this block rather than in the RLS section above for the reason the block exists at all:
+-- server/schemaPrivileges.mjs runs it after *whatever* schema an install applied, so a site built from a
+-- template release older than this rule is gated by the next install or update, not left open.
+create or replace function public.rwp_platform_setting(setting_key text)
+returns boolean language sql immutable set search_path = public as $$
+  select $1 in ('github_config', 'deploy_config', 'saas_installer_config');
+$$;
+
+grant execute on function public.rwp_platform_setting(text) to anon, authenticated;
+
+drop policy if exists "Platform settings belong to the platform owner" on public.system_settings;
+create policy "Platform settings belong to the platform owner"
+  on public.system_settings as restrictive for all to authenticated
+  using (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin')
+  with check (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin');
+
 notify pgrst, 'reload schema';

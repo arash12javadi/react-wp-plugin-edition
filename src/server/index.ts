@@ -24,7 +24,7 @@ import {
   type DbValue,
 } from '../lib/db/index';
 import { createServerAuthAdapter, type AuthUser } from '../lib/auth/index';
-import { hasCapability, roles, type Capability, type UserRole } from '../lib/roles';
+import { hasCapability, isPlatformOwner, roles, type Capability, type UserRole } from '../lib/roles';
 import { createStorageAdapter } from '../lib/storage/index';
 import { dbTypeFrom, type RuntimeConfig } from '../lib/runtime';
 import { readConfigFile, writeConfigFile, getRuntimeConfig, reloadRuntimeConfig } from './config';
@@ -35,6 +35,7 @@ import { registerCentralUpdateRoutes } from './routes/centralUpdates';
 import { registerIntegrationRoutes } from './integrations';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
+import { PLATFORM_SETTING_KEYS } from '../../server/integrationConfig.mjs';
 
 export const app = new Hono();
 
@@ -770,8 +771,51 @@ interface Denied {
   message: string;
 }
 
-/** Returns the rejection to send back, or null when the request is allowed. */
-function authorizeRequest(action: string, table: string | undefined, role: UserRole | null): Denied | null {
+/**
+ * The `setting_key` values a `system_settings` request names — in its filter, its patch, or the rows it
+ * writes.
+ *
+ * Only used to decide whether a request touches a {@link PLATFORM_SETTING_KEYS} row, so it errs towards
+ * returning nothing: a filter it cannot read (an `or`, a `not`) names no key, and the caller then refuses
+ * a table-wide request instead of guessing that it is harmless. `body.where` is the shape an older
+ * bundle still sends; the current client sends a whole `DbFilter` in `filter`.
+ */
+function settingKeysFrom(body: Record<string, unknown>): string[] {
+  const keys: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (value) keys.push(value);
+    } else if (Array.isArray(value)) {
+      value.forEach(add);
+    } else if (value && typeof value === 'object') {
+      add((value as { in?: unknown }).in);
+    }
+  };
+  const filter = (body.filter as DbFilter | undefined)
+    ?? (body.where ? ({ where: body.where as Record<string, DbValue> }) : undefined);
+  add(filter?.where?.setting_key);
+  add(filter?.in?.setting_key);
+  add((body.patch as Record<string, unknown> | undefined)?.setting_key);
+  const rows = body.rows;
+  for (const row of Array.isArray(rows) ? rows : rows ? [rows] : []) {
+    add((row as Record<string, unknown> | null)?.setting_key);
+  }
+  return keys;
+}
+
+/** The platform-owned key a request names, if it names one. */
+const platformKeyOf = (body: Record<string, unknown>): string | undefined =>
+  settingKeysFrom(body).find((key) => PLATFORM_SETTING_KEYS.includes(key));
+
+/**
+ * Returns the rejection to send back, or null when the request is allowed.
+ *
+ * Takes the whole request body rather than the table alone because one rule — the `system_settings` rows
+ * that belong to the installation — can only be applied by looking at the `setting_key` the request
+ * names, and that is not always the table.
+ */
+function authorizeRequest(action: string, body: Record<string, unknown>, role: UserRole | null): Denied | null {
+  const table = str(body.table);
   if (PUBLIC_READ_ACTIONS.has(action)) {
     // Only table reads can expose anything sensitive; getOption/hasTable/healthCheck are probes.
     if ((action === 'select' || action === 'selectOne') && table && SENSITIVE_READ_TABLES.has(table) && !roleHas(role, 'list_users')) {
@@ -780,7 +824,40 @@ function authorizeRequest(action: string, table: string | undefined, role: UserR
     if ((action === 'select' || action === 'selectOne') && table && PRIVILEGED_READ_TABLES.has(table) && !roleHas(role, 'manage_options')) {
       return { status: 403, message: `Reading "${table}" requires the manage_options capability.` };
     }
+    /**
+     * The three rows of `system_settings` that belong to the installation — the GitHub credential it
+     * publishes with, the deploy hook that rebuilds it and the template it provisions sites from
+     * (`PLATFORM_SETTING_KEYS`) — answer to the `super_admin` role alone.
+     *
+     * Nothing reads them with a bare `select`: the settings screens call `getSystemSetting`, one key at
+     * a time, which the gate below covers. A table read is therefore refused unless it names the key it
+     * wants, because an unfiltered one would hand a site administrator the whole table — token included —
+     * and be a way round the per-key rule rather than a different feature.
+     *
+     * This is the copy of that rule a self-hosted backend needs. On Supabase the client talks to PostgREST
+     * and the restrictive policy in `supabase/schema.sql` answers the same question; the browser asks
+     * `isPlatformOwner` (`src/lib/roles.ts`) and the classic server's plugin routes ask
+     * `authorizePlatformOwner` (`server/integrationSettings.mjs`).
+     */
+    if ((action === 'select' || action === 'selectOne') && table === 'system_settings' && !isPlatformOwner(role)) {
+      const platform = platformKeyOf(body);
+      if (platform) {
+        return { status: 403, message: `"${platform}" belongs to the platform owner: only the super_admin role may read it.` };
+      }
+      if (!settingKeysFrom(body).length) {
+        return { status: 403, message: 'Reading "system_settings" needs the setting_key it wants; a whole-table read is the platform owner’s.' };
+      }
+    }
     return null;
+  }
+
+  // The same rows, the same rule on the way in: refused when the request names one, and refused when it
+  // names none at all (a write addressed some other way — by id — cannot be shown to leave them alone).
+  if ((action === 'getSystemSetting' || action === 'setSystemSetting') && !isPlatformOwner(role)) {
+    const key = str(body.key) ?? '';
+    if (PLATFORM_SETTING_KEYS.includes(key)) {
+      return { status: role ? 403 : 401, message: `"${key}" belongs to the platform owner: only the super_admin role may read or change it.` };
+    }
   }
 
   // System settings can hold secrets, so even reading one needs manage_options.
@@ -808,6 +885,17 @@ function authorizeRequest(action: string, table: string | undefined, role: UserR
   const capability = table ? WRITE_CAPABILITIES[table] : undefined;
   if (capability && !roleHas(role, capability)) {
     return { status: 403, message: `Your role cannot change "${table}"; the ${capability} capability is required.` };
+  }
+  // The platform owner's three rows, which manage_options alone does not reach. A write has to name the
+  // key it changes: one addressed by id could be any row, and this cannot tell which.
+  if (table === 'system_settings' && !isPlatformOwner(role)) {
+    const platform = platformKeyOf(body);
+    if (platform) {
+      return { status: 403, message: `"${platform}" belongs to the platform owner: only the super_admin role may change it.` };
+    }
+    if (!settingKeysFrom(body).length) {
+      return { status: 403, message: 'Changing "system_settings" needs the setting_key it changes; the platform owner’s rows are not reachable any other way.' };
+    }
   }
   return null;
 }
@@ -911,7 +999,7 @@ app.post('/api/db/query', async (c) => {
     }
 
     const role = roleOf(user?.role);
-    const denial = authorizeRequest(action, table, role);
+    const denial = authorizeRequest(action, body, role);
     if (denial) return c.json({ error: { message: denial.message } }, denial.status);
 
     stripPrivilegedColumns(table ?? '', body, role);

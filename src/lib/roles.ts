@@ -135,6 +135,24 @@ export const canUploadMedia = (role: UserRole) => hasCapability(role, 'upload_fi
 export const canManageUsers = (role: UserRole) => hasCapability(role, 'list_users');
 export const canManageShop = (role: UserRole) => hasCapability(role, 'manage_shop');
 
+/**
+ * Whether this role owns the installation — the platform owner, `super_admin`.
+ *
+ * Deliberately a *role* check and not a capability one. The rows the platform owner keeps are not
+ * settings an administrator holds on the site's behalf: this site's GitHub token and the repository it
+ * commits plugins to, the deploy hook that rebuilds it, and the template every new customer site is
+ * provisioned from. Those decide what this installation *is*, so they belong to the one account that
+ * runs the installation rather than to whoever was granted `manage_options`.
+ *
+ * It also cannot be a capability, because `public.user_has_cap` answers `true` for `administrator` for
+ * *any* name it is asked about — a `manage_platform` capability would therefore read as granted in the
+ * database while being absent here, and the two sides have to agree. The role is the authority in
+ * `public.profiles`, and both sides read the same column: this function for the admin, and
+ * `authorizePlatformOwner` (`server/integrationSettings.mjs`, through `public.current_user_role()`)
+ * for a plugin's routes.
+ */
+export const isPlatformOwner = (role: UserRole | null | undefined): boolean => role === 'super_admin';
+
 /** Legacy fallback only. Roles are authoritative in public.profiles; user_metadata is user-writable. */
 export const getUserRole = (user: { app_metadata?: Record<string, unknown>; user_metadata?: Record<string, unknown> }): UserRole => {
   const value = user.app_metadata?.role || user.user_metadata?.role;

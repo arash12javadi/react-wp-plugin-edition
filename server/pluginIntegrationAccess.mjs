@@ -16,19 +16,21 @@
  * imports this policy as well. One declaration, both hosts, and the plugin authors' rule in
  * `plugins/README.md` § "Reading the site's settings".
  */
-import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY } from './integrationConfig.mjs';
+import { DEPLOY_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
 
 /**
  * The rows each plugin may read, by plugin id. Adding a plugin here is a deliberate grant, reviewed
  * like any other capability: `rwp-saas-installer` provisions sites from the template repository, so it
  * reads the repository and branch an administrator saved (`saas_installer_config`) and the one GitHub
- * credential the GitHub card stores (`github_config`) — the same pair its own card writes. A plugin
- * absent from this map may read nothing, which is the answer for a plugin whose needs are its own
- * tables rather than this site's connections.
+ * credential the GitHub card stores (`github_config`) — the same pair its own card writes. It also reads
+ * the deploy hook (`deploy_config`) because the platform owner's "Test deploy hook" button is one of its
+ * routes: the hook is what a plugin upload spends, and the card that saves it now lives in the same
+ * plugin. A plugin absent from this map may read nothing, which is the answer for a plugin whose needs
+ * are its own tables rather than this site's connections.
  */
 export const PLUGIN_INTEGRATION_KEYS = Object.freeze({
-  'rwp-saas-installer': Object.freeze([SAAS_INSTALLER_CONFIG_KEY, GITHUB_CONFIG_KEY]),
+  'rwp-saas-installer': Object.freeze([SAAS_INSTALLER_CONFIG_KEY, GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY]),
 });
 
 /** The rows `pluginId` declared, or none. Never the whole table. */

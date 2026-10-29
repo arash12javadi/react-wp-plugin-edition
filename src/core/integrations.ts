@@ -1,10 +1,11 @@
 /**
  * The Integrations hub's card registry.
  *
- * Core renders four cards (GitHub, AI, Media & storage, Email). A plugin that talks to a service of
- * its own — a payment processor, a CRM, an SMS gateway — adds a fifth by registering one, which is
+ * Core renders three cards (AI, Media & storage, Email). A plugin that talks to a service of
+ * its own — a payment processor, a CRM, an SMS gateway — adds a fourth by registering one, which is
  * what makes Settings → Integrations the single place an administrator looks rather than one hub plus
- * a settings screen per plugin.
+ * a settings screen per plugin. The platform owner's own cards are plugins as well: GitHub publishing
+ * and the deploy hook are registered by `rwp-saas-installer`, with `platformOwnerOnly`.
  *
  * Two things are deliberate about the shape. A card owns its own screen area (`renderComponent`) and
  * the *plugin* loads and saves its own row, because only the plugin knows what the values mean; what
@@ -34,6 +35,16 @@ export interface RwpIntegrationCard {
   description: string;
   /** Hides the card from, and blocks it for, roles without this capability. Defaults to `manage_options`. */
   capability?: string;
+  /**
+   * Hides the card from everyone but the platform owner (`super_admin`), whatever capabilities they hold.
+   *
+   * A card that configures the installation itself rather than a service on it — this site's GitHub
+   * token, the repository it publishes to, the hook that rebuilds it — is granted to no role: a
+   * capability can be handed to an administrator under Settings → Roles, and these rows decide what the
+   * installation *is*. Checked here as a role, not a capability, for the reason `isPlatformOwner`
+   * (`src/lib/roles.ts`) gives.
+   */
+  platformOwnerOnly?: boolean;
   /**
    * Where the card sits among the built-ins. Lower comes first; built-ins use 10, 20, 30, 40, so a
    * plugin that belongs beside Media passes 35.
