@@ -21,6 +21,7 @@
  * core's rwp_record_view follows for page views.
  */
 import { createHash, randomBytes } from 'node:crypto';
+import { CENTRAL_CHECK_PATHS, centralConfigFrom } from '../centralUpdates.mjs';
 
 const salt = randomBytes(16).toString('hex');
 /** Above this many live keys the sweeper runs early. A flood from many addresses must not grow the heap without bound. */
@@ -135,6 +136,12 @@ export function rateLimitHeaders(decision) {
  * changes the server's own state is `auth`; everything else is `api`.
  */
 export function rateLimitTier(pathname, method) {
+  // The platform's update API is answered for customers, not for administrators: it must not inherit the
+  // tight `auth` tier just because one of its two paths lives under `/api/admin/`. A hundred sites
+  // checking from one cloud egress address would otherwise throttle each other, and that request is
+  // authorised by the per-site token it carries, not by a session. On a site that is not the platform the
+  // line does nothing, and `/api/admin/updates/check` keeps its strict tier with the rest of the admin.
+  if (CENTRAL_CHECK_PATHS.includes(pathname) && centralConfigFrom().enabled) return 'api';
   if (pathname.startsWith('/api/admin/') || pathname === '/api/install-schema') return 'auth';
   // Reading the anti-bot config or how much of a session is left happens on ordinary page loads,
   // so those belong in the loose tier — putting them in the strict one would throttle a visitor

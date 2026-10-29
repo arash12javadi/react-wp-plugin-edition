@@ -31,6 +31,8 @@ export const defaultCentralUrl = 'https://react-wp.com';
 /** A release as the browser may see it: no download URL, which only an installer needs. */
 export interface UpdateRelease {
   version: string;
+  /** The published tag, `v2.4.1`. What the screen shows; `version` is the same release without the `v`. */
+  tag: string;
   released: string;
   notes: string[];
   changelog_url: string;
@@ -79,12 +81,29 @@ export interface UpdateSupport {
 export interface UpdateCheckAnswer {
   format: 'rwp-update-center';
   version: 1;
-  source: 'central' | 'feed';
+  source: 'central' | 'feed' | 'github';
   checked_at: string;
-  app: { installed: string; latest: string; update_available: boolean; release: UpdateRelease | null };
+  app: {
+    installed: string;
+    latest: string;
+    /** The GitHub release tag, `v2.4.1`, when the source names one. */
+    latest_tag?: string;
+    update_available: boolean;
+    release: UpdateRelease | null;
+  };
   plugins: Record<string, UpdateRelease | null>;
   updates: AvailableUpdate[];
   update_available: boolean;
+  /**
+   * The central contract, repeated at the top level so a client that speaks only that can read either
+   * host: the tag this site runs, the tag GitHub published, and the four pieces of the answer.
+   * `updateAvailable` is about the core; `update_available` above also counts plugin releases.
+   */
+  installedVersion?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+  releaseNotes?: string;
+  releaseUrl?: string;
   /** Why the central server was not used, when the feed answered instead. Empty on success. */
   error: string;
   config: UpdateConfigView;
@@ -363,11 +382,14 @@ export const legacyUpdateStatus = (answer: UpdateCheckAnswer): UpdateStatus => (
   checked_at: answer.checked_at,
   feed_url: answer.config?.feed_url || '',
   error: answer.error,
+  /** Written by the server check, so a scheduled feed check will not replace it with an older answer. */
+  source: 'server',
   feed: {
     format: 'rwp-update-feed',
     version: 1,
     app: {
       version: answer.app.latest,
+      tag: answer.app.release?.tag || answer.app.latest_tag || '',
       released: answer.app.release?.released || '',
       notes: answer.app.release?.notes || [],
       changelog_url: answer.app.release?.changelog_url || '',
@@ -375,7 +397,7 @@ export const legacyUpdateStatus = (answer: UpdateCheckAnswer): UpdateStatus => (
     plugins: Object.fromEntries(
       Object.entries(answer.plugins || {})
         .filter(([, release]) => Boolean(release))
-        .map(([id, release]) => [id, { version: release!.version, notes: release!.notes, released: release!.released }]),
+        .map(([id, release]) => [id, { version: release!.version, tag: release!.tag || '', notes: release!.notes, released: release!.released }]),
     ),
   },
 });

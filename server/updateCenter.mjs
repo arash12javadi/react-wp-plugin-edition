@@ -17,6 +17,12 @@
  *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
  *      Which one is chosen, and why, is `updatePlan`.
  *
+ * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
+ * never the `version` field of a `package.json`. The tag travels with the release (`tag`), reaches this
+ * file through `releaseFrom`, and is what the screen shows and the check compares; the platform's half of
+ * that conversation lives in `server/githubReleases.mjs` and `server/centralUpdates.mjs`, which no
+ * customer's site ever runs a credential for.
+ *
  * Plain ESM with no `node:` imports: the same file is bundled into the Vercel function by
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
  * `environmentOf`, so a Workers deployment that has none does not crash on import.
@@ -39,8 +45,18 @@ export const DEFAULT_CENTRAL_URL = 'https://react-wp.com';
  */
 export const DEFAULT_FEED_URL = 'https://raw.githubusercontent.com/arash12javadi/react-wp/main/updates.json';
 
-/** The two central endpoints, named once so the client, the docs and this file cannot disagree. */
+/**
+ * The central endpoints, named once so the client, the docs and this file cannot disagree.
+ *
+ * `CENTRAL_CHECK_PATH` is the contract this project asks for: the site reports what it runs and the
+ * platform answers with the releases. `CENTRAL_CHECK_FALLBACK_PATH` is the same conversation under the
+ * path the platform's own admin API uses, tried only when the first answers 404 — a deployment that
+ * publishes the shorter route and one that publishes the longer one are both reachable, and no
+ * configuration decides which.
+ */
 export const CENTRAL_CHECK_PATH = '/api/v1/updates/check';
+export const CENTRAL_CHECK_FALLBACK_PATH = '/api/admin/updates/check';
+export const CENTRAL_CHECK_PATHS = [CENTRAL_CHECK_PATH, CENTRAL_CHECK_FALLBACK_PATH];
 export const PLUGIN_DIRECTORY_PATH = '/api/v1/plugins';
 
 /** The release channels a site may follow. `beta` receives pre-releases, `stable` does not. */
@@ -263,16 +279,23 @@ export const versionStateAfter = (previous, entry) => {
 export const releaseFrom = (value) => {
   const row = value && typeof value === 'object' ? value : null;
   if (!row) return null;
-  const version = trimmed(row.version).replace(/^v/i, '');
+  // The tag is the source of truth: `{tag: "v2.4.1"}` from GitHub and `{version: "2.4.1"}` from a
+  // hand-written feed have to become the same release, so `version` is derived from the tag when the row
+  // carries one and no version of its own.
+  const tag = trimmed(row.tag) || trimmed(row.tag_name);
+  const version = (trimmed(row.version) || tag).replace(/^v/i, '');
   if (!isVersion(version)) return null;
-  const notes = Array.isArray(row.notes)
-    ? row.notes.map((note) => String(note)).filter(Boolean)
-    : trimmed(row.notes) ? trimmed(row.notes).split('\n').map((line) => line.trim()).filter(Boolean) : [];
-  const changelog = trimmed(row.changelog_url);
+  const declared = row.notes ?? row.releaseNotes ?? row.release_notes ?? row.body;
+  const notes = Array.isArray(declared)
+    ? declared.map((note) => String(note)).filter(Boolean)
+    : trimmed(declared) ? trimmed(declared).split('\n').map((line) => line.trim()).filter(Boolean) : [];
+  const changelog = trimmed(row.changelog_url) || trimmed(row.release_url) || trimmed(row.html_url);
   const download = trimmed(row.download_url);
   return {
     version,
-    released: trimmed(row.released) || trimmed(row.published_at),
+    /** The published tag, `v2.4.1`. Shown as is, and what a self-update checks out. */
+    tag: tag || `v${version}`,
+    released: trimmed(row.released) || trimmed(row.published_at) || trimmed(row.publishedAt),
     notes,
     changelog_url: /^https:\/\//i.test(changelog) ? changelog : '',
     /** Kept out of every browser answer: a paid release's URL is issued per site by the central server. */
@@ -285,6 +308,7 @@ export const releaseFrom = (value) => {
 export const publicRelease = (release) => (release
   ? {
     version: release.version,
+    tag: release.tag || `v${release.version}`,
     released: release.released,
     notes: release.notes,
     changelog_url: release.changelog_url,
@@ -358,45 +382,84 @@ export const installedPluginsFrom = (value) => {
  * site has rather than for the whole catalogue. The token is required: without it central cannot tell a
  * licensed site from a stranger, and the caller falls back to the feed.
  *
+ * The answer is read in either of the two shapes the platform may speak — the release list below, and the
+ * four-field contract (`installedVersion`, `latestVersion`, `updateAvailable`, `releaseNotes`,
+ * `releaseUrl`). Both are accepted so that upgrading the platform never strands a site that has not
+ * upgraded yet, and the other way round.
+ *
  * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, version: string }>, fetchImpl?: typeof fetch }} options
  */
 export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch }) {
   if (!config.token) {
     throw new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; the public feed answers until then.', 400);
   }
-  const url = `${config.central_url}${CENTRAL_CHECK_PATH}`;
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: 'POST',
-      headers: centralHeaders(config, current.app),
-      body: JSON.stringify({
-        format: 'rwp-update-center',
-        version: 1,
-        channel: config.channel,
-        site: trimmed(current.site),
-        app: { id: 'react-wp', version: current.app },
-        plugins: plugins.map((plugin) => ({ id: plugin.id, version: plugin.version })),
-      }),
-      signal: AbortSignal.timeout(15_000),
-      cache: 'no-store',
+  const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
+  const request = {
+    method: 'POST',
+    headers: centralHeaders(config, current.app),
+    body: JSON.stringify({
+      format: 'rwp-update-center',
+      version: 1,
+      channel: config.channel,
+      site: trimmed(current.site),
+      app: { id: 'react-wp', version: current.app },
+      /** The same fact in the contract's spelling, for a platform that reads only that. */
+      installedVersion: current.app,
+      plugins: plugins.map((plugin) => ({ id: plugin.id, version: plugin.version })),
+    }),
+    signal: AbortSignal.timeout(15_000),
+    cache: 'no-store',
+  };
+  let missing = '';
+  for (const path of CENTRAL_CHECK_PATHS) {
+    const url = `${base}${path}`;
+    let response;
+    try {
+      response = await fetchImpl(url, request);
+    } catch (error) {
+      throw new UpdateError(networkMessage(error, url), 502);
+    }
+    if (response.status === 404) {
+      // Not this path. A platform that publishes only one of the two answers 404 for the other, so this
+      // is the next path's cue rather than a refusal to report.
+      missing = url;
+      continue;
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new UpdateError('The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
+    }
+    if (!response.ok) throw new UpdateError(`The central server answered HTTP ${response.status} at ${url}.`, 502);
+    const body = await response.json().catch(() => {
+      throw new UpdateError(`${url} did not return valid JSON.`, 502);
     });
-  } catch (error) {
-    throw new UpdateError(networkMessage(error, url), 502);
+    return centralReleasesFrom(body);
   }
-  if (response.status === 401 || response.status === 403) {
-    throw new UpdateError('The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
-  }
-  if (!response.ok) throw new UpdateError(`The central server answered HTTP ${response.status} at ${url}.`, 502);
-  const body = await response.json().catch(() => {
-    throw new UpdateError(`${url} did not return valid JSON.`, 502);
+  throw new UpdateError(`The central server has no update API at ${missing}. A platform deployment answers ${CENTRAL_CHECK_PATHS.join(' or ')}.`, 404);
+}
+
+/**
+ * The releases inside a central answer, in either shape the platform may answer with.
+ *
+ * Reading both costs one `||`: a site whose platform has been upgraded, and a site that has not, both keep
+ * working. A body with no release at all is refused with the sentence an administrator can act on rather
+ * than a half-filled screen.
+ *
+ * @param {any} body
+ */
+export const centralReleasesFrom = (body) => {
+  const app = releaseFrom(body?.app) || releaseFrom({
+    version: body?.latestVersion ?? body?.latest_version,
+    tag: body?.latestVersion ?? body?.latest_version ?? body?.release?.tag,
+    notes: body?.releaseNotes ?? body?.release_notes ?? body?.release?.notes,
+    released: body?.release?.released ?? body?.publishedAt ?? body?.published_at,
+    changelog_url: body?.releaseUrl ?? body?.release_url ?? body?.html_url,
+    critical: body?.release?.critical,
   });
-  const app = releaseFrom(body?.app);
   if (!app) {
-    throw new UpdateError('The central server\'s answer has no "app" release with a version. Expected {"format":"rwp-update-center","version":1,"app":{"version":"1.2.3"}}.', 502);
+    throw new UpdateError('The central server\'s answer has no release with a version. Expected {"format":"rwp-update-center","version":1,"app":{"version":"1.2.3"}}, or {"latestVersion":"v1.2.3","releaseNotes":"…","releaseUrl":"…"}.', 502);
   }
   return { app, plugins: pluginReleasesFrom(body?.plugins) };
-}
+};
 
 /**
  * The public `updates.json` feed — the shape Dashboard → Updates has always read
@@ -432,18 +495,31 @@ export async function fetchFeedCheck({ feedUrl, fetchImpl = fetch }) {
 }
 
 /**
- * The whole answer a check produces, built once so both hosts and both sources agree on its shape.
+ * The whole answer a check produces, built once so both hosts, both sources and the central server agree
+ * on its shape.
  *
- * `source` names where the answer came from (`central` or `feed`), `error` carries the first failure
- * when a source was tried and refused, and `updates` is what the screen lists — one entry per plugin
- * that has a newer release, plus the app itself.
+ * `source` names where the answer came from (`central`, `github` or `feed`), `error` carries the first
+ * failure when a source was tried and refused, and `updates` is what the screen lists — one entry per
+ * plugin that has a newer release, plus the app itself.
  *
- * @param {{ source: 'central'|'feed', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string }} input
+ * The last block is the contract the central server promises a customer's site, and the shape this route
+ * answers with as well, so any client that speaks only that contract can read either:
+ *
+ *   { "installedVersion": "v1.3.1", "latestVersion": "v2.4.1", "updateAvailable": true,
+ *     "releaseNotes": "- …", "releaseUrl": "https://github.com/…/releases/tag/v2.4.1" }
+ *
+ * `updateAvailable` is about the core only, and the older `update_available` still means "anything here
+ * has an update, plugins included". Two names because the two questions are different, and a screen that
+ * conflated them would offer an Update Now button for a plugin.
+ *
+ * @param {{ source: 'central'|'github'|'feed', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string }} input
  */
 export const checkAnswerFrom = ({ source, app, plugins, current, plugins_installed, error = '' }) => {
   const installed = trimmed(current.app);
+  const appUpdateAvailable = compareVersions(app.version, installed) > 0;
+  const latestTag = app.tag || `v${app.version}`;
   const updates = [];
-  if (compareVersions(app.version, installed) > 0) {
+  if (appUpdateAvailable) {
     updates.push({ id: 'react-wp', name: 'React-WP', kind: 'app', installed, latest: app.version, release: publicRelease(app) });
   }
   const named = new Map(plugins_installed.map((plugin) => [plugin.id, plugin]));
@@ -468,12 +544,19 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
     app: {
       installed,
       latest: app.version,
-      update_available: compareVersions(app.version, installed) > 0,
+      latest_tag: latestTag,
+      update_available: appUpdateAvailable,
       release: publicRelease(app),
     },
     plugins: Object.fromEntries(Object.entries(plugins).map(([id, release]) => [id, publicRelease(release)])),
     updates,
     update_available: updates.length > 0,
+    /** The central contract, four names a customer's site can rely on without reading anything else. */
+    installedVersion: installed ? `v${installed.replace(/^v/i, '')}` : '',
+    latestVersion: latestTag,
+    updateAvailable: appUpdateAvailable,
+    releaseNotes: (app.notes || []).join('\n'),
+    releaseUrl: app.changelog_url || '',
     error,
   };
 };

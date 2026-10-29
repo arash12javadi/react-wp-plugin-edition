@@ -31,6 +31,7 @@ import { readConfigFile, writeConfigFile, getRuntimeConfig, reloadRuntimeConfig 
 import { pluginsRouter } from './routes/plugins';
 import { pluginSchemaRouter } from './routes/pluginSchema';
 import { updatesRouter } from './routes/updates';
+import { registerCentralUpdateRoutes } from './routes/centralUpdates';
 import { registerIntegrationRoutes } from './integrations';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
@@ -700,6 +701,12 @@ app.route('/api/admin/plugins', pluginSchemaRouter);
 // The check, the plan and the four ways an update is applied, at the paths `server.mjs` serves. Mounted
 // on `/api/admin` because the family spans two prefixes (`/updates` and `/system/update`), and the router
 // only claims its own four paths, so `/api/admin/*` anything else falls through as before.
+//
+// The platform's own check goes first, and only exists on a deployment that *is* the platform
+// (`RWP_RELEASE_REPO` + `RWP_CENTRAL_TOKENS`): Hono answers with the first registration that matches, so a
+// platform's `/api/admin/updates/check` is the GitHub release answer, while every other site keeps the
+// tenant route below for itself and answers 404 at `/api/v1/updates/check`.
+registerCentralUpdateRoutes(app);
 app.route('/api/admin', updatesRouter);
 
 // -- Settings → Integrations ---------------------------------------------------

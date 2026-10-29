@@ -203,7 +203,7 @@ export default function Overview({ role, status, navigate, siteTitle }: {
         <button type="button" className={`${styles.updateBanner} ${updates.length ? '' : styles.updateBannerMuted}`} onClick={() => navigate('dashboard', 'updates')}>
           <span aria-hidden="true">🔄</span>
           {updates.length
-            ? `${updates.length} update${updates.length === 1 ? ' is' : 's are'} available: ${updates.map((update) => `${update.name} ${update.release.version}`).join(', ')}.`
+            ? `${updates.length} update${updates.length === 1 ? ' is' : 's are'} available: ${updates.map((update) => `${update.name} ${update.release.tag || `v${update.release.version.replace(/^v/i, '')}`}`).join(', ')}.`
             : `The last update check failed: ${status.updateStatus?.error || status.updateError}`}
           <span className={styles.bannerLink}>Open Updates →</span>
         </button>

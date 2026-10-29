@@ -21,13 +21,30 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   applyUpdate, checkForUpdates, fetchUpdateRun, fetchUpdateRuns, fetchUpdatesOverview, installedAppVersion,
   isRunInFlight, legacyUpdateStatus, readVersionState, recordVersionState, saveUpdateConfig,
-  type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview,
+  type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview, type VersionStateEntry,
 } from '../../lib/updateCenter';
-import { autoCheckIntervals, saveUpdateStatus, type AutoCheck, type UpdateStatus } from '../../lib/updates';
+import { autoCheckIntervals, compareVersions, saveUpdateStatus, type AutoCheck, type UpdateStatus } from '../../lib/updates';
 import styles from './Dashboard.module.css';
 
 /** How long the screen waits between polls of a running self-update. */
 const pollIntervalMs = 2500;
+
+/**
+ * How long a deploy hook is allowed to look like "deploying" before the screen says "building".
+ *
+ * There is nothing to poll: Vercel and Netlify report a build in their own dashboard, not to a webhook
+ * caller. So the first stage is the request, and the second is the minute or two the platform spends
+ * rebuilding — a label that tracks what is actually happening rather than one that claims a percentage
+ * nobody measured.
+ */
+const deployStageMs = 20_000;
+
+/** A version as the release is tagged, `v2.4.1`. Used for display only; comparisons take plain versions. */
+const asTag = (version: string) => {
+  const value = String(version || '').trim();
+  if (!value) return '';
+  return /^v/i.test(value) ? value : `v${value}`;
+};
 
 const timeAgo = (iso: string) => {
   const seconds = Math.round((Date.now() - Date.parse(iso)) / 1000);
@@ -107,8 +124,19 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
+  /** `deploying` while the hook is being called, `building` while the platform rebuilds the site. */
+  const [deployStage, setDeployStage] = useState<'' | 'deploying' | 'building'>('');
   // Read once per mount and written after a run: a poll must not cost a database round trip of its own.
   const versionState = useRef<Record<string, unknown> | null>(null);
+  const deployTimer = useRef<number | null>(null);
+
+  /** Stops the deploy-stage timer, so a stage cannot survive the screen it belonged to. */
+  const stopDeployTimer = useCallback(() => {
+    if (deployTimer.current !== null) window.clearTimeout(deployTimer.current);
+    deployTimer.current = null;
+  }, []);
+
+  useEffect(() => stopDeployTimer, [stopDeployTimer]);
 
   /**
    * Shows an answer and hands it to the screens that still read `options.rwp_update_status` — the sidebar
@@ -130,6 +158,39 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
     versionState.current = await readVersionState().catch(() => versionState.current);
     return true;
   }, []);
+
+  /**
+   * Closes the loop on a deploy hook.
+   *
+   * A deploy hook has no log to follow. The only evidence that the new build is live is the *next* check:
+   * it compares the tag GitHub publishes against the tag the running build reports. So when a check finds
+   * nothing left to do while the recorded outcome still says a deploy for that same version was triggered,
+   * the record becomes `completed` — the "records the new version tag once the site reloads" half of the
+   * feature — and the screen says so once, with the tag.
+   */
+  const settleDeploy = useCallback(async (answer: UpdateCheckAnswer) => {
+    const pending = (versionState.current as { last_update?: VersionStateEntry } | null)?.last_update;
+    if (!pending || pending.mode !== 'deploy-hook' || pending.status !== 'triggered') return;
+    if (answer.updateAvailable ?? answer.app.update_available) return;
+    const applied = answer.app.latest || '';
+    // A build that comes back *older* than the tag that was deployed is not the success this is looking
+    // for: it means the platform served a cached build, and claiming otherwise would be a lie.
+    if (pending.to && applied && compareVersions(applied, pending.to) < 0) return;
+    stopDeployTimer();
+    setDeployStage('');
+    try {
+      await remember({
+        at: new Date().toISOString(),
+        from: pending.from || answer.app.installed,
+        to: applied || pending.to,
+        mode: 'deploy-hook',
+        status: 'completed',
+      });
+    } catch {
+      // The check the administrator asked for already succeeded; a failed record must not hide that.
+    }
+    setFeedback(`🎉 Update successful to ${asTag(applied || pending.to)}!`);
+  }, [remember, stopDeployTimer]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -162,7 +223,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   const finishRun = useCallback(async (record: SelfUpdateRun) => {
     const succeeded = record.status === 'done';
     setFeedback(succeeded
-      ? `Updated to ${record.to}.${record.restart_required ? ` Restart the site to run it: pm2 restart ${record.app_name || '<name>'} (or npm start).` : ''}`
+      ? `🎉 Update successful to ${asTag(record.to)}!${record.restart_required ? ` Restart the site to run it: pm2 restart ${record.app_name || '<name>'} (or npm start).` : ''}`
       : `The update did not finish: ${record.error || stepLabels[record.step] || record.step}.`);
     await remember({
       at: record.finished_at || new Date().toISOString(),
@@ -201,9 +262,11 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
       publish(answer);
       setOverview((current) => (current ? { ...current, config: answer.config, readable: answer.readable } : current));
       setForm(answer.config);
+      const latest = asTag(answer.latestVersion || answer.app.latest_tag || answer.app.latest);
       setFeedback(answer.update_available
-        ? `${answer.updates.length} update${answer.updates.length === 1 ? '' : 's'} available.`
-        : `Everything is up to date: ${answer.app.installed} is the latest release this site can see.`);
+        ? `${answer.updates.length} update${answer.updates.length === 1 ? '' : 's'} available${answer.updateAvailable === false ? '' : ` — latest release ${latest}`}.`
+        : `Everything is up to date: ${asTag(answer.app.installed)} is the latest release GitHub publishes.`);
+      await settleDeploy(answer);
     } catch (checkError) {
       setError(message(checkError, 'The update check failed.'));
     } finally {
@@ -220,6 +283,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
       publish(outcome.check);
       if (outcome.kind === 'up_to_date') {
         setFeedback(outcome.plan.reason);
+        await settleDeploy(outcome.check);
         return;
       }
       if (outcome.kind === 'manual') {
@@ -228,7 +292,6 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
         return;
       }
       if (outcome.kind === 'deploy') {
-        setFeedback(outcome.message);
         await remember({
           at: new Date().toISOString(),
           from: outcome.check.app.installed,
@@ -237,8 +300,21 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
           status: outcome.queued ? 'triggered' : 'failed',
           ...(outcome.queued ? {} : { error: outcome.deploy?.error || 'The deploy hook refused.' }),
         });
+        if (!outcome.queued) {
+          setFeedback(outcome.message);
+          return;
+        }
+        // Two stages, because a deploy hook answers once and then builds elsewhere: the request itself,
+        // and the rebuild the platform is now doing. The check that follows the rebuild is what turns
+        // this into the success message, so the button stays available instead of a spinner that lies.
+        stopDeployTimer();
+        setDeployStage('deploying');
+        deployTimer.current = window.setTimeout(() => setDeployStage('building'), deployStageMs);
+        setFeedback(`Deploying update… The deploy hook was called for ${asTag(outcome.check.app.latest)}. The platform is rebuilding this site now.`);
         return;
       }
+      stopDeployTimer();
+      setDeployStage('');
       setRun(outcome.run);
       setLog('');
       setRecent((current) => [outcome.run, ...current].slice(0, 10));
@@ -319,6 +395,12 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   const appUpdate = updates.find((entry) => entry.kind === 'app');
   const busy = checking || applying || isRunInFlight(run);
   const source = (form || overview?.config)?.source;
+  // The tag is what the screen shows; `version` is the same release without the `v`, and is what the
+  // comparisons used. A host that has not checked yet only knows what it runs.
+  const installedTag = asTag(check?.installedVersion || overview?.installed || installedAppVersion);
+  const latestTag = asTag(check?.latestVersion || check?.app?.latest_tag || check?.app?.latest || '');
+  const coreUpdate = check ? (check.updateAvailable ?? check.app.update_available) : false;
+  const releaseUrl = check?.releaseUrl || check?.app?.release?.changelog_url || '';
 
   return (
     <div className={styles.dashboard}>
@@ -330,7 +412,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
           <div>
             <h2 id="updates-card-heading">🔄 Updates</h2>
             <p className={styles.muted}>
-              React-WP <code>{overview?.installed || installedAppVersion}</code>
+              React-WP <code>{installedTag}</code>
               {source ? ` · ${source === 'central' ? 'checked through React-WP.com' : 'checked through the public feed'}` : ''}
               {form ? ` · ${form.has_token ? 'update token stored' : 'no update token'}` : ''}
             </p>
@@ -345,11 +427,50 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
           </div>
         </div>
 
+        {/* The tag, not a number from a `package.json`: installed on the left, the newest GitHub release on
+            the right, and one badge that says which of the two questions this screen is answering. */}
+        <div className={styles.versionBar}>
+          <span className={styles.versionChip}>Installed <code>{installedTag}</code></span>
+          <span className={styles.versionArrow} aria-hidden="true">→</span>
+          <span className={styles.versionChip}>GitHub release <code>{latestTag || '—'}</code></span>
+          {!check ? (
+            <span className={styles.badgeOk}>Not checked yet</span>
+          ) : coreUpdate ? (
+            <span className={styles.badgeWarn}>Update available: {latestTag || asTag(check.app.latest)}</span>
+          ) : (
+            <span className={styles.badgeOk}>Up to date</span>
+          )}
+          {releaseUrl && (
+            <a className={styles.versionLink} href={releaseUrl} target="_blank" rel="noreferrer">
+              Release notes ↗
+            </a>
+          )}
+        </div>
+
         {support && !support.supported && (
           <div className={styles.warning} role="status"><strong>This host updates from its repository.</strong> {support.reason}</div>
         )}
         {overview?.error && <div className={styles.warning} role="status">{overview.error}</div>}
         {check?.error && <div className={styles.warning} role="status">{check.error}</div>}
+
+        {deployStage && (
+          <div className={styles.progress} role="status">
+            <p className={styles.muted}>
+              <strong>{deployStage === 'deploying' ? 'Deploying update…' : 'Building…'}</strong>
+              {latestTag ? <> — <code>{latestTag}</code> was handed to the deploy hook.</> : null}
+            </p>
+            <p className={styles.help}>
+              The platform builds on its own schedule and reports no percentage here. When the new build is
+              live, <em>Check again</em> compares the GitHub release against the version this build answers
+              with, and turns the notice above into the success message.
+            </p>
+            <div className={styles.buttonRow}>
+              <button type="button" className={styles.secondaryButton} disabled={checking} onClick={() => void checkNow()}>
+                {checking ? 'Checking…' : 'Check again'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {check ? (
           updates.length ? (
@@ -365,8 +486,8 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
                         <strong>{entry.name}</strong>{' '}
                         <span className={styles.muted}>· {entry.kind === 'app' ? 'core' : 'plugin'}</span>
                       </td>
-                      <td><code>{entry.installed}</code></td>
-                      <td><code>{entry.latest}</code></td>
+                      <td><code>{asTag(entry.installed)}</code></td>
+                      <td><code>{entry.release?.tag || asTag(entry.latest)}</code></td>
                       <td>
                         {entry.release?.critical && <span className={styles.badgeWarn}>Security release</span>}
                         {entry.release?.notes?.length ? (
@@ -374,6 +495,13 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
                             {entry.release.notes.map((note) => <li key={note}>{note}</li>)}
                           </ul>
                         ) : <span className={styles.muted}>No release notes.</span>}
+                        {entry.release?.changelog_url && (
+                          <p className={styles.help}>
+                            <a className={styles.inlineLink} href={entry.release.changelog_url} target="_blank" rel="noreferrer">
+                              Open this release on GitHub ↗
+                            </a>
+                          </p>
+                        )}
                         {entry.kind === 'plugin' && (
                           <p className={styles.help}>
                             Plugin releases are installed from Plugins → Installed. This button moves the core.
@@ -387,7 +515,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
             </div>
           ) : (
             <div className={styles.success} role="status">
-              Nothing to update — <code>{check.app.installed}</code> is the latest release this site can see.
+              Nothing to update — this site runs <code>{installedTag}</code>, the newest release GitHub publishes.
             </div>
           )
         ) : (

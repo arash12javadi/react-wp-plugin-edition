@@ -38,6 +38,8 @@ export const defaultUpdateSettings: UpdateSettings = { auto_check: 'weekly', fee
 
 export interface FeedRelease {
   version: string;
+  /** The published tag, `v2.4.1`, when the source names one. `version` is the same release without the `v`. */
+  tag?: string;
   released?: string;
   notes?: string[];
   download_url?: string;
@@ -56,6 +58,12 @@ export interface UpdateStatus {
   feed_url: string;
   error: string;
   feed: UpdateFeed | null;
+  /**
+   * Which route wrote this row: a server check (`server`, the one that compares GitHub release tags) or
+   * the browser's own feed fetch (`feed`). Read by `runScheduledUpdateCheck` so a scheduled feed check
+   * can never overwrite a fresher server answer with an older one.
+   */
+  source?: 'server' | 'feed';
 }
 
 export interface AvailableUpdate {
@@ -166,7 +174,7 @@ export const checkForUpdates = async (feedUrl: string): Promise<UpdateStatus> =>
   } catch (checkError) {
     error = checkError instanceof Error ? checkError.message : 'The update check failed.';
   }
-  const status: UpdateStatus = { checked_at: new Date().toISOString(), feed_url: feedUrl, error, feed };
+  const status: UpdateStatus = { checked_at: new Date().toISOString(), feed_url: feedUrl, error, feed, source: 'feed' };
   await writeJsonOption(updateStatusOption, status);
   return status;
 };
@@ -194,7 +202,16 @@ export const runScheduledUpdateCheck = async (): Promise<{ settings: UpdateSetti
   const interval = autoCheckIntervals[settings.auto_check].ms;
   const last = status?.checked_at ? Date.parse(status.checked_at) : 0;
   if (interval > 0 && (!last || Date.now() - last >= interval)) {
-    status = await checkForUpdates(settings.feed_url);
+    const fetched = await checkForUpdates(settings.feed_url);
+    // A server check is the one that compares the release GitHub publishes; the public feed can lag it by
+    // a release. Keeping the newer of the two is what stops opening the admin from replacing a fresher
+    // badge with an older answer — the failure this guards is a badge that still says an update exists
+    // after it was installed.
+    const serverIsNewer = status?.source === 'server'
+      && Boolean(status.feed?.app?.version)
+      && Boolean(fetched.feed?.app?.version)
+      && compareVersions(status.feed!.app.version, fetched.feed!.app.version) > 0;
+    status = serverIsNewer ? status : fetched;
   }
   return { settings, status };
 };

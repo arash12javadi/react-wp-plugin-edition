@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "check:css": "node vite.cssModules.check.mjs",
     "check:plugins": "node scripts/checkPluginRules.mjs",
+    "check:updates": "node scripts/checkUpdateEngine.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "preview": "vite preview"
   },

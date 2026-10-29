@@ -19,6 +19,7 @@ import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActi
 import { InstallError, installPlugin, MAX_ZIP_BYTES } from './server/pluginInstaller.mjs';
 import { handleAdminRequest } from './server/adminRoutes.mjs';
 import { handleUpdateRequest } from './server/updateRoutes.mjs';
+import { centralConfigFrom, handleCentralUpdateRequest } from './server/centralUpdates.mjs';
 import { handleSecurityRequest } from './server/securityRoutes.mjs';
 import { handleIntegrationsRequest, ownsIntegrationPath } from './server/integrationsRoutes.mjs';
 import { assistAuthMessages, handleAiAssistRequest, ownsAiAssistPath } from './server/aiAssist.mjs';
@@ -761,6 +762,26 @@ const server = http.createServer(async (request, response) => {
       }
       json(request, response, 200, { success: true, skipped: Boolean(result.skipped) });
       return;
+    }
+    // The platform's update API: `POST /api/v1/updates/check`, and the `/api/admin/updates/check` alias
+    // older clients ask for. Nothing here on an ordinary site — `centralConfigFrom` reports `enabled`
+    // only for a deployment that holds the release repository and the tokens its customers were issued —
+    // and the check comes *before* the body is read on purpose: consuming it here would leave the
+    // tenant's own `/api/admin/updates/check` below with an empty body.
+    if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check') {
+      if (centralConfigFrom(process.env).enabled) {
+        const central = await handleCentralUpdateRequest({
+          method: request.method,
+          pathname: url.pathname,
+          headers: request.headers,
+          body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
+          env: process.env,
+        });
+        if (central) {
+          json(request, response, central.status, central.body);
+          return;
+        }
+      }
     }
     // Per-plugin schema install, plugin uninstall and the site reset. Returns null for anything
     // it does not own (including /api/admin/plugins/upload below), so this can sit first.

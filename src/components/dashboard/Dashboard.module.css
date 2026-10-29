@@ -784,3 +784,49 @@
   word-break: break-word;
 }
 
+/* The installed tag → newest GitHub release line, and the badge that answers "is there an update?". */
+.versionBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  font-size: 0.85rem;
+}
+
+.versionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: #334155;
+  background: #eef2ff;
+  font-weight: 600;
+}
+
+.versionChip code {
+  color: #1e293b;
+  font-size: 0.82rem;
+}
+
+.versionArrow {
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.versionLink {
+  margin-left: auto;
+  color: #4338ca;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.versionLink:hover,
+.versionLink:focus-visible {
+  text-decoration: underline;
+}
+
