@@ -1,18 +1,28 @@
+/**
+ * Dashboard → Updates, the part that outlives a page load: the last answer and the badge.
+ *
+ * There is no version file to fetch here and no `updates.json` to keep publishing. A version is
+ * published by *tagging a release on GitHub* (`v2.4.1`), and the answer comes from the server
+ * (`src/lib/updateCenter.ts` → `server/updateCenter.mjs`): either from `react-wp.com` when this site
+ * holds a token for it, or straight from this deployment's own release tags. That is why nothing in this
+ * file performs a check — it stores what the server said and compares it against the build that is
+ * running, which is the one comparison a badge can make without guessing.
+ *
+ * Two facts worth keeping in mind:
+ *
+ *   - **`installedAppVersion` is the build's own version**, inlined by Vite from `package.json` at build
+ *     time. A row written by an older build must never make an installed update look outstanding, so the
+ *     comparison is re-done every time the row is read, never trusted from the row itself.
+ *   - **One writer.** The row is written by the check that just ran (`saveUpdateStatus`), so the sidebar
+ *     badge, the Overview banner and the Updates screen always show the same answer.
+ */
 import { version as installedAppVersion } from '../../package.json';
 import { describeDbError, client } from './db';
 import { rwp } from './rwp';
 
-/**
- * Dashboard → Updates. React-WP is a built bundle plus a Node server, so the browser cannot
- * replace its own code. What runs here is the *checking*: a JSON feed lists the latest app and
- * plugin versions, the result is stored for every administrator, and the check can repeat on a
- * schedule. Installing an update stays a deliberate step on the host (git pull / new ZIP, then
- * npm start).
- */
-
 export { installedAppVersion };
 
-export const updateSettingsOption = 'rwp_update_settings';
+/** The `options` row holding the last answer, readable by every administrator. */
 export const updateStatusOption = 'rwp_update_status';
 
 export const autoCheckIntervals = {
@@ -25,45 +35,53 @@ export const autoCheckIntervals = {
 
 export type AutoCheck = keyof typeof autoCheckIntervals;
 
-export const defaultFeedUrl = 'https://raw.githubusercontent.com/arash12javadi/react-wp/main/updates.json';
-
+/**
+ * The two settings the dashboard itself keeps. Everything else about updates — the central server, the
+ * token, the channel, whether this host may update itself — lives in `system_settings.updates_config`,
+ * where the server reads it.
+ */
 export interface UpdateSettings {
   auto_check: AutoCheck;
-  feed_url: string;
-  /** Show the Updates count in the sidebar badge. */
+  /** Show new releases in the sidebar badge and on the Overview. */
   notify: boolean;
 }
 
-export const defaultUpdateSettings: UpdateSettings = { auto_check: 'weekly', feed_url: defaultFeedUrl, notify: true };
+export const defaultUpdateSettings: UpdateSettings = { auto_check: 'weekly', notify: true };
 
-export interface FeedRelease {
+/**
+ * How often "every time an administrator opens the admin" may actually hit GitHub.
+ *
+ * The setting means what it says, but each check is now a GitHub API call made on the server's
+ * credential, and a badge does not need to be fresher than a minute: without this, a reload loop in the
+ * admin would spend the rate limit on the same tag over and over.
+ */
+export const adminCheckThrottleMs = 60_000;
+
+/** A release as the browser may see it: a tag, its notes, and where to read them. */
+export interface UpdateReleaseInfo {
   version: string;
   /** The published tag, `v2.4.1`, when the source names one. `version` is the same release without the `v`. */
   tag?: string;
   released?: string;
   notes?: string[];
-  download_url?: string;
   changelog_url?: string;
 }
 
-export interface UpdateFeed {
-  format: 'rwp-update-feed';
-  version: 1;
-  app: FeedRelease;
-  plugins?: Record<string, FeedRelease>;
-}
-
+/**
+ * The last check, as one row.
+ *
+ * `latest` is the newest release the source published — not "an update exists" — so the badge compares it
+ * against the running build each time instead of trusting a stored verdict. `source` says which of the two
+ * sources answered, which is what the Updates screen prints.
+ */
 export interface UpdateStatus {
   checked_at: string;
-  feed_url: string;
   error: string;
-  feed: UpdateFeed | null;
-  /**
-   * Which route wrote this row: a server check (`server`, the one that compares GitHub release tags) or
-   * the browser's own feed fetch (`feed`). Read by `runScheduledUpdateCheck` so a scheduled feed check
-   * can never overwrite a fresher server answer with an older one.
-   */
-  source?: 'server' | 'feed';
+  source: 'central' | 'github';
+  /** The version the answer was compared against, when the server named one. */
+  installed?: string;
+  latest: UpdateReleaseInfo | null;
+  plugins?: Record<string, UpdateReleaseInfo>;
 }
 
 export interface AvailableUpdate {
@@ -71,10 +89,16 @@ export interface AvailableUpdate {
   name: string;
   kind: 'app' | 'plugin';
   installed: string;
-  release: FeedRelease;
+  release: UpdateReleaseInfo;
 }
 
-/** Compares dotted versions numerically, so 1.10.0 is newer than 1.9.0. Pre-release tags sort lower. */
+/**
+ * Compares dotted versions numerically, so 1.10.0 is newer than 1.9.0. Pre-release tags sort lower.
+ *
+ * Mirrors `compareVersions` in `server/versions.mjs`, which is the copy the server decides with. This one
+ * exists because the badge has to re-rank a stored answer against the build that is running now, and that
+ * comparison must not cost a round trip.
+ */
 export const compareVersions = (a: string, b: string): number => {
   const parse = (value: string) => {
     const [core, pre = ''] = value.trim().replace(/^v/i, '').split('-', 2);
@@ -111,107 +135,50 @@ const writeJsonOption = async (name: string, value: unknown) => {
   if (!data?.length) throw new Error('The database saved nothing: only administrators (manage_options) can change update settings.');
 };
 
-export const loadUpdateSettings = async (): Promise<UpdateSettings> => {
-  const stored = await readJsonOption<Partial<UpdateSettings>>(updateSettingsOption);
-  return {
-    auto_check: stored?.auto_check && stored.auto_check in autoCheckIntervals ? stored.auto_check : defaultUpdateSettings.auto_check,
-    feed_url: typeof stored?.feed_url === 'string' && stored.feed_url.trim() ? stored.feed_url.trim() : defaultUpdateSettings.feed_url,
-    notify: typeof stored?.notify === 'boolean' ? stored.notify : defaultUpdateSettings.notify,
-  };
-};
-
-export const saveUpdateSettings = async (settings: UpdateSettings) => {
-  if (!/^https:\/\/\S+$/i.test(settings.feed_url.trim())) {
-    throw new Error('The update feed URL must start with https://.');
-  }
-  await writeJsonOption(updateSettingsOption, { ...settings, feed_url: settings.feed_url.trim() });
-};
-
 export const loadUpdateStatus = () => readJsonOption<UpdateStatus>(updateStatusOption);
 
 /**
  * Stores a check result for every administrator.
  *
- * Exported because the server-side check in `src/lib/updateCenter.ts` is now the one that runs, and the
- * sidebar badge and Dashboard banner are still read from this row by `runScheduledUpdateCheck`. Writing
- * it from there keeps one result on screen instead of a fresh answer next to a stale count.
+ * Called by the Updates screen and by the scheduled check, so the sidebar badge and the Overview banner
+ * read the answer the administrator just saw instead of one from an older page load.
  */
 export const saveUpdateStatus = (status: UpdateStatus) => writeJsonOption(updateStatusOption, status);
 
-const isRelease = (value: unknown): value is FeedRelease =>
-  Boolean(value && typeof value === 'object' && typeof (value as FeedRelease).version === 'string');
-
-const validateFeed = (value: unknown): UpdateFeed => {
-  const feed = value as Partial<UpdateFeed> | null;
-  if (!feed || feed.format !== 'rwp-update-feed') {
-    throw new Error('The URL answered, but not with a React-WP update feed (expected "format": "rwp-update-feed").');
-  }
-  if (feed.version !== 1) throw new Error(`The update feed uses format version ${String(feed.version)}; this site understands version 1. Update by hand once to get a newer checker.`);
-  if (!isRelease(feed.app)) throw new Error('The update feed has no "app" entry with a "version".');
-  const plugins = Object.fromEntries(Object.entries(feed.plugins || {}).filter(([, release]) => isRelease(release)));
-  return { format: 'rwp-update-feed', version: 1, app: feed.app, plugins };
+/**
+ * Whether a check is due, from the setting and the timestamp of the last answer.
+ *
+ * `admin` is throttled rather than literally one call per navigation: see `adminCheckThrottleMs`.
+ */
+export const isCheckDue = (autoCheck: AutoCheck, checkedAt: string | undefined): boolean => {
+  const interval = autoCheckIntervals[autoCheck]?.ms ?? 0;
+  if (interval <= 0) return false;
+  const last = checkedAt ? Date.parse(checkedAt) : 0;
+  if (!Number.isFinite(last) || last <= 0) return true;
+  return Date.now() - last >= Math.max(interval, adminCheckThrottleMs);
 };
 
-/** Fetches the feed and stores the result (including a failure) for every administrator. */
-export const checkForUpdates = async (feedUrl: string): Promise<UpdateStatus> => {
-  let feed: UpdateFeed | null = null;
-  let error = '';
-  try {
-    let response: Response;
-    try {
-      response = await fetch(feedUrl, { cache: 'no-store' });
-    } catch {
-      throw new Error(`Could not reach ${feedUrl}. Check the address and your connection; the server hosting it must also allow cross-origin requests (GitHub raw files do).`);
-    }
-    if (response.status === 404) {
-      throw new Error(`The update feed returned 404 at ${feedUrl}. If the GitHub repository is private, raw.githubusercontent.com will not serve it without a token: host updates.json at a public https address and set that URL below.`);
-    }
-    if (!response.ok) throw new Error(`The update feed returned HTTP ${response.status} at ${feedUrl}.`);
-    const body = await response.json().catch(() => {
-      throw new Error(`${feedUrl} did not return valid JSON.`);
-    });
-    feed = validateFeed(body);
-  } catch (checkError) {
-    error = checkError instanceof Error ? checkError.message : 'The update check failed.';
-  }
-  const status: UpdateStatus = { checked_at: new Date().toISOString(), feed_url: feedUrl, error, feed, source: 'feed' };
-  await writeJsonOption(updateStatusOption, status);
-  return status;
-};
-
-/** Compared against the running code each time, so an old stored result never claims an update that is already installed. */
+/**
+ * What the badge and the banner count: an app release newer than the build that is running, and the same
+ * question for each active plugin.
+ *
+ * Compared against *the running build* every time, so an old row cannot claim an update that has since
+ * been installed.
+ */
 export const availableUpdates = (status: UpdateStatus | null): AvailableUpdate[] => {
-  if (!status?.feed) return [];
+  if (!status?.latest) return [];
+  const installed = String(status.installed || '').trim().replace(/^v/i, '') || installedAppVersion;
   const updates: AvailableUpdate[] = [];
-  if (compareVersions(status.feed.app.version, installedAppVersion) > 0) {
-    updates.push({ id: 'react-wp', name: 'React-WP', kind: 'app', installed: installedAppVersion, release: status.feed.app });
+  if (status.latest.version && compareVersions(status.latest.version, installed) > 0) {
+    updates.push({ id: 'react-wp', name: 'React-WP', kind: 'app', installed, release: status.latest });
   }
   rwp.getPlugins().forEach((plugin) => {
-    const release = status.feed?.plugins?.[plugin.id];
-    if (release && compareVersions(release.version, plugin.version) > 0) {
+    const release = status.plugins?.[plugin.id];
+    if (release?.version && compareVersions(release.version, plugin.version) > 0) {
       updates.push({ id: plugin.id, name: plugin.name, kind: 'plugin', installed: plugin.version, release });
     }
   });
   return updates;
 };
 
-/** Runs the scheduled check when it is due. Called once when an administrator opens the admin. */
-export const runScheduledUpdateCheck = async (): Promise<{ settings: UpdateSettings; status: UpdateStatus | null }> => {
-  const settings = await loadUpdateSettings();
-  let status = await loadUpdateStatus();
-  const interval = autoCheckIntervals[settings.auto_check].ms;
-  const last = status?.checked_at ? Date.parse(status.checked_at) : 0;
-  if (interval > 0 && (!last || Date.now() - last >= interval)) {
-    const fetched = await checkForUpdates(settings.feed_url);
-    // A server check is the one that compares the release GitHub publishes; the public feed can lag it by
-    // a release. Keeping the newer of the two is what stops opening the admin from replacing a fresher
-    // badge with an older answer — the failure this guards is a badge that still says an update exists
-    // after it was installed.
-    const serverIsNewer = status?.source === 'server'
-      && Boolean(status.feed?.app?.version)
-      && Boolean(fetched.feed?.app?.version)
-      && compareVersions(status.feed!.app.version, fetched.feed!.app.version) > 0;
-    status = serverIsNewer ? status : fetched;
-  }
-  return { settings, status };
-};
+

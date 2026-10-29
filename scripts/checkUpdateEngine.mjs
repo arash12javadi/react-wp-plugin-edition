@@ -311,21 +311,43 @@ test('a site asks the documented path first, and the admin path when that answer
   assert.deepEqual(app.notes, ['- x']);
 });
 
-test('when central cannot be asked, the public feed answers and the answer says so', async () => {
+test('when central cannot be asked, the release tags answer and the answer says which failed', async () => {
   const fetchImpl = async (url) => (String(url).includes('updates/check')
     ? new Response(JSON.stringify({ error: 'down' }), { status: 503 })
-    : new Response(JSON.stringify({ format: 'rwp-update-feed', version: 1, app: { version: '2.4.1', notes: ['feed note'] } }), { status: 200 }));
+    : new Response(JSON.stringify([githubRow('v2.4.1')]), { status: 200 }));
   const answer = await checkForUpdates({
-    config: { central_url: 'https://react-wp.com', feed_url: 'https://x.test/updates.json', token: 'site-token', channel: 'stable' },
+    config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable' },
     current: { app: '1.3.1' },
     plugins: [],
+    github: { repo: 'acme/react-wp' },
     fetchImpl,
   });
-  assert.equal(answer.source, 'feed');
+  assert.equal(answer.source, 'github');
   assert.equal(answer.app.latest, '2.4.1');
   assert.equal(answer.latestVersion, 'v2.4.1');
-  assert.match(answer.error, /HTTP 503/);
+  assert.match(answer.error, /HTTP 503/, 'the central failure is kept beside the answer that replaced it');
   assert.equal(answer.updateAvailable, true);
+});
+
+test('with no token and no repository, the sentence names both places to configure', async () => {
+  // The script runs offline, but a shell that exports these would answer for the test rather than the code.
+  const saved = { repo: process.env.RWP_RELEASE_REPO, token: process.env.RWP_RELEASE_TOKEN };
+  delete process.env.RWP_RELEASE_REPO;
+  delete process.env.RWP_RELEASE_TOKEN;
+  try {
+    await assert.rejects(
+      checkForUpdates({
+        config: { channel: 'stable' },
+        current: { app: '1.3.1' },
+        plugins: [],
+        fetchImpl: async () => new Response('{}', { status: 200 }),
+      }),
+      /Integrations → GitHub/,
+    );
+  } finally {
+    if (saved.repo !== undefined) process.env.RWP_RELEASE_REPO = saved.repo;
+    if (saved.token !== undefined) process.env.RWP_RELEASE_TOKEN = saved.token;
+  }
 });
 
 /* -- 7. The answer the screen reads ----------------------------------------------------------------- */

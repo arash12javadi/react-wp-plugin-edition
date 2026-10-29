@@ -6,7 +6,8 @@
  * an update exists or how it is applied:
  *
  *   GET  /api/admin/updates                 what is installed, how it is configured, what this host can do
- *   POST /api/admin/updates/check           ask `react-wp.com` (or the public feed) for newer releases
+ *   POST /api/admin/updates/check           ask `react-wp.com`, or read this deployment's own GitHub
+ *                                           release tags when it owns the repository
  *   POST /api/admin/system/update           apply one: call the deploy hook, or start a self-update run
  *   GET  /api/admin/system/update-status    how a self-update run is going, plus the recent ones
  *
@@ -14,7 +15,7 @@
  * `system_settings.updates_config` and is read server-side through `readIntegrationRows`, so the token
  * reaches `react-wp.com` and nothing else. The browser is told only `has_token` — see
  * `describeUpdateConfig` — and it never calls GitHub at all, which is what makes a private repository
- * private.
+ * private. The GitHub credential a direct check uses never leaves the server either.
  *
  * `handleUpdateRequest` returns `null` for a path that is not one of the four, the same contract
  * `handleAdminRequest` has, so `server.mjs` chains the two.
@@ -23,7 +24,6 @@ import { readFile } from 'node:fs/promises';
 import { authorizePluginManager } from './pluginFiles.mjs';
 import {
   AUTO_CHECK_KEYS,
-  MANUAL_UPDATE_STEPS,
   PLUGIN_DIRECTORY_PATH,
   UpdateError,
   UPDATE_CHANNELS,
@@ -49,17 +49,24 @@ const fail = (error) => ({
 });
 
 /**
- * The version this build reports, from its own `package.json`.
+ * The version this build reports.
  *
- * Read from disk rather than sent by the browser: an update check compares *the running build* against
- * what is published, and a client that could name its own version could hide an update from itself.
- * Cached after the first read — this file cannot change while the process runs, which is exactly the
- * property that makes it the right answer.
+ * `RWP_APP_VERSION` wins when the deployment pins it to the release tag it was built from, which is the
+ * only value that cannot lag: a release workflow that checks out `v2.4.1` can export `2.4.1` in the same
+ * step. Otherwise the build's own `package.json` — written by the same workflow just before the tag is
+ * pushed — is the answer. The number is read on the server, never sent by the browser: a client that
+ * could name its own version could hide an update from itself. Cached after the first read, because this
+ * file cannot change while the process runs.
  */
 let installedVersionCache = '';
 
 export async function installedVersion() {
   if (installedVersionCache) return installedVersionCache;
+  const pinned = String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
+  if (pinned) {
+    installedVersionCache = pinned;
+    return pinned;
+  }
   try {
     const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
     const version = String(JSON.parse(raw)?.version || '').trim();
@@ -101,7 +108,6 @@ async function overview({ readOptions }) {
     readable: stored.readable,
     error: stored.error,
     support,
-    manual_steps: MANUAL_UPDATE_STEPS,
     /** Where a plugin catalogue would be asked for, so the screen can say where installs come from. */
     plugin_directory: PLUGIN_DIRECTORY_PATH,
     channels: UPDATE_CHANNELS,
@@ -117,10 +123,11 @@ async function check(body, config, readOptions) {
     config: stored.config,
     current: { app: await installedVersion(), site: String(body.site || '').trim() },
     plugins,
+    github: stored.github,
   });
   // `readable: false` is worth saying even when the check succeeded: it means this server could not see
-  // the token and the answer came from the public feed, so the administrator knows why a private release
-  // is missing before they go looking in the wrong place.
+  // the stored rows, so the administrator knows why a configured source looks unconfigured before they go
+  // looking in the wrong place.
   return { ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable };
 }
 
@@ -129,9 +136,9 @@ async function check(body, config, readOptions) {
  *
  * One route for three ways of applying an update, because the *decision* belongs on the server: the
  * browser asks for an update, and `updatePlan` says what this host can actually do. The three answers are
- * shaped differently on purpose — a started rebuild, a started run, and a refusal with instructions —
- * and each carries the check it was based on, so the screen never has to guess which release it just
- * asked for.
+ * shaped differently on purpose — a started rebuild, a started run, and a refusal that names what to
+ * configure — and each carries the check it was based on, so the screen never has to guess which release
+ * it just asked for.
  */
 async function applyUpdate(body, config, readOptions, readDeployHook) {
   const stored = await readUpdatesConfig(readOptions);
@@ -141,6 +148,7 @@ async function applyUpdate(body, config, readOptions, readDeployHook) {
     config: stored.config,
     current: { app: installed, site: String(body.site || '').trim() },
     plugins,
+    github: stored.github,
   });
   const reported = { ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable };
   // Asked only now: the deploy hook is a database read, and most calls to this route end at `up_to_date`.
@@ -156,7 +164,7 @@ async function applyUpdate(body, config, readOptions, readDeployHook) {
 
   if (plan.up_to_date) return { status: 200, body: { ...plan, check: reported } };
   if (plan.mode === 'manual') {
-    return { status: 409, body: { ...plan, check: reported, manual_steps: MANUAL_UPDATE_STEPS } };
+    return { status: 409, body: { ...plan, check: reported } };
   }
   if (plan.mode === 'deploy-hook') {
     const result = await applyDeployHookUpdate({ deployHook, env: process.env });

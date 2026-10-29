@@ -1,5 +1,5 @@
 /**
- * Types for `server/updateCenter.mjs` â€” the check, the plan and the deploy-hook call, shared by
+ * Types for `server/updateCenter.mjs` — the check, the plan and the deploy-hook call, shared by
  * `server.mjs` (`server/updateRoutes.mjs`) and the universal engine (`src/server/routes/updates.ts`).
  *
  * The implementation is plain ESM because the classic host cannot import TypeScript. This declaration
@@ -15,7 +15,6 @@ export const VERSION_STATE_KEY: string;
 export const VERSION_STATE_HISTORY_LIMIT: number;
 
 export const DEFAULT_CENTRAL_URL: string;
-export const DEFAULT_FEED_URL: string;
 export const CENTRAL_CHECK_PATH: string;
 export const PLUGIN_DIRECTORY_PATH: string;
 
@@ -28,9 +27,11 @@ export class UpdateError extends Error {
   status: number;
 }
 
-/** One release, from the central answer, the public feed or a GitHub release. */
+/** One release, from the central answer or a GitHub release tag. */
 export interface UpdateRelease {
   version: string;
+  /** The published tag, `v2.4.1` — the one thing this feature treats as the version. */
+  tag: string;
   released: string;
   notes: string[];
   changelog_url: string;
@@ -46,23 +47,30 @@ export type PublicUpdateRelease = Omit<UpdateRelease, 'download_url'>;
 export interface UpdateConfig {
   central_url: string;
   token: string;
-  feed_url: string;
   channel: string;
   auto_check: string;
   notify: boolean;
   self_update: boolean;
 }
 
+/**
+ * The repository a check reads release tags from when this deployment owns it. `token` is empty for a
+ * public repository, which is a supported state rather than an error.
+ */
+export interface GithubUpdateSource {
+  repo: string;
+  token: string;
+}
+
 /** The same configuration with the token replaced by `has_token`. */
 export interface UpdateConfigView {
   central_url: string;
-  feed_url: string;
   channel: string;
   auto_check: string;
   notify: boolean;
   self_update: boolean;
   has_token: boolean;
-  source: 'central' | 'feed';
+  source: 'central' | 'github';
 }
 
 /** What the browser knows and the server cannot: which build is running. */
@@ -82,11 +90,13 @@ export interface InstalledPluginVersion {
 export interface UpdateCheck {
   format: 'rwp-update-center';
   version: 1;
-  source: 'central' | 'feed';
+  source: 'central' | 'github';
   checked_at: string;
   app: {
     installed: string;
     latest: string;
+    /** The published tag, `v2.4.1`. What the screen shows as "latest". */
+    latest_tag: string;
     update_available: boolean;
     release: PublicUpdateRelease | null;
   };
@@ -100,11 +110,17 @@ export interface UpdateCheck {
     release: PublicUpdateRelease | null;
   }>;
   update_available: boolean;
+  /** The central contract: four names any client can rely on without reading the rest. */
+  installedVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseNotes: string;
+  releaseUrl: string;
   /** A source that was tried and refused, worded for the administrator. */
   error: string;
 }
 
-/** How an update would be applied, and the steps the screen shows while it is. */
+/** The stages a plan runs, in order. The screen names them; there are no by-hand steps to print. */
 export interface UpdatePlan {
   mode: 'deploy-hook' | 'self' | 'manual';
   reason: string;
@@ -135,8 +151,27 @@ export function isVersion(value: unknown): boolean;
 
 export function updateConfigFrom(value: unknown): UpdateConfig;
 export function describeUpdateConfig(config: UpdateConfig): UpdateConfigView;
+
+/**
+ * The repository a check may read directly: `RWP_RELEASE_REPO`/`GITHUB_REPO` and
+ * `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN` from the environment, else the stored `github_config` row.
+ */
+export function githubUpdateSourceFrom(
+  env?: Record<string, string | undefined>,
+  stored?: unknown,
+): GithubUpdateSource | null;
+
+/** Which repository a direct release-tag read uses, and whether a credential came with it. */
+export function describeGithubSource(source?: GithubUpdateSource | null): {
+  repo: string;
+  has_token: boolean;
+  configured: boolean;
+};
+
 export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
   config: UpdateConfig;
+  /** The GitHub repository this deployment may read release tags from, or null. */
+  github: GithubUpdateSource | null;
   readable: boolean;
   error: string;
 }>;
@@ -159,13 +194,14 @@ export function fetchCentralCheck(options: {
   fetchImpl?: typeof fetch;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
-export function fetchFeedCheck(options: {
-  feedUrl: string;
+export function fetchGithubCheck(options: {
+  source: GithubUpdateSource;
+  channel?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
 export function checkAnswerFrom(input: {
-  source: 'central' | 'feed';
+  source: 'central' | 'github';
   app: UpdateRelease;
   plugins: Record<string, UpdateRelease>;
   current: CurrentVersion;
@@ -177,6 +213,8 @@ export function checkForUpdates(options: {
   config: UpdateConfig;
   current: CurrentVersion;
   plugins: InstalledPluginVersion[];
+  /** The repository this deployment may read directly; defaults to `githubUpdateSourceFrom()`. */
+  github?: GithubUpdateSource | null;
   fetchImpl?: typeof fetch;
 }): Promise<UpdateCheck>;
 
@@ -192,8 +230,6 @@ export function updatePlan(input: {
   latestVersion: string;
   installedVersion: string;
 }): UpdatePlan;
-
-export const MANUAL_UPDATE_STEPS: string[];
 
 export function applyDeployHookUpdate(options: {
   deployHook: string;

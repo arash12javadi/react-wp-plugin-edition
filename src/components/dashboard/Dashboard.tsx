@@ -13,7 +13,7 @@ export default function Dashboard({ subsection, navigate, role, status, siteTitl
   status: AdminStatus;
   siteTitle: string;
 }) {
-  if (subsection === 'updates' && hasCapability(role, 'manage_options')) return <UpdatesPanel status={status} />;
+  if (subsection === 'updates' && hasCapability(role, 'manage_options')) return <UpdatesPanel status={status} navigate={navigate} />;
   if (subsection === 'analytics' && hasCapability(role, 'edit_others_posts')) return <EngagementAnalytics />;
   if (subsection === 'guide') return <GuidePanel navigate={navigate} />;
   return <Overview role={role} status={status} navigate={navigate} siteTitle={siteTitle} />;

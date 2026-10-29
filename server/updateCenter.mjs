@@ -1,6 +1,6 @@
 /**
- * The update centre: which version this site runs, which version `react-wp.com` publishes, and how an
- * update is applied.
+ * The update centre: which version this site runs, which version is published, and how an update is
+ * applied.
  *
  * Three jobs, one file, because the two hosts (`server.mjs` and the universal engine's
  * `src/server/routes/updates.ts`) must answer with the same JSON:
@@ -10,9 +10,11 @@
  *      `system_settings.updates_config.token` — written by the signed-in administrator, read here only.
  *      The browser never holds it and never calls GitHub: that is what keeps a private repository
  *      private while still telling an administrator that an update exists.
- *   2. **Fall back to the public feed.** A site with no token (or a central server that is down) is
- *      answered from the `updates.json` feed Dashboard → Updates has always read, so the feature works
- *      before a central server exists and degrades instead of failing.
+ *   2. **Read GitHub directly when this deployment owns the repository.** A site with no central token
+ *      — a platform owner running its own build — reads its release tags with the GitHub credential the
+ *      Integrations hub already stores (`github_config`, or `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN`). This
+ *      replaced the old public `updates.json` feed: one source of truth, the release tag, so a check can
+ *      no longer answer 404 because a JSON file was not published, and a tag cannot disagree with it.
  *   3. **Apply the update.** A Vercel/Netlify host is told to rebuild (`deploy_config`, Settings →
  *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
  *      Which one is chosen, and why, is `updatePlan`.
@@ -20,14 +22,21 @@
  * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
  * never the `version` field of a `package.json`. The tag travels with the release (`tag`), reaches this
  * file through `releaseFrom`, and is what the screen shows and the check compares; the platform's half of
- * that conversation lives in `server/githubReleases.mjs` and `server/centralUpdates.mjs`, which no
- * customer's site ever runs a credential for.
+ * that conversation lives in `server/githubReleases.mjs` and `server/centralUpdates.mjs`, and the direct
+ * read in `fetchGithubCheck` below.
  *
  * Plain ESM with no `node:` imports: the same file is bundled into the Vercel function by
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
  * `environmentOf`, so a Workers deployment that has none does not crash on import.
  */
+import { GITHUB_CONFIG_KEY, githubTokenFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
+import { fetchGithubReleases, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
+import { compareVersions, isVersion } from './versions.mjs';
+
+/** Re-exported so every caller of this module keeps one import, as it always has. */
+export { compareVersions, isVersion, parseVersion } from './versions.mjs';
+
 
 /** `system_settings` rows this feature owns, in step with `src/lib/updateCenter.ts`. */
 export const UPDATE_CONFIG_KEY = 'updates_config';
@@ -38,12 +47,6 @@ export const VERSION_STATE_HISTORY_LIMIT = 20;
 
 /** Where the central server lives when nothing says otherwise. */
 export const DEFAULT_CENTRAL_URL = 'https://react-wp.com';
-
-/**
- * The public feed Dashboard → Updates has always read, kept as the fallback source.
- * In step with `defaultFeedUrl` in `src/lib/updates.ts`.
- */
-export const DEFAULT_FEED_URL = 'https://raw.githubusercontent.com/arash12javadi/react-wp/main/updates.json';
 
 /**
  * The central endpoints, named once so the client, the docs and this file cannot disagree.
@@ -86,33 +89,10 @@ const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
 /* -- Versions ------------------------------------------------------------------------------------ */
 
 /**
- * A version as `[major, minor, patch, build]` plus its pre-release tag, so `1.10.0` sorts above
- * `1.9.0` and `2.0.0-beta.1` sorts below `2.0.0`. Kept identical to `compareVersions` in
- * `src/lib/updates.ts`: the server decides whether an update exists and the browser writes the badge,
- * and a disagreement between the two would show "up to date" next to an Update Now button.
+ * `parseVersion`, `compareVersions` and `isVersion` live in `server/versions.mjs`, imported and
+ * re-exported above. They moved because `server/githubReleases.mjs` compares tags too and must not
+ * import this file to do it — one comparison, one owner, no chance of two answers.
  */
-export const parseVersion = (value) => {
-  const [core, pre = ''] = String(value || '').trim().replace(/^v/i, '').split('-', 2);
-  return { parts: core.split('.').map((part) => Number.parseInt(part, 10) || 0), pre };
-};
-
-/** `-1`, `0` or `1`, as a sort comparator. */
-export const compareVersions = (a, b) => {
-  const left = parseVersion(a);
-  const right = parseVersion(b);
-  for (let index = 0; index < Math.max(left.parts.length, right.parts.length); index += 1) {
-    const difference = (left.parts[index] || 0) - (right.parts[index] || 0);
-    if (difference !== 0) return Math.sign(difference);
-  }
-  if (left.pre === right.pre) return 0;
-  // No tag outranks any tag: 2.0.0 ships after 2.0.0-rc.1.
-  if (!left.pre) return 1;
-  if (!right.pre) return -1;
-  return left.pre < right.pre ? -1 : 1;
-};
-
-/** True for something `compareVersions` can sort. */
-export const isVersion = (value) => /^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$/.test(trimmed(value));
 
 /* -- `system_settings.updates_config` ------------------------------------------------------------ */
 
@@ -121,7 +101,8 @@ export const isVersion = (value) => /^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$/
  *
  * Every field falls back rather than throwing: this row is written by a browser, so a half-filled or
  * hand-edited value must still leave the Updates screen usable. The token is the one field with no
- * default — without it there is no central server to ask, and the public feed answers instead.
+ * default — without it this site does not ask a central server, and the check reads this deployment's
+ * own GitHub release tags instead (`githubUpdateSourceFrom`).
  *
  * @param {unknown} value
  */
@@ -135,8 +116,6 @@ export const updateConfigFrom = (value) => {
     central_url: /^https?:\/\//i.test(central) ? central : DEFAULT_CENTRAL_URL,
     /** The server-only bearer token. Never sent to the browser, never logged. */
     token: trimmed(row.token),
-    /** The public feed used when there is no token, or when the central server cannot answer. */
-    feed_url: /^https?:\/\//i.test(trimmed(row.feed_url)) ? trimmed(row.feed_url) : DEFAULT_FEED_URL,
     channel: UPDATE_CHANNELS.includes(channel) ? channel : 'stable',
     auto_check: AUTO_CHECK_KEYS.includes(autoCheck) ? autoCheck : 'weekly',
     notify: row.notify !== false,
@@ -162,19 +141,64 @@ export const updateConfigFrom = (value) => {
  */
 export const describeUpdateConfig = (config) => ({
   central_url: config.central_url,
-  feed_url: config.feed_url,
   channel: config.channel,
   auto_check: config.auto_check,
   notify: config.notify,
   self_update: config.self_update,
   has_token: config.token.length > 0,
-  /** Which source an update check asks first. */
-  source: config.token ? 'central' : 'feed',
+  /**
+   * Which source an update check asks. `central` is a licensed site asking the platform; `github` is a
+   * deployment that owns the repository and reads its own release tags.
+   */
+  source: config.token ? 'central' : 'github',
+});
+
+/**
+ * The GitHub repository a check may read directly, or null.
+ *
+ * A platform owner's deployment owns the repository its releases are tagged on, so it does not need a
+ * central server to be told about them — but that read needs a credential for a private repository, and
+ * the Integrations hub already stores one (`github_config`, written by Settings → Integrations → GitHub).
+ * The environment is consulted first because that is where a platform build pins its own repository:
+ *
+ *   - `RWP_RELEASE_REPO` — `owner/name`, the same variable `server/centralUpdates.mjs` reads.
+ *   - `GITHUB_REPO` — the name the GitHub card writes.
+ *   - the stored `github_config.repository`.
+ *
+ * The token is `RWP_RELEASE_TOKEN`, else `GITHUB_TOKEN`, else the stored token; a public repository
+ * needs none, which is why an empty token is a supported state rather than an error.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @param {unknown} [stored] the `github_config` row
+ * @returns {{ repo: string, token: string } | null}
+ */
+export const githubUpdateSourceFrom = (env, stored) => {
+  const environment = environmentOf(env);
+  const row = stored && typeof stored === 'object' ? stored : {};
+  const repo = trimmed(environment.RWP_RELEASE_REPO) || trimmed(environment.GITHUB_REPO) || trimmed(row.repository);
+  const token = trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN) || githubTokenFrom(row);
+  return repoFrom(repo) ? { repo, token } : null;
+};
+
+/**
+ * The resolved GitHub source, safe to show an administrator: which repository, and whether a credential
+ * came with it. The token itself never leaves the server, exactly as with the central one.
+ *
+ * @param {{ repo: string, token: string } | null} [source]
+ */
+export const describeGithubSource = (source) => ({
+  repo: trimmed(source?.repo),
+  has_token: trimmed(source?.token).length > 0,
+  configured: trimmed(source?.repo).length > 0,
 });
 
 /**
  * The stored configuration, read the way this deployment can read `system_settings` — through the
  * engine's adapter, a direct connection, or the service key (`server/integrationSettings.mjs`).
+ *
+ * The GitHub row is read in the same trip because a check may need it: a site with no central token
+ * reads its own release tags, and reading both rows separately would mean two round trips to answer one
+ * question.
  *
  * A row that cannot be read is reported as exactly that rather than as an unconfigured site: on a
  * Supabase deployment whose server has neither `DATABASE_URL` nor `SUPABASE_SECRET_KEY` the token is
@@ -183,9 +207,10 @@ export const describeUpdateConfig = (config) => ({
  * @param {import('./integrationSettings.mjs').IntegrationReadOptions} options
  */
 export async function readUpdatesConfig(options) {
-  const rows = await readIntegrationRows([UPDATE_CONFIG_KEY], options);
+  const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY], options);
   return {
     config: updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]),
+    github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY]),
     readable: rows.readable,
     error: rows.readable ? '' : rows.error,
   };
@@ -270,9 +295,9 @@ export const versionStateAfter = (previous, entry) => {
 /* -- Releases ------------------------------------------------------------------------------------ */
 
 /**
- * One release from any of the shapes this feature reads: the central answer, the public feed, and a
- * hand-written entry. A `version` is the only requirement; everything else is optional so a feed written
- * by hand still works.
+ * One release from any of the shapes this feature reads: the central answer, a GitHub release parsed by
+ * `server/githubReleases.mjs`, and a row written by hand. A `version` (or a tag that parses as one) is
+ * the only requirement; everything else is optional.
  *
  * @param {unknown} value
  */
@@ -380,7 +405,7 @@ export const installedPluginsFrom = (value) => {
  *
  * The body carries what the site runs, which is what lets `react-wp.com` answer for the plugins *this*
  * site has rather than for the whole catalogue. The token is required: without it central cannot tell a
- * licensed site from a stranger, and the caller falls back to the feed.
+ * licensed site from a stranger, and the caller reads its own GitHub release tags instead.
  *
  * The answer is read in either of the two shapes the platform may speak — the release list below, and the
  * four-field contract (`installedVersion`, `latestVersion`, `updateAvailable`, `releaseNotes`,
@@ -391,7 +416,7 @@ export const installedPluginsFrom = (value) => {
  */
 export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch }) {
   if (!config.token) {
-    throw new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; the public feed answers until then.', 400);
+    throw new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; this deployment\'s own GitHub release tags answer until then.', 400);
   }
   const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
   const request = {
@@ -461,46 +486,38 @@ export const centralReleasesFrom = (body) => {
   return { app, plugins: pluginReleasesFrom(body?.plugins) };
 };
 
+
+
 /**
- * The public `updates.json` feed — the shape Dashboard → Updates has always read
- * (`format: "rwp-update-feed"`, `version: 1`). Needs no token and no central server.
+ * Reads this deployment's own release tags from GitHub — the source a platform owner's site uses.
  *
- * @param {{ feedUrl: string, fetchImpl?: typeof fetch }} options
+ * This is the replacement for the public `updates.json` feed, and it is a strictly better answer to the
+ * same question: the tag GitHub lists *is* the release, so there is no file to forget to publish, no
+ * cache to go stale and no second copy of a version number to disagree with the first. The whole
+ * conversation is `server/githubReleases.mjs` — this function only picks the newest tag the configured
+ * channel may be offered and hands it to `checkAnswerFrom` in the same shape a central answer has.
+ *
+ * A repository with no release tag yet is a *sentence*, not a 404: `null` back from
+ * `latestReleaseFrom` means "tag a release" and the administrator is told exactly that.
+ *
+ * @param {{ source: { repo: string, token: string }, channel?: string, fetchImpl?: typeof fetch }} options
  */
-export async function fetchFeedCheck({ feedUrl, fetchImpl = fetch }) {
-  const url = trimmed(feedUrl) || DEFAULT_FEED_URL;
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(15_000),
-      cache: 'no-store',
-    });
-  } catch (error) {
-    throw new UpdateError(networkMessage(error, url), 502);
+export async function fetchGithubCheck({ source, channel = 'stable', fetchImpl = fetch }) {
+  const fetched = await fetchGithubReleases({ repo: source.repo, token: source.token, fetchImpl });
+  const release = latestReleaseFrom(fetched.releases, { channel });
+  if (!release) {
+    throw new UpdateError(`${fetched.repo} has no published ${channel === 'beta' ? 'pre-release' : 'release'} tag yet. Tag a release on GitHub (for example v1.0.0) and the next check finds it.`, 404);
   }
-  if (response.status === 404) {
-    throw new UpdateError(`The update feed returned 404 at ${url}. If that file lives in a private repository, raw.githubusercontent.com will not serve it without a token — save an update token on Settings → Updates instead.`, 404);
-  }
-  if (!response.ok) throw new UpdateError(`The update feed answered HTTP ${response.status} at ${url}.`, 502);
-  const body = await response.json().catch(() => {
-    throw new UpdateError(`${url} did not return valid JSON.`, 502);
-  });
-  if (body?.format !== 'rwp-update-feed') {
-    throw new UpdateError('The URL answered, but not with a React-WP update feed (expected "format": "rwp-update-feed").', 502);
-  }
-  const app = releaseFrom(body.app);
-  if (!app) throw new UpdateError('The update feed has no "app" entry with a version.', 502);
-  return { app, plugins: pluginReleasesFrom(body.plugins) };
+  return { app: release, plugins: {} };
 }
 
 /**
  * The whole answer a check produces, built once so both hosts, both sources and the central server agree
  * on its shape.
  *
- * `source` names where the answer came from (`central`, `github` or `feed`), `error` carries the first
- * failure when a source was tried and refused, and `updates` is what the screen lists — one entry per
- * plugin that has a newer release, plus the app itself.
+ * `source` names where the answer came from (`central` or `github`), `error` carries the first failure
+ * when a source was tried and refused, and `updates` is what the screen lists — one entry per plugin
+ * that has a newer release, plus the app itself.
  *
  * The last block is the contract the central server promises a customer's site, and the shape this route
  * answers with as well, so any client that speaks only that contract can read either:
@@ -512,7 +529,7 @@ export async function fetchFeedCheck({ feedUrl, fetchImpl = fetch }) {
  * has an update, plugins included". Two names because the two questions are different, and a screen that
  * conflated them would offer an Update Now button for a plugin.
  *
- * @param {{ source: 'central'|'github'|'feed', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string }} input
+ * @param {{ source: 'central'|'github', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string }} input
  */
 export const checkAnswerFrom = ({ source, app, plugins, current, plugins_installed, error = '' }) => {
   const installed = trimmed(current.app);
@@ -562,15 +579,22 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
 };
 
 /**
- * The check both hosts run: central first, the public feed as the fallback.
+ * The check both hosts run: the central server if this site has a token for it, GitHub's release tags
+ * if this deployment owns the repository, and a sentence naming what to configure if neither applies.
  *
- * The fallback is deliberate rather than defensive. A site without a token, a central server in the
- * middle of a deploy, and a token that was just revoked all have to leave an administrator able to see
- * that an update exists — and the feed is public, so the downgrade costs nothing.
+ * The order is deliberate. A licensed site asks the platform, which answers for the plugins it sells as
+ * well as for the app. A platform owner — a site whose own repository publishes these releases — has no
+ * reason to ask itself, and reads its tags directly with the credential the Integrations hub already
+ * stores. Both paths end in `checkAnswerFrom`, so the screen cannot tell them apart except by the
+ * `source` it is told.
  *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, fetchImpl?: typeof fetch }} options
+ * Nothing here reads `package.json`: this site's version is whatever the caller reports as installed,
+ * which comes from the build's own tag, and the newest version is a release tag. A file that is edited
+ * while a release is being prepared can therefore never be mistaken for the release.
+ *
+ * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string } | null, fetchImpl?: typeof fetch }} options
  */
-export async function checkForUpdates({ config, current, plugins, fetchImpl = fetch }) {
+export async function checkForUpdates({ config, current, plugins, github = null, fetchImpl = fetch }) {
   let centralError = '';
   if (config.token) {
     try {
@@ -580,12 +604,16 @@ export async function checkForUpdates({ config, current, plugins, fetchImpl = fe
       centralError = error instanceof Error ? error.message : 'The central update server could not be asked.';
     }
   }
+  const source = github || githubUpdateSourceFrom(undefined);
+  if (!source) {
+    throw new UpdateError(centralError || 'No update source is configured for this site. Save the repository the releases are tagged on and a token for it under Settings → Integrations → GitHub (a public repository needs no token), or save an update token here to ask the central server.', 400);
+  }
   try {
-    const feed = await fetchFeedCheck({ feedUrl: config.feed_url, fetchImpl });
-    return checkAnswerFrom({ source: 'feed', ...feed, current, plugins_installed: plugins, error: centralError });
+    const releases = await fetchGithubCheck({ source, channel: config.channel, fetchImpl });
+    return checkAnswerFrom({ source: 'github', ...releases, current, plugins_installed: plugins, error: centralError });
   } catch (error) {
-    const feedError = error instanceof Error ? error.message : 'The update feed could not be read.';
-    throw new UpdateError(centralError ? `${centralError} ${feedError}` : feedError, error?.status || 502);
+    const githubError = error instanceof Error ? error.message : 'The GitHub releases could not be read.';
+    throw new UpdateError(centralError ? `${centralError} ${githubError}` : githubError, error?.status || 502);
   }
 }
 
@@ -629,13 +657,14 @@ export async function triggerDeployHookUrl(hook, { fetchImpl = fetch, env } = {}
 }
 
 /**
- * How this site would apply an update, and the steps the screen shows while it does.
+ * How this site would apply an update, and the stages the screen shows while it does.
  *
  * `deploy-hook` is the usual answer for a serverless deployment: the hook starts the build that pulls
  * the new version in, so there is nothing for this request to install. `self` is a host that runs
  * `node server.mjs` from a writable checkout — `server/selfUpdate.mjs` fetches, installs, builds and
- * restarts. `manual` is everything else, and its `reason` is the sentence the screen shows next to the
- * by-hand instructions, so an administrator is never told "no" without being told why.
+ * restarts. `manual` is everything else, and its `reason` says what to configure so that the next
+ * attempt can finish by itself; there are no by-hand steps to print, because the deploy hook or the
+ * self-updater *is* the way this feature applies a release.
  *
  * @param {{ config: any, deployHook: string, selfUpdate: boolean, latestVersion: string, installedVersion: string }} input
  */
@@ -668,30 +697,17 @@ export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, inst
   return {
     mode: 'manual',
     reason: selfUpdate
-      ? 'Automatic updates are switched off for this site, so the update has to be applied by hand.'
-      : 'This host cannot update itself: it is a serverless deployment with no deploy hook saved, or a server whose checkout is read-only.',
+      ? 'Automatic updates are switched off for this site. Turn them on in Settings → Updates, and this server applies the release itself.'
+      : 'This deployment cannot update itself yet. Save the deploy hook its host builds from under Settings → Integrations → Deployments (Vercel → Project → Settings → Git → Deploy Hooks), and Update now starts that build.',
     steps: [],
   };
 };
 
 /**
- * The by-hand instructions, in the shape the screen renders. Sent with every `manual` answer, because
- * the fallback for a host that cannot update itself is "here is what to do instead".
- */
-export const MANUAL_UPDATE_STEPS = [
-  'Back up first: Settings → Backup → Export backup.',
-  'Pull the new version into the folder or repository this site runs from (git pull, or extract the ZIP over the old folder, keeping .env.local and data/).',
-  'Run npm install — an update may add packages.',
-  'If the release notes mention a database change, run supabase/schema.sql again. It is safe to re-run.',
-  'Rebuild and restart: npm start (or npm run build && pm2 restart <name>). On Vercel, push — it builds on its own.',
-];
-
-/**
  * Runs the one thing a deployed site can do itself: call the hook that starts its build.
  *
  * The caller has already chosen the mode (`updatePlan`), and this only reports what happened — a failed
- * hook call is an answer, not an exception, because the administrator needs the sentence and the by-hand
- * steps either way.
+ * hook call is an answer, not an exception, because the administrator needs the sentence either way.
  *
  * @param {{ deployHook: string, env?: Record<string, string | undefined>, fetchImpl?: typeof fetch }} options
  */

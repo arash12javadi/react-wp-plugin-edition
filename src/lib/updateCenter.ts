@@ -17,7 +17,17 @@
  */
 import { client, getSystemSetting, setSystemSetting } from './db';
 import { rwp } from './rwp';
-import { installedAppVersion, type AutoCheck, type UpdateStatus } from './updates';
+import {
+  autoCheckIntervals,
+  defaultUpdateSettings,
+  installedAppVersion,
+  isCheckDue,
+  loadUpdateStatus,
+  saveUpdateStatus,
+  type AutoCheck,
+  type UpdateSettings,
+  type UpdateStatus,
+} from './updates';
 
 export { installedAppVersion };
 
@@ -52,15 +62,25 @@ export interface AvailableUpdate {
 /** `updates_config` as the server describes it back — the token is `has_token`, never the value. */
 export interface UpdateConfigView {
   central_url: string;
-  feed_url: string;
   channel: 'stable' | 'beta';
   auto_check: AutoCheck;
   notify: boolean;
   /** Opt-in: whether `POST /api/admin/system/update` may rewrite this server's checkout. */
   self_update: boolean;
   has_token: boolean;
-  /** Which source a check asks first: the central server when there is a token, the feed otherwise. */
-  source: 'central' | 'feed';
+  /** Which source a check asks first: the central server when there is a token, GitHub's release tags otherwise. */
+  source: 'central' | 'github';
+}
+
+/**
+ * The GitHub repository a check may read directly — the source for a deployment that owns the repository
+ * its releases are tagged on. `has_token` is the masked credential: a public repository needs none, which is
+ * why `configured` is the field that decides whether this source can answer at all.
+ */
+export interface GithubSourceView {
+  repo: string;
+  has_token: boolean;
+  configured: boolean;
 }
 
 /** What this host can do with an update. `reason` is written to be shown, never parsed. */
@@ -81,7 +101,7 @@ export interface UpdateSupport {
 export interface UpdateCheckAnswer {
   format: 'rwp-update-center';
   version: 1;
-  source: 'central' | 'feed' | 'github';
+  source: 'central' | 'github';
   checked_at: string;
   app: {
     installed: string;
@@ -104,9 +124,11 @@ export interface UpdateCheckAnswer {
   updateAvailable?: boolean;
   releaseNotes?: string;
   releaseUrl?: string;
-  /** Why the central server was not used, when the feed answered instead. Empty on success. */
+  /** Why the central server was not used, when GitHub's tags answered instead. Empty on success. */
   error: string;
   config: UpdateConfigView;
+  /** The repository this deployment reads release tags from, when it has one. */
+  github: GithubSourceView;
   /** False when this deployment cannot read `system_settings` — the token is stored but invisible. */
   readable: boolean;
 }
@@ -115,10 +137,10 @@ export interface UpdateCheckAnswer {
 export interface UpdatesOverview {
   installed: string;
   config: UpdateConfigView;
+  github: GithubSourceView;
   readable: boolean;
   error: string;
   support: UpdateSupport;
-  manual_steps: string[];
   /** The central plugin directory, for the Marketplace screen. */
   plugin_directory: string;
   channels: string[];
@@ -157,13 +179,13 @@ export interface SelfUpdateRun {
 /**
  * What `applyUpdate` produced, in the four shapes the route can answer with.
  *
- * `manual` is not an error: it is the route saying "this host cannot do this, here is what to do by
- * hand", and it must reach the screen with its steps intact. That is why the client classifies the
- * response instead of throwing on a 409.
+ * `manual` is not an error: it is the route saying "this host cannot do this", and `plan.reason` carries
+ * the sentence that names what to configure. That is why the client classifies the response instead of
+ * throwing on a 409.
  */
 export type UpdateOutcome =
   | { kind: 'up_to_date'; plan: UpdatePlan; check: UpdateCheckAnswer }
-  | { kind: 'manual'; plan: UpdatePlan; steps: string[]; check: UpdateCheckAnswer }
+  | { kind: 'manual'; plan: UpdatePlan; check: UpdateCheckAnswer }
   | {
     kind: 'deploy';
     queued: boolean;
@@ -215,7 +237,8 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<{ statu
 
 
 /**
- * `POST /api/admin/updates/check` — asks the central server, or the public feed when there is no token.
+ * `POST /api/admin/updates/check` — asks the central server, or reads this deployment's own GitHub release
+ * tags when the site has no token for it.
  *
  * The plugin list travels with the request because only the browser knows what this build activated, and
  * the central server needs it to say which of *this site's* plugins have newer releases. The `site` value
@@ -249,8 +272,8 @@ export const applyUpdate = async (options: { site?: string; ref?: string } = {})
   }
   if (plan.up_to_date) return { kind: 'up_to_date', plan, check };
   if (plan.mode === 'manual') {
-    // 409: a refusal that carries the instructions. Anything else under `manual` is that same answer.
-    return { kind: 'manual', plan, steps: (body.manual_steps as string[]) || [], check };
+    // 409: a refusal that carries its sentence in `plan.reason`. Anything else under `manual` is that same answer.
+    return { kind: 'manual', plan, check };
   }
   if (plan.mode === 'deploy-hook' || status === 502) {
     return {
@@ -367,38 +390,82 @@ export const recordVersionState = async (
   return setSystemSetting(versionStateKey, next);
 };
 
+/** A version without its `v`, so a tag and a `package.json` value compare as the same release. */
+const asPlainVersion = (value: string) => String(value || '').trim().replace(/^v/i, '');
+
 /**
- * A server check, translated into the row the sidebar badge already reads.
+ * A server check, translated into the row the sidebar badge reads.
  *
- * Dashboard → Updates now asks the server (`checkForUpdates` above) because the server is what compares
- * versions and what knows how an update would be applied. The badge and the Overview banner, though, are
- * fed by `system_settings`-free `options` rows that `runScheduledUpdateCheck` reads on every admin load —
- * so the answer is written back in that older feed shape. One check, one result, both screens agree.
+ * Dashboard → Updates asks the server (`checkForUpdates` above) because the server is what compares release
+ * tags and what knows how an update would be applied. The badge and the Overview banner are fed by the
+ * `options` row `loadUpdateStatus` reads on every admin load — so the answer is written back in that shape.
+ * One check, one result, both screens agree.
  *
- * `feed.app` carries the *latest* release, which is what `availableUpdates` compares against the running
+ * `latest` carries the *newest* release, which is what `availableUpdates` compares against the running
  * build, so an answer of "up to date" clears the badge rather than leaving yesterday's count behind.
  */
-export const legacyUpdateStatus = (answer: UpdateCheckAnswer): UpdateStatus => ({
-  checked_at: answer.checked_at,
-  feed_url: answer.config?.feed_url || '',
-  error: answer.error,
-  /** Written by the server check, so a scheduled feed check will not replace it with an older answer. */
-  source: 'server',
-  feed: {
-    format: 'rwp-update-feed',
-    version: 1,
-    app: {
-      version: answer.app.latest,
-      tag: answer.app.release?.tag || answer.app.latest_tag || '',
-      released: answer.app.release?.released || '',
-      notes: answer.app.release?.notes || [],
-      changelog_url: answer.app.release?.changelog_url || '',
-    },
+export const updateStatusFrom = (answer: UpdateCheckAnswer): UpdateStatus => {
+  const installed = asPlainVersion(answer.app?.installed || answer.installedVersion || installedAppVersion);
+  const latest = asPlainVersion(answer.app?.latest || answer.latestVersion || '');
+  const notes = (release: UpdateRelease | null | undefined) => ({
+    version: asPlainVersion(release?.version || ''),
+    tag: release?.tag || '',
+    released: release?.released || '',
+    notes: release?.notes || [],
+    changelog_url: release?.changelog_url || '',
+  });
+  return {
+    checked_at: answer.checked_at || new Date().toISOString(),
+    error: answer.error || '',
+    source: answer.source === 'central' ? 'central' : 'github',
+    installed,
+    latest: latest
+      ? {
+        ...notes(answer.app?.release),
+        version: latest,
+        tag: answer.app?.release?.tag || answer.app?.latest_tag || `v${latest}`,
+      }
+      : null,
     plugins: Object.fromEntries(
       Object.entries(answer.plugins || {})
         .filter(([, release]) => Boolean(release))
-        .map(([id, release]) => [id, { version: release!.version, tag: release!.tag || '', notes: release!.notes, released: release!.released }]),
+        .map(([id, release]) => [id, { ...notes(release), version: asPlainVersion(release!.version) }]),
     ),
-  },
+  };
+};
+
+/**
+ * The two scheduling settings, read from the server.
+ *
+ * They live in `system_settings.updates_config` — the same row the screen writes — so there is one copy of
+ * "check weekly, notify" rather than a second one in `options`. `defaultUpdateSettings` is the answer when
+ * the row cannot be read, which is the state of a deployment whose server cannot see `system_settings`.
+ */
+export const settingsFromConfig = (config?: UpdateConfigView | null): UpdateSettings => ({
+  auto_check: config?.auto_check && config.auto_check in autoCheckIntervals ? config.auto_check : defaultUpdateSettings.auto_check,
+  notify: typeof config?.notify === 'boolean' ? config.notify : defaultUpdateSettings.notify,
 });
+
+/** Saves the two scheduling settings, keeping the rest of the row as it is. */
+export const saveUpdateSettings = (settings: UpdateSettings) =>
+  saveUpdateConfig({ auto_check: settings.auto_check, notify: settings.notify });
+
+/**
+ * Runs the scheduled check when it is due — once per admin load, from `useAdminStatus`.
+ *
+ * The version answer is the server's (`checkForUpdates`), and it replaces the stored row, so a site that
+ * has just been deployed stops reporting an update the moment the admin is opened. A failure is thrown
+ * rather than stored as an empty answer: the badge must keep the last known release instead of losing it
+ * because GitHub was unreachable for a minute.
+ */
+export const runScheduledUpdateCheck = async (): Promise<{ settings: UpdateSettings; status: UpdateStatus | null }> => {
+  const stored = await loadUpdateStatus().catch(() => null);
+  // Settings are a database read on the server; a screen that cannot reach them still checks on the default.
+  const overview = await fetchUpdatesOverview().catch(() => null);
+  const settings = settingsFromConfig(overview?.config);
+  if (!isCheckDue(settings.auto_check, stored?.checked_at)) return { settings, status: stored };
+  const status = updateStatusFrom(await checkForUpdates());
+  await saveUpdateStatus(status).catch(() => undefined);
+  return { settings, status };
+};
 

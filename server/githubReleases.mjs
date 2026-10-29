@@ -20,7 +20,7 @@
  * Plain ESM with no `node:` imports, like `server/updateCenter.mjs`: the same file is bundled into the
  * Vercel function by `vite.api.config.mjs` and imported directly by `server.mjs`.
  */
-import { compareVersions, isVersion } from './updateCenter.mjs';
+import { compareVersions, isVersion } from './versions.mjs';
 
 /** The REST origin. Named once so a test can point at a stub without touching the call sites. */
 export const GITHUB_API_ORIGIN = 'https://api.github.com';

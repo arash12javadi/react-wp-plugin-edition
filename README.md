@@ -263,8 +263,7 @@ react-wp/
 ├─ api/                 Vercel serverless functions
 ├─ supabase/
 │  └─ schema.sql        Core CMS schema (23 tables); safe to re-run
-├─ data/                react-wp-config.json (installer-created or derived from the environment, git-ignored)
-└─ updates.json         Version manifest used by Dashboard → Updates
+└─ data/                react-wp-config.json (installer-created or derived from the environment, git-ignored)
 ```
 
 </details>
@@ -447,8 +446,9 @@ Remember the limits in [Deployment Options](#deployment-options).
 
 `supabase/schema.sql` is the whole database schema and is **run by hand in the Supabase SQL
 Editor**; the app cannot change its own database. It is safe to re-run: it only creates what is
-missing. Dashboard → Updates only *checks* `updates.json`; it never installs anything. Pull,
-re-run `supabase/schema.sql` if the update changed the schema, then rebuild.
+missing. Dashboard → Updates only *checks* the release tag this site runs against the tags published on
+GitHub; it never installs anything by itself. Pull, re-run `supabase/schema.sql` if the update changed
+the schema, then rebuild.
 
 </details>
 
@@ -1217,7 +1217,7 @@ The per-page `show_header` / `show_footer` switches come from [`supabase/schema.
 
 **Dashboard → Overview** is the admin's landing screen. Its setup checklist lists what is still missing, each item marked Required, Recommended or Optional, expandable into numbered steps with a link to the screen (or external dashboard) that fixes it: site title and tagline, logo and icon, an upload provider, Cloudinary delete keys, the ImageKit private key, missing database tables, the menu, social sign-in configuration, pending comments, your profile, and, from plugins, the shop's store address, payment methods, Stripe/PayPal keys, `SUPABASE_SECRET_KEY` and SMTP. Items can be hidden (remembered per person in the browser) and shown again. The number of visible required and recommended items, plus available updates, shows as a badge on Dashboard in the sidebar. Server secrets are only ever reported as set or not set: `/api/media-config` and the plugins' status routes never return a value. Plugin widgets such as *Shop at a glance* moved here from Pages & Posts, next to an *At a glance* panel of counts. Plugins add checklist items with `admin.registerSetupCheck`.
 
-**Dashboard → Updates** (administrators) compares the running version of the app (`package.json`) and each plugin (`manifest.json`) with a JSON feed, by default [`updates.json`](./updates.json) in this repository on GitHub. It can check by hand or automatically (every admin visit, daily, weekly or monthly); the result is stored in the `rwp_update_status` option so every administrator sees it, and the schedule in `rwp_update_settings`. There is no background process: a due check runs in the browser of the next administrator who opens the admin. Each update lists its notes. **Installing stays a step on the host** (`git pull` or a new ZIP, `npm install`, re-run `supabase/schema.sql` if the schema changed, `npm start`), and the screen explains it: the site runs from a build, so the browser cannot replace the code, and a server that downloads and runs code from a URL would let whoever controls that URL run anything on your host. To publish a release, bump `version` in `package.json` or the plugin's `manifest.json` and in `updates.json`, and note any schema change.
+**Dashboard → Updates** (administrators) compares the release this site is running with the ones GitHub publishes. A version **is a release tag** — there is no `updates.json` feed to keep in step any more, so there is no file to forget to publish, no cache to go stale and no second copy of a version number to disagree with the first. A site that stores an update token asks React-WP.com, which serves those same tags; a site that does not reads its own repository's tags directly (Settings → Integrations → GitHub, or `RWP_RELEASE_REPO`/`GITHUB_REPO`; a public repository needs no credential, a private one uses the stored GitHub token). The installed version comes from `RWP_APP_VERSION` when the build pins it to the tag it was built from, otherwise the build's `package.json`. It can check by hand or automatically (every admin visit, daily, weekly or monthly); the result is stored in the `rwp_update_status` option so every administrator sees it, and the schedule in `rwp_update_settings`. There is no background process: a due check runs in the browser of the next administrator who opens the admin. Each release lists the notes from its release body and links to its release page. **Installing stays a step on the host** (`git pull` or a new ZIP, `npm install`, re-run `supabase/schema.sql` if the schema changed, `npm start`), and the screen explains it: the site runs from a build, so the browser cannot replace the code, and a server that downloads and runs code from a URL would let whoever controls that URL run anything on your host. Where the host *can* do it — a Vercel or Netlify deploy hook, or a git checkout with self-update enabled on `npm start` — the card offers the button and the server records what actually happened, so a deploy that never finished is never reported as installed. To publish a release, tag the commit (`git tag v1.4.0 && git push --tags`) and put any schema change in the release body.
 
 **Dashboard → Guide & shortcodes** is documentation for new users inside the admin: first steps, the database, every `.env.local` variable and where to get it, content, menus and placeholders, media providers, a role/capability table generated from `roles.ts`, the page builder's dynamic tags, shop setup, backups and updates, plugin development, and troubleshooting. Shortcodes are listed from the registry, so a plugin's shortcodes appear automatically with the `description`, `example` and `attributes` it registers. Shop → Products has a *Copy shortcode* action for `[rwp_add_to_cart]`.
 

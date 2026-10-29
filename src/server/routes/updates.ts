@@ -2,22 +2,24 @@
  * Settings → Updates on every host that runs the universal engine, at the paths `server.mjs` serves:
  *
  *   GET  /api/admin/updates                 what is installed, how it is configured, what this host can do
- *   POST /api/admin/updates/check           ask `react-wp.com` (or the public feed) for newer releases
+ *   POST /api/admin/updates/check           ask `react-wp.com`, or read this deployment's own GitHub
+ *                                           release tags when it owns the repository
  *   POST /api/admin/system/update           apply one: call the deploy hook, or start a self-update run
  *   GET  /api/admin/system/update-status    how a self-update run is going, plus the recent ones
  *
- * The work is `server/updateCenter.mjs` — version comparison, the central check with the feed as its
- * fallback, and the decision about how an update is applied — so a Vercel deployment and `npm start`
- * cannot disagree about whether an update exists. What this file adds is the engine's own half:
+ * The work is `server/updateCenter.mjs` — version comparison, the central check with a direct GitHub
+ * release-tag read as the other source, and the decision about how an update is applied — so a Vercel
+ * deployment and `npm start` cannot disagree about whether an update exists. What this file adds is the
+ * engine's own half:
  *
  *   - **Who may ask.** `requirePluginManager`'s rule (Settings → Integrations uses it too), through this
  *     engine's auth adapter, because an update installs code.
  *   - **Where the token comes from.** `system_settings.updates_config`, read server-side through
  *     `integrationReadOptions` — the same reader the GitHub and deploy-hook credentials use. The browser
  *     is never sent the token, and never calls GitHub: `describeUpdateConfig` masks it as `has_token`.
- *   - **Which version is running.** `package.json`, inlined at build time. The check compares *the running
- *     build* against what is published; a client that could name its own version could hide an update
- *     from itself.
+ *   - **Which version is running.** `RWP_APP_VERSION` when the deploy pins it to the tag it built from,
+ *     else `package.json`, inlined at build time. The check compares *the running build* against a
+ *     published release tag; a client that could name its own version could hide an update from itself.
  *   - **What "apply" means here.** `pluginHostMode` decides. A host with a writable checkout can rewrite
  *     itself (`server/selfUpdate.mjs`: fetch, install, build, restart). A serverless deployment cannot —
  *     its disk does not survive the request — so it is updated through its deploy hook, and the plan says
@@ -25,7 +27,7 @@
  */
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { version as installedAppVersion } from '../../../package.json';
+import { version as packageVersion } from '../../../package.json';
 import type { RuntimeConfig } from '../../lib/runtime';
 import { ensureSiteInstalled, getRuntimeConfig } from '../config';
 import { detectPluginHostMode } from '../pluginHostMode';
@@ -39,11 +41,11 @@ import {
 } from '../pluginHostAccess';
 import {
   AUTO_CHECK_KEYS,
-  MANUAL_UPDATE_STEPS,
   PLUGIN_DIRECTORY_PATH,
   UPDATE_CHANNELS,
   applyDeployHookUpdate,
   checkForUpdates,
+  describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
   readUpdatesConfig,
@@ -58,6 +60,17 @@ import {
 } from '../../../server/selfUpdate.mjs';
 
 export const updatesRouter = new Hono();
+
+/**
+ * The version this build reports.
+ *
+ * `RWP_APP_VERSION` wins when the deployment pins it to the release tag it was built from — a release
+ * workflow that checks out `v2.4.1` can export `2.4.1` in the same step, and that is the only value that
+ * cannot lag behind the code actually running. Otherwise `package.json`, which the same workflow writes
+ * immediately before pushing the tag, is the answer. Read on the server, never sent by the browser.
+ */
+const installedAppVersion =
+  String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '') || String(packageVersion || '').trim();
 
 /**
  * Everything that can be refused with a status before any work starts: whether this site is installed,
@@ -107,10 +120,10 @@ async function selfSupport() {
 /**
  * `GET /api/admin/updates` — everything the screen needs before it offers a button.
  *
- * `readable: false` is the interesting field: this deployment stores the token but cannot see
- * `system_settings` (a Supabase URL with no direct connection and no service key), so the check will run
- * from the public feed. Saying that here keeps the screen from asking the administrator to paste a token
- * that is already stored.
+ * `readable: false` is the interesting field: this deployment stores a token but cannot see
+ * `system_settings` (a Supabase URL with no direct connection and no service key), so the check will fall
+ * back to this deployment's own GitHub release tags. Saying that here keeps the screen from asking the
+ * administrator to paste a token that is already stored.
  */
 async function overview(c: Context): Promise<Response> {
   try {
@@ -119,10 +132,10 @@ async function overview(c: Context): Promise<Response> {
     return c.json({
       installed: installedAppVersion,
       config: describeUpdateConfig(stored.config),
+      github: describeGithubSource(stored.github),
       readable: stored.readable,
       error: stored.error,
       support: await selfSupport(),
-      manual_steps: MANUAL_UPDATE_STEPS,
       plugin_directory: PLUGIN_DIRECTORY_PATH,
       channels: UPDATE_CHANNELS,
       auto_check: AUTO_CHECK_KEYS,
@@ -148,10 +161,16 @@ async function check(c: Context): Promise<Response> {
       config: stored.config,
       current: { app: installedAppVersion, site: String(body.site || '').trim() },
       plugins: installedPluginsFrom(body.plugins),
+      github: stored.github,
     });
     // The configuration goes back with the answer, with the token replaced by `has_token`: the screen
-    // shows which source replied, and `readable: false` explains a feed answer on a site that has a token.
-    return c.json({ ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable });
+    // shows which source replied, and `readable: false` explains why a stored token looked unconfigured.
+    return c.json({
+      ...answer,
+      config: describeUpdateConfig(stored.config),
+      github: describeGithubSource(stored.github),
+      readable: stored.readable,
+    });
   } catch (error) {
     return fail(c, error);
   }
@@ -162,8 +181,8 @@ async function check(c: Context): Promise<Response> {
  *
  * One route for three ways of applying an update, because the decision belongs here: the browser asks for
  * an update and `updatePlan` says what this host can actually do with one. The three answers are shaped
- * differently on purpose — a started rebuild, a started run, a refusal with instructions — and each
- * carries the check it was based on, so the screen never has to guess which release it just asked for.
+ * differently on purpose — a started rebuild, a started run, a refusal that names what to configure — and
+ * each carries the check it was based on, so the screen never has to guess which release it just asked for.
  */
 async function applyUpdate(c: Context): Promise<Response> {
   try {
@@ -174,8 +193,14 @@ async function applyUpdate(c: Context): Promise<Response> {
       config: stored.config,
       current: { app: installedAppVersion, site: String(body.site || '').trim() },
       plugins: installedPluginsFrom(body.plugins),
+      github: stored.github,
     });
-    const reported = { ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable };
+    const reported = {
+      ...answer,
+      config: describeUpdateConfig(stored.config),
+      github: describeGithubSource(stored.github),
+      readable: stored.readable,
+    };
     // Asked only now: the hook is a database read, and most calls to this route end at `up_to_date`.
     const deployHook = await deployHookUrl(config).catch(() => '');
     const support = await selfSupport();
@@ -189,7 +214,9 @@ async function applyUpdate(c: Context): Promise<Response> {
 
     if (plan.up_to_date) return c.json({ ...plan, check: reported });
     if (plan.mode === 'manual') {
-      return c.json({ ...plan, check: reported, manual_steps: MANUAL_UPDATE_STEPS }, 409 as ContentfulStatusCode);
+      // 409: nothing is wrong with the request, this host simply has nowhere to send an update —
+      // `plan.reason` names the two things that would give it one.
+      return c.json({ ...plan, check: reported }, 409 as ContentfulStatusCode);
     }
     if (plan.mode === 'deploy-hook') {
       // The hook is a pre-shared secret: `applyDeployHookUpdate` reports whether it was called and what

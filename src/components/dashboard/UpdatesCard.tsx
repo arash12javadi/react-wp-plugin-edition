@@ -1,11 +1,15 @@
 /**
  * The in-app update card: check, apply, and watch it happen.
  *
- * `UpdatesPanel` could do one thing — ask a public JSON feed what the latest version was and print the
- * by-hand instructions. This card is the other half. The server does the check, so a private repository
- * stays private and the version compared is the version that is running; and the server applies the
- * update in whichever way this host can — a deploy hook on Vercel, a detached run on a server that owns
- * its checkout, or the by-hand steps when neither is possible.
+ * `UpdatesPanel` could do one thing — print the by-hand instructions — and the version it named came from
+ * a public `updates.json` feed. This card is the other half, and the feed is gone: a version is published
+ * by tagging a release on GitHub, and the server is what reads it — from `react-wp.com` when this site
+ * holds a token for it, or straight from this deployment's own release tags. So a private repository stays
+ * private and the version compared is the version that is running.
+ *
+ * Applying is the server's decision too: a deploy hook on Vercel, a detached run on a server that owns its
+ * checkout, or one sentence naming what to configure when neither applies. This card shows which, and
+ * never guesses.
  *
  * Three rules this component keeps:
  *
@@ -20,7 +24,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   applyUpdate, checkForUpdates, fetchUpdateRun, fetchUpdateRuns, fetchUpdatesOverview, installedAppVersion,
-  isRunInFlight, legacyUpdateStatus, readVersionState, recordVersionState, saveUpdateConfig,
+  isRunInFlight, readVersionState, recordVersionState, saveUpdateConfig, updateStatusFrom,
   type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview, type VersionStateEntry,
 } from '../../lib/updateCenter';
 import { autoCheckIntervals, compareVersions, saveUpdateStatus, type AutoCheck, type UpdateStatus } from '../../lib/updates';
@@ -38,6 +42,16 @@ const pollIntervalMs = 2500;
  * nobody measured.
  */
 const deployStageMs = 20_000;
+
+/**
+ * How long a Vercel or Netlify build usually takes, in seconds — printed next to the countdown so the number
+ * that is ticking has something to be compared against. Not a deadline: the hook reports nothing, and a build
+ * that takes longer is normal.
+ */
+const typicalBuildSeconds = 150;
+
+/** The countdown's upper reference, when the screen stops saying "almost there". */
+const slowBuildSeconds = 240;
 
 /** A version as the release is tagged, `v2.4.1`. Used for display only; comparisons take plain versions. */
 const asTag = (version: string) => {
@@ -95,7 +109,7 @@ function TokenField({ hasToken, value, disabled, onChange, onForget }: {
       />
       <span className={styles.help}>
         Sent as a header to the update server, never to GitHub.{' '}
-        {hasToken ? 'A token is stored.' : 'Without one, checks fall back to the public feed.'}
+        {hasToken ? 'A token is stored.' : 'Without one, checks read this deployment’s own GitHub release tags.'}
         {hasToken && (
           <>
             {' '}
@@ -110,7 +124,11 @@ function TokenField({ hasToken, value, disabled, onChange, onForget }: {
 }
 
 
-export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateStatus) => void }) {
+export default function UpdatesCard({ onStatus, navigate }: {
+  onStatus?: (status: UpdateStatus) => void;
+  /** Sends the administrator to the screen that configures the missing half — GitHub, or the deploy hook. */
+  navigate?: (section: string, subsection?: string) => void;
+}) {
   const [overview, setOverview] = useState<UpdatesOverview | null>(null);
   const [check, setCheck] = useState<UpdateCheckAnswer | null>(null);
   const [run, setRun] = useState<SelfUpdateRun | null>(null);
@@ -126,6 +144,9 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   const [feedback, setFeedback] = useState('');
   /** `deploying` while the hook is being called, `building` while the platform rebuilds the site. */
   const [deployStage, setDeployStage] = useState<'' | 'deploying' | 'building'>('');
+  /** When the hook answered, so the build the platform is running can be counted rather than guessed at. */
+  const [deployStartedAt, setDeployStartedAt] = useState(0);
+  const [buildSeconds, setBuildSeconds] = useState(0);
   // Read once per mount and written after a run: a poll must not cost a database round trip of its own.
   const versionState = useRef<Record<string, unknown> | null>(null);
   const deployTimer = useRef<number | null>(null);
@@ -139,6 +160,21 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   useEffect(() => stopDeployTimer, [stopDeployTimer]);
 
   /**
+   * The build countdown: one second at a time, from the moment the hook answered.
+   *
+   * A deploy hook is fire-and-forget — Vercel and Netlify report the build in their own dashboard — so this is
+   * the only progress this screen can honestly show. It stops the moment the stage is cleared, which a check
+   * that finds the new version does.
+   */
+  useEffect(() => {
+    if (deployStage !== 'building' || !deployStartedAt) return undefined;
+    const tick = () => setBuildSeconds(Math.max(0, Math.round((Date.now() - deployStartedAt) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [deployStage, deployStartedAt]);
+
+  /**
    * Shows an answer and hands it to the screens that still read `options.rwp_update_status` — the sidebar
    * badge and the Overview banner are driven by `runScheduledUpdateCheck`, so one check keeps all three
    * in step instead of a fresh count sitting next to a stale one.
@@ -146,7 +182,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
   const publish = useCallback((answer: UpdateCheckAnswer | null) => {
     setCheck(answer);
     if (!answer) return;
-    const status = legacyUpdateStatus(answer);
+    const status = updateStatusFrom(answer);
     onStatus?.(status);
     void saveUpdateStatus(status).catch(() => undefined);
   }, [onStatus]);
@@ -178,6 +214,8 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
     if (pending.to && applied && compareVersions(applied, pending.to) < 0) return;
     stopDeployTimer();
     setDeployStage('');
+    setDeployStartedAt(0);
+    setBuildSeconds(0);
     try {
       await remember({
         at: new Date().toISOString(),
@@ -265,7 +303,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
       const latest = asTag(answer.latestVersion || answer.app.latest_tag || answer.app.latest);
       setFeedback(answer.update_available
         ? `${answer.updates.length} update${answer.updates.length === 1 ? '' : 's'} available${answer.updateAvailable === false ? '' : ` — latest release ${latest}`}.`
-        : `Everything is up to date: ${asTag(answer.app.installed)} is the latest release GitHub publishes.`);
+        : `Everything is up to date: ${asTag(answer.app.installed)} is the latest release ${answer.source === 'central' ? 'React-WP.com publishes' : 'GitHub publishes'}.`);
       await settleDeploy(answer);
     } catch (checkError) {
       setError(message(checkError, 'The update check failed.'));
@@ -308,6 +346,8 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
         // and the rebuild the platform is now doing. The check that follows the rebuild is what turns
         // this into the success message, so the button stays available instead of a spinner that lies.
         stopDeployTimer();
+        setDeployStartedAt(Date.now());
+        setBuildSeconds(0);
         setDeployStage('deploying');
         deployTimer.current = window.setTimeout(() => setDeployStage('building'), deployStageMs);
         setFeedback(`Deploying update… The deploy hook was called for ${asTag(outcome.check.app.latest)}. The platform is rebuilding this site now.`);
@@ -315,6 +355,8 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
       }
       stopDeployTimer();
       setDeployStage('');
+      setDeployStartedAt(0);
+      setBuildSeconds(0);
       setRun(outcome.run);
       setLog('');
       setRecent((current) => [outcome.run, ...current].slice(0, 10));
@@ -346,7 +388,6 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
       // this form, so an empty field has to mean "leave it alone" rather than "erase it".
       await saveUpdateConfig({
         central_url: form.central_url.trim(),
-        feed_url: form.feed_url.trim(),
         channel: form.channel,
         auto_check: form.auto_check,
         notify: form.notify,
@@ -372,7 +413,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
     try {
       await saveUpdateConfig({ token: null });
       setToken('');
-      setFeedback('The update token was removed. Checks now use the public feed.');
+      setFeedback('The update token was removed. Checks now read this deployment’s own GitHub release tags.');
       await load();
     } catch (removeError) {
       setError(message(removeError, 'The stored token could not be removed.'));
@@ -413,7 +454,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
             <h2 id="updates-card-heading">🔄 Updates</h2>
             <p className={styles.muted}>
               React-WP <code>{installedTag}</code>
-              {source ? ` · ${source === 'central' ? 'checked through React-WP.com' : 'checked through the public feed'}` : ''}
+              {source ? ` · ${source === 'central' ? 'checked through React-WP.com' : 'read from this repository’s release tags'}` : ''}
               {form ? ` · ${form.has_token ? 'update token stored' : 'no update token'}` : ''}
             </p>
           </div>
@@ -456,13 +497,21 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
         {deployStage && (
           <div className={styles.progress} role="status">
             <p className={styles.muted}>
-              <strong>{deployStage === 'deploying' ? 'Deploying update…' : 'Building…'}</strong>
+              <strong>
+                {deployStage === 'deploying'
+                  ? 'Deploying update…'
+                  : `Building… ${Math.floor(buildSeconds / 60)}:${String(buildSeconds % 60).padStart(2, '0')}`}
+              </strong>
               {latestTag ? <> — <code>{latestTag}</code> was handed to the deploy hook.</> : null}
             </p>
             <p className={styles.help}>
-              The platform builds on its own schedule and reports no percentage here. When the new build is
-              live, <em>Check again</em> compares the GitHub release against the version this build answers
-              with, and turns the notice above into the success message.
+              {deployStage === 'deploying'
+                ? 'Calling the deploy hook. The next step is the platform’s own build, which this screen counts for you.'
+                : buildSeconds < typicalBuildSeconds
+                  ? `A Vercel or Netlify build of this site usually takes about ${Math.round(typicalBuildSeconds / 60)} minutes; it has been ${buildSeconds}s. When the new build is live, “Check again” turns this notice into the success message.`
+                  : buildSeconds < slowBuildSeconds
+                    ? `Longer than the usual ${Math.round(typicalBuildSeconds / 60)} minutes, which happens on a cold cache or a busy minute on the platform. Open the deploy log in the platform’s dashboard if you want to watch it.`
+                    : 'Still building, or the build failed. The platform’s dashboard has the log; when it succeeds, “Check again” compares the GitHub release against the version this build answers with.'}
             </p>
             <div className={styles.buttonRow}>
               <button type="button" className={styles.secondaryButton} disabled={checking} onClick={() => void checkNow()}>
@@ -515,7 +564,7 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
             </div>
           ) : (
             <div className={styles.success} role="status">
-              Nothing to update — this site runs <code>{installedTag}</code>, the newest release GitHub publishes.
+              Nothing to update — this site runs <code>{installedTag}</code>, the newest release {source === 'central' ? 'React-WP.com publishes' : 'GitHub publishes'}.
             </div>
           )
         ) : (
@@ -555,13 +604,6 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
             </ul>
           </details>
         )}
-
-        {Boolean(overview?.manual_steps?.length) && (
-          <details className={styles.howTo}>
-            <summary>Update by hand</summary>
-            <ol>{overview!.manual_steps.map((step) => <li key={step}>{step}</li>)}</ol>
-          </details>
-        )}
       </section>
 
       <section className={styles.panel} aria-labelledby="updates-source-heading">
@@ -569,11 +611,39 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
           <div>
             <h2 id="updates-source-heading">Where updates come from</h2>
             <p className={styles.muted}>
-              The token below is written to <code>system_settings.updates_config</code> and read only by the
-              server. This screen is never sent it back — <code>has_token</code> is all it sees — so nothing in
-              the browser can leak it, and a private repository stays private.
+              A version is published by tagging a release on GitHub — <code>v2.4.1</code>. A site with a token
+              for the update server asks it; a site without one reads its own repository’s release tags. Either
+              way the token below is written to <code>system_settings.updates_config</code> and read only by the
+              server: this screen is never sent it back (<code>has_token</code> is all it sees), so nothing in the
+              browser can leak it and a private repository stays private.
             </p>
           </div>
+        </div>
+
+        <div className={styles.field}>
+          GitHub release tags
+          <p className={styles.help}>
+            {overview?.github?.configured
+              ? <>
+                Reading <code>{overview.github.repo}</code>
+                {overview.github.has_token ? ' with the stored GitHub token' : ' — a public repository, so no token is needed'}.
+                {' '}A release is published by tagging it: <code>v1.2.3</code>.
+                {navigate && (
+                  <>
+                    {' '}
+                    <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>
+                      Change it in Settings → Integrations → GitHub
+                    </button>
+                  </>
+                )}
+              </>
+              : <>
+                No repository is configured, so a check has nothing to read without an update token.
+                {navigate
+                  ? <> <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>Name the repository under Settings → Integrations → GitHub</button>.</>
+                  : ' Name the repository under Settings → Integrations → GitHub.'}
+              </>}
+          </p>
         </div>
 
         {form ? (
@@ -596,17 +666,6 @@ export default function UpdatesCard({ onStatus }: { onStatus?: (status: UpdateSt
               onChange={setToken}
               onForget={() => void forgetToken()}
             />
-
-            <label className={styles.field}>
-              Public update feed
-              <input
-                type="url"
-                value={form.feed_url}
-                placeholder="https://react-wp.com/updates.json"
-                onChange={(event) => setForm({ ...form, feed_url: event.target.value })}
-              />
-              <span className={styles.help}>Used when the update server cannot be reached, and always without a token.</span>
-            </label>
 
             <label className={styles.field}>
               Channel

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { hasCapability, type UserRole } from './roles';
 import { readDismissed, runSetupChecks, writeDismissed, type SetupNotice } from './setupChecks';
-import {
-  availableUpdates, defaultUpdateSettings, runScheduledUpdateCheck, type UpdateSettings, type UpdateStatus,
-} from './updates';
+import { availableUpdates, defaultUpdateSettings, type UpdateSettings, type UpdateStatus } from './updates';
+import { runScheduledUpdateCheck } from './updateCenter';
 
 export interface AdminStatus {
   notices: SetupNotice[];
@@ -11,8 +10,8 @@ export interface AdminStatus {
   refreshNotices: () => void;
   dismissed: string[];
   setDismissed: (ids: string[]) => void;
+  /** `auto_check` and `notify`, read from `system_settings.updates_config` by the scheduled check. */
   updateSettings: UpdateSettings;
-  setUpdateSettings: (settings: UpdateSettings) => void;
   updateStatus: UpdateStatus | null;
   setUpdateStatus: (status: UpdateStatus) => void;
   updateError: string;
@@ -74,7 +73,7 @@ export function useAdminStatus(role: UserRole, userId: string | undefined): Admi
 
   return {
     notices, noticesLoading, refreshNotices, dismissed, setDismissed,
-    updateSettings, setUpdateSettings, updateStatus, setUpdateStatus, updateError,
+    updateSettings, updateStatus, setUpdateStatus, updateError,
     badge: visibleImportant + updates,
   };
 }
