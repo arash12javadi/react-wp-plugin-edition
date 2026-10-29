@@ -31,7 +31,7 @@ import styles from './IntegrationsHub.module.css';
 const messageOf = (value: unknown, fallback: string): string =>
   value instanceof Error && value.message ? value.message : fallback;
 
-/** The state pill in a card's heading: the same three classes the GitHub card has always used. */
+/** The state pill in a card's heading: the same three classes every card — built-in or plugin — uses. */
 function Pill({ tone = 'quiet', children }: { tone?: 'on' | 'off' | 'quiet'; children: ReactNode }) {
   const className = tone === 'on' ? styles.pillOn : tone === 'off' ? styles.pillOff : styles.pillQuiet;
   return <span className={className}>{children}</span>;
