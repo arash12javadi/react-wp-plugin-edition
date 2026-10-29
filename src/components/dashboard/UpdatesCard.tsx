@@ -3,8 +3,9 @@
  *
  * `UpdatesPanel` could do one thing — print the by-hand instructions — and the version it named came from
  * a public `updates.json` feed. This card is the other half, and the feed is gone: a version is published
- * by tagging a release on GitHub, and the server is what reads it — from `react-wp.com` when this site
- * holds a token for it, or straight from this deployment's own release tags. So a private repository stays
+ * by tagging a release on GitHub, and the server is what reads it — from the repository named under
+ * Release repository below, else from `react-wp.com` when this site holds a token for it, else from the
+ * release tags of whichever repository the GitHub integration holds. So a private repository stays
  * private and the version compared is the version that is running.
  *
  * Applying is the server's decision too: a deploy hook on Vercel, a detached run on a server that owns its
@@ -388,6 +389,7 @@ export default function UpdatesCard({ onStatus, navigate }: {
       // this form, so an empty field has to mean "leave it alone" rather than "erase it".
       await saveUpdateConfig({
         central_url: form.central_url.trim(),
+        repository: (form.repository ?? '').trim(),
         channel: form.channel,
         auto_check: form.auto_check,
         notify: form.notify,
@@ -611,8 +613,9 @@ export default function UpdatesCard({ onStatus, navigate }: {
           <div>
             <h2 id="updates-source-heading">Where updates come from</h2>
             <p className={styles.muted}>
-              A version is published by tagging a release on GitHub — <code>v2.4.1</code>. A site with a token
-              for the update server asks it; a site without one reads its own repository’s release tags. Either
+              A version is published by tagging a release on GitHub — <code>v2.4.1</code>. The release repository
+              is read first, with the GitHub credential stored under Settings → Integrations → GitHub; a site
+              that also stores a token for the update server asks it instead when no repository is named. Either
               way the token below is written to <code>system_settings.updates_config</code> and read only by the
               server: this screen is never sent it back (<code>has_token</code> is all it sees), so nothing in the
               browser can leak it and a private repository stays private.
@@ -628,26 +631,47 @@ export default function UpdatesCard({ onStatus, navigate }: {
                 Reading <code>{overview.github.repo}</code>
                 {overview.github.has_token ? ' with the stored GitHub token' : ' — a public repository, so no token is needed'}.
                 {' '}A release is published by tagging it: <code>v1.2.3</code>.
+                {' '}
+                <span className={styles.muted}>
+                  {form?.repository
+                    ? 'Named on this screen; empty it to use the GitHub integration’s repository instead.'
+                    : 'Named by the GitHub integration; set it above to check a different repository.'}
+                </span>
                 {navigate && (
                   <>
                     {' '}
                     <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>
-                      Change it in Settings → Integrations → GitHub
+                      Change the token in Settings → Integrations → GitHub
                     </button>
                   </>
                 )}
               </>
               : <>
-                No repository is configured, so a check has nothing to read without an update token.
+                No repository is configured, so nothing can be checked: name it under Release repository above
                 {navigate
-                  ? <> <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>Name the repository under Settings → Integrations → GitHub</button>.</>
-                  : ' Name the repository under Settings → Integrations → GitHub.'}
+                  ? <>, or in <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>Settings → Integrations → GitHub</button>.</>
+                  : ' — or in Settings → Integrations → GitHub. A public repository needs no token.'}
               </>}
           </p>
         </div>
 
         {form ? (
           <form className={styles.formFields} onSubmit={save}>
+            <label className={styles.field}>
+              Release repository
+              <input
+                type="text"
+                value={form.repository ?? ''}
+                placeholder={overview?.github?.repo || 'owner/repository'}
+                onChange={(event) => setForm({ ...form, repository: event.target.value })}
+              />
+              <span className={styles.help}>
+                The repository this site&apos;s releases are tagged on, as <code>owner/repository</code>. A check
+                reads its release tags first, with the GitHub token stored under Settings → Integrations → GitHub
+                (a public repository needs none). Empty means the repository the GitHub integration names.
+              </span>
+            </label>
+
             <label className={styles.field}>
               Update server
               <input
@@ -656,7 +680,9 @@ export default function UpdatesCard({ onStatus, navigate }: {
                 placeholder="https://react-wp.com"
                 onChange={(event) => setForm({ ...form, central_url: event.target.value })}
               />
-              <span className={styles.help}>Asked first, when a token is stored. Leave empty to use react-wp.com.</span>
+              <span className={styles.help}>
+                Asked when no repository is named above. Leave empty to use react-wp.com.
+              </span>
             </label>
 
             <TokenField

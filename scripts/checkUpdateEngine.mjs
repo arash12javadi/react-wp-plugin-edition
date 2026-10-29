@@ -23,7 +23,9 @@ import {
   latestReleaseFrom,
   notesFromGithubBody,
   releaseFromGithub,
+  releaseFromTag,
   releasesFromGithub,
+  releasesFromTags,
   repoFrom,
   tagVersionFrom,
 } from '../server/githubReleases.mjs';
@@ -37,6 +39,7 @@ import {
   checkAnswerFrom,
   checkForUpdates,
   fetchCentralCheck,
+  githubUpdateSourceFrom,
   publicRelease,
   releaseFrom,
 } from '../server/updateCenter.mjs';
@@ -68,6 +71,29 @@ const githubRow = (tag, { body = '', prerelease = false, draft = false, publishe
   zipball_url: `https://api.github.com/repos/acme/react-wp/zipball/${tag}`,
   assets: [{ name: `react-wp-${tag}.zip`, browser_download_url: `https://github.com/acme/react-wp/releases/download/${tag}/react-wp.zip` }],
 });
+
+/** GitHub's tag row (`GET /repos/{owner}/{repo}/tags`): a name and the commit it points at, nothing else. */
+const tagRow = (tag) => ({
+  name: tag,
+  commit: { sha: `sha-${tag}`, url: `https://api.github.com/repos/acme/react-wp/commits/sha-${tag}` },
+  zipball_url: `https://api.github.com/repos/acme/react-wp/zipball/refs/tags/${tag}`,
+});
+
+/**
+ * A `fetch` stub for a check that asks more than one endpoint: the first route whose path is part of the
+ * URL answers, so the release list and the tag list can differ.
+ */
+const stubRoutes = (routes) => {
+  const calls = [];
+  const impl = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    const match = routes.find(([path]) => String(url).includes(path));
+    const [body, status = 200] = match ? match.slice(1) : [];
+    return new Response(JSON.stringify(body ?? {}), { status, headers: { 'content-type': 'application/json' } });
+  };
+  impl.calls = calls;
+  return impl;
+};
 
 /* -- 1. Tags ---------------------------------------------------------------------------------------- */
 
@@ -114,6 +140,30 @@ test('rows that are not releases are dropped, one at a time', () => {
   assert.deepEqual(releasesFromGithub('not a list'), []);
 });
 
+test('a bare tag is a release too, with only what a tag knows', () => {
+  const release = releaseFromTag(tagRow('v2.4.2'), 'acme/react-wp');
+  assert.equal(release.version, '2.4.2');
+  assert.equal(release.tag, 'v2.4.2');
+  assert.equal(release.commit, 'sha-v2.4.2');
+  assert.equal(release.draft, false, 'a tag has no draft state, and is never withheld');
+  assert.equal(release.prerelease, false);
+  assert.deepEqual(release.notes, [], 'a tag carries no body, so the screen shows no notes');
+  assert.equal(release.download_url, '', 'a tag has no asset, and the archive URL is not guessed at');
+  assert.equal(release.released, '');
+  assert.equal(release.changelog_url, 'https://github.com/acme/react-wp/releases/tag/v2.4.2');
+
+  // A `-rc.1` tag is a pre-release because the version says so, exactly as a Release's flag would.
+  assert.equal(releaseFromTag(tagRow('v2.5.0-rc.1'), 'acme/react-wp').prerelease, true);
+  // A tag that is not a version is not a release this feature can compare.
+  assert.equal(releaseFromTag(tagRow('nightly'), 'acme/react-wp'), null);
+  assert.equal(releaseFromTag(null, 'acme/react-wp'), null);
+  assert.deepEqual(
+    releasesFromTags([tagRow('v2.4.2'), tagRow('nightly'), tagRow('2.4.3')], 'acme/react-wp').map((row) => row.version),
+    ['2.4.2', '2.4.3'],
+  );
+  assert.deepEqual(releasesFromTags('not a list', 'acme/react-wp'), []);
+});
+
 /* -- 3. Channel selection ---------------------------------------------------------------------------- */
 
 test('the newest tag wins by version order, not by the order GitHub lists releases in', () => {
@@ -153,6 +203,52 @@ test('a 404 explains the private-repository case instead of blaming the request'
   await assert.rejects(
     fetchGithubReleases({ repo: 'acme/react-wp', fetchImpl: stubFetch({ message: 'Not Found' }, { status: 404 }) }),
     /RWP_RELEASE_TOKEN/,
+  );
+});
+
+test('a repository that publishes by tag alone is read from /tags when /releases is empty', async () => {
+  const fetchImpl = stubRoutes([
+    ['/releases', []],
+    ['/tags', [tagRow('v2.4.2'), tagRow('v2.5.0-rc.1'), tagRow('nightly')]],
+  ]);
+  const fetched = await fetchGithubReleases({ repo: 'acme/react-wp', token: 'ghp_secret', fetchImpl });
+
+  assert.equal(fetched.source, 'tags', 'the answer says it came from tags, not Releases');
+  assert.equal(fetched.url, 'https://api.github.com/repos/acme/react-wp/tags?per_page=30');
+  assert.deepEqual(fetchImpl.calls.map((call) => new URL(call.url).pathname), [
+    '/repos/acme/react-wp/releases',
+    '/repos/acme/react-wp/tags',
+  ]);
+  assert.equal(fetchImpl.calls[1].init.headers.Authorization, 'Bearer ghp_secret', 'the same credential reads tags');
+  assert.deepEqual(fetched.releases.map((release) => release.version), ['2.4.2', '2.5.0-rc.1']);
+
+  // A `-rc` tag is offered on beta only, and a version with no Release still has a page on GitHub.
+  assert.equal(latestReleaseFrom(fetched.releases, { channel: 'stable' }).version, '2.4.2');
+  assert.equal(latestReleaseFrom(fetched.releases, { channel: 'beta' }).version, '2.5.0-rc.1');
+  assert.equal(fetched.releases[0].changelog_url, 'https://github.com/acme/react-wp/releases/tag/v2.4.2');
+});
+
+test('a published Release wins: the tag list is a fallback, never a merge', async () => {
+  const fetchImpl = stubRoutes([
+    ['/releases', [githubRow('v2.4.1')]],
+    ['/tags', [tagRow('v2.9.0')]],
+  ]);
+  const fetched = await fetchGithubReleases({ repo: 'acme/react-wp', fetchImpl });
+
+  assert.equal(fetched.source, 'releases');
+  assert.equal(fetchImpl.calls.length, 1, 'tags are not asked for while Releases answer');
+  assert.deepEqual(fetched.releases.map((release) => release.version), ['2.4.1']);
+  assert.equal(fetched.authenticated, false);
+});
+
+test('a failed tag read is a failure, not "no release yet"', async () => {
+  const fetchImpl = stubRoutes([
+    ['/releases', []],
+    ['/tags', { message: 'Not Found' }, 404],
+  ]);
+  await assert.rejects(
+    fetchGithubReleases({ repo: 'acme/react-wp', fetchImpl }),
+    /no repository or no release tags/,
   );
 });
 
@@ -327,6 +423,105 @@ test('when central cannot be asked, the release tags answer and the answer says 
   assert.equal(answer.latestVersion, 'v2.4.1');
   assert.match(answer.error, /HTTP 503/, 'the central failure is kept beside the answer that replaced it');
   assert.equal(answer.updateAvailable, true);
+});
+
+test('the repository a check reads is the one Settings → Updates names, then the environment, then the integration', () => {
+  const stored = { repository: 'acme/integration', token: 'ghp_stored' };
+
+  // The screen wins over everything: it is the administrator naming the tags this site is released on.
+  assert.deepEqual(
+    githubUpdateSourceFrom({ RWP_RELEASE_REPO: 'acme/env', RWP_RELEASE_TOKEN: 'ghp_env' }, stored, 'acme/settings'),
+    { repo: 'acme/settings', token: 'ghp_env', explicit: true },
+  );
+  // A name typed as a URL is accepted, and is still the screen's answer.
+  assert.equal(githubUpdateSourceFrom({}, {}, 'https://github.com/acme/settings').repo, 'https://github.com/acme/settings');
+  // With nothing named, the environment answers, then the integration's row.
+  assert.deepEqual(
+    githubUpdateSourceFrom({ GITHUB_REPO: 'acme/env', GITHUB_TOKEN: 'ghp_env' }, stored),
+    { repo: 'acme/env', token: 'ghp_env', explicit: false },
+  );
+  assert.deepEqual(githubUpdateSourceFrom({}, stored), { repo: 'acme/integration', token: 'ghp_stored', explicit: false });
+  // A public repository is a source with no credential, which is a supported state.
+  assert.deepEqual(githubUpdateSourceFrom({}, { repository: 'acme/public' }), { repo: 'acme/public', token: '', explicit: false });
+  // Nothing that is not `owner/name` is a source, and a hand-typed name is not trusted over the stored row.
+  assert.equal(githubUpdateSourceFrom({}, {}, 'not-a-repo'), null);
+  assert.equal(githubUpdateSourceFrom({ RWP_RELEASE_REPO: 'not-a-repo' }, {}, ''), null);
+  assert.equal(githubUpdateSourceFrom({}, {}, ''), null);
+});
+
+test('a named repository answers a check first, even when an update token is stored', async () => {
+  const fetchImpl = stubRoutes([['/releases', [githubRow('v2.4.1')]]]);
+  const answer = await checkForUpdates({
+    config: { token: 'site-token', channel: 'stable', repository: 'acme/settings' },
+    current: { app: '1.3.1' },
+    plugins: [],
+    github: { repo: 'acme/settings', token: 'ghp_stored', explicit: true },
+    fetchImpl,
+  });
+
+  assert.equal(answer.source, 'github');
+  assert.equal(answer.app.latest, '2.4.1');
+  assert.equal(answer.error, '', 'nothing failed, so nothing is reported beside the answer');
+  assert.equal(fetchImpl.calls.length, 1, 'the platform is not asked when the named repository answered');
+  assert.match(fetchImpl.calls[0].url, /repos\/acme\/settings\/releases/);
+});
+
+test('a licensed site that names no repository asks the platform, and GitHub only when that fails', async () => {
+  const central = stubFetch({ latestVersion: 'v2.4.1', updateAvailable: true, releaseNotes: '- x' });
+  const answer = await checkForUpdates({
+    config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable' },
+    current: { app: '1.3.1' },
+    plugins: [],
+    github: { repo: 'acme/integration', token: 'ghp_stored', explicit: false },
+    fetchImpl: central,
+  });
+
+  assert.equal(answer.source, 'central');
+  assert.equal(central.calls.length, 1, 'the integration repository is the fallback, not the first answer');
+  assert.equal(central.calls[0].url, 'https://react-wp.com/api/v1/updates/check');
+});
+
+test('a tag-only repository answers the whole check, and says nothing it does not know', async () => {
+  const fetchImpl = stubRoutes([
+    ['/releases', []],
+    ['/tags', [tagRow('v2.4.2'), tagRow('v2.5.0-rc.1')]],
+  ]);
+  const answer = await checkForUpdates({
+    config: { channel: 'stable', repository: 'acme/react-wp' },
+    current: { app: '1.3.1' },
+    plugins: [],
+    github: { repo: 'acme/react-wp', token: '', explicit: true },
+    fetchImpl,
+  });
+
+  assert.equal(answer.source, 'github');
+  assert.equal(answer.latestVersion, 'v2.4.2', 'stable is offered the newest tag that is not a pre-release');
+  assert.equal(answer.releaseNotes, '', 'a tag has no body, and the answer does not invent one');
+  assert.equal(answer.releaseUrl, 'https://github.com/acme/react-wp/releases/tag/v2.4.2');
+  assert.equal(answer.updateAvailable, true);
+});
+
+test('when every source refuses, the answer is the joined sentences and the last status', async () => {
+  const fetchImpl = stubRoutes([
+    ['/releases', { message: 'Not Found' }, 404],
+    ['/tags', { message: 'Not Found' }, 404],
+    ['updates/check', { error: 'down' }, 503],
+  ]);
+  await assert.rejects(
+    checkForUpdates({
+      config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable', repository: 'acme/private' },
+      current: { app: '1.3.1' },
+      plugins: [],
+      github: { repo: 'acme/private', token: '', explicit: true },
+      fetchImpl,
+    }),
+    (error) => {
+      assert.equal(error.status, 502, 'the platform was tried last, so its status is the one that answers');
+      assert.match(error.message, /no repository or no release tags/, 'the first failure is kept');
+      assert.match(error.message, /HTTP 503/, 'and so is the last');
+      return true;
+    },
+  );
 });
 
 test('with no token and no repository, the sentence names both places to configure', async () => {

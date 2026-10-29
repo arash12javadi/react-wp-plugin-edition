@@ -62,13 +62,19 @@ export interface AvailableUpdate {
 /** `updates_config` as the server describes it back — the token is `has_token`, never the value. */
 export interface UpdateConfigView {
   central_url: string;
+  /**
+   * `owner/name` of the repository this site's releases are tagged on, as named on Settings → Updates.
+   * Empty means "whichever repository the GitHub integration holds" (`github_config`), and naming one makes
+   * GitHub the first source a check asks.
+   */
+  repository: string;
   channel: 'stable' | 'beta';
   auto_check: AutoCheck;
   notify: boolean;
   /** Opt-in: whether `POST /api/admin/system/update` may rewrite this server's checkout. */
   self_update: boolean;
   has_token: boolean;
-  /** Which source a check asks first: the central server when there is a token, GitHub's release tags otherwise. */
+  /** Which source a check asks first: the named repository, the central server when there is a token for it, else GitHub. */
   source: 'central' | 'github';
 }
 
@@ -124,7 +130,11 @@ export interface UpdateCheckAnswer {
   updateAvailable?: boolean;
   releaseNotes?: string;
   releaseUrl?: string;
-  /** Why the central server was not used, when GitHub's tags answered instead. Empty on success. */
+  /**
+   * Why the source that was *not* used did not answer. A site that names a repository reads `error` when the
+   * repository refused and the platform answered instead, and the other way round; empty when the first
+   * source asked answered. Written to be shown, never parsed.
+   */
   error: string;
   config: UpdateConfigView;
   /** The repository this deployment reads release tags from, when it has one. */

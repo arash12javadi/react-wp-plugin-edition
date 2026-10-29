@@ -80,7 +80,9 @@ function Field({ label, help, className, children }: {
  * owner.
  *
  * The built-in cards are all `manage_options`, which is what the Settings screen already required, so
- * only a plugin's own card needs to know who is looking.
+ * no built-in form asks who is looking. Two things here do: a plugin's card, and the sentence the hub
+ * shows in place of the platform owner's cards when this viewer is not that owner — a hidden card with
+ * no explanation reads as a lost setting.
  */
 function useViewerRole(): UserRole | null {
   const [role, setRole] = useState<UserRole | null>(null);
@@ -957,7 +959,9 @@ function PluginCard({ card }: { card: RwpIntegrationCard }) {
  *
  * The platform owner's cards are plugins too. GitHub publishing and the deploy hook used to sit here as
  * two built-ins; they are now `rwp-saas-installer`'s, registered with `platformOwnerOnly` and drawn by
- * `PluginCard` like any other plugin's. What is left here is the part every site administers.
+ * `PluginCard` like any other plugin's. What is left here is the part every site administers — and,
+ * because those six cards belong to one account, a sentence naming the ones this viewer cannot see and
+ * saying whose they are.
  *
  * What this component does is small on purpose: it fetches `GET /api/integrations/status` (presence
  * only) and hands it to the cards, which each read and write their own row. Two things are worth
@@ -1005,6 +1009,18 @@ export default function IntegrationsHub() {
     return role ? hasCapability(role, card.capability as never) : false;
   });
 
+  /**
+   * The cards this viewer is *not* allowed to see, named rather than silently dropped.
+   *
+   * Before this sentence existed, an administrator's hub simply had three cards where the platform
+   * owner's hub has six, and nothing on screen said why: the GitHub token, the repository this
+   * installation commits to and the hook that rebuilds it were saved and working, and the screen that
+   * manages them looked like it had lost them. `system_settings` refuses those rows to anyone who is
+   * not `super_admin`, so there is nothing to show — but there is something to say.
+   */
+  const ownerOnlyCards = cards.filter((card) => card.platformOwnerOnly);
+  const hiddenOwnerCards = role && !isPlatformOwner(role) ? ownerOnlyCards : [];
+
   if (loading) return <p className={styles.loading} role="status">Checking this site&apos;s integrations…</p>;
 
   return (
@@ -1022,6 +1038,16 @@ export default function IntegrationsHub() {
       <AiCard onChanged={() => void refresh()} />
       <MediaCard status={status} onChanged={() => void refresh()} />
       <EmailCard status={status} onChanged={() => void refresh()} />
+
+      {hiddenOwnerCards.length > 0 ? (
+        <p className={styles.setupNote} role="note">
+          <strong>{hiddenOwnerCards.map((card) => card.title).join(', ')}</strong>{' '}
+          {hiddenOwnerCards.length === 1 ? 'belongs' : 'belong'} to the platform owner: this
+          installation&apos;s own GitHub token, the repository it publishes to and the hook that rebuilds
+          it are the <code>super_admin</code>&apos;s to manage, whatever capabilities an administrator
+          holds. Sign in as the super admin account to configure {hiddenOwnerCards.length === 1 ? 'it' : 'them'}.
+        </p>
+      ) : null}
 
       {pluginCards.map((card) => <PluginCard key={card.id} card={card} />)}
     </div>

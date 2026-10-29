@@ -6,8 +6,9 @@
  * an update exists or how it is applied:
  *
  *   GET  /api/admin/updates                 what is installed, how it is configured, what this host can do
- *   POST /api/admin/updates/check           ask `react-wp.com`, or read this deployment's own GitHub
- *                                           release tags when it owns the repository
+ *   POST /api/admin/updates/check           read the release tags of the repository Settings → Updates
+ *                                           names, else ask `react-wp.com` (when a token is stored), else
+ *                                           read this deployment's own GitHub release tags
  *   POST /api/admin/system/update           apply one: call the deploy hook, or start a self-update run
  *   GET  /api/admin/system/update-status    how a self-update run is going, plus the recent ones
  *
@@ -29,6 +30,7 @@ import {
   UPDATE_CHANNELS,
   applyDeployHookUpdate,
   checkForUpdates,
+  describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
   readUpdatesConfig,
@@ -104,6 +106,8 @@ async function overview({ readOptions }) {
   return {
     installed: await installedVersion(),
     config: describeUpdateConfig(stored.config),
+    /** The repository a direct read uses, and whether a credential came with it. */
+    github: describeGithubSource(stored.github),
     /** False when this server cannot read `system_settings` at all: the token is stored, not missing. */
     readable: stored.readable,
     error: stored.error,
@@ -127,8 +131,14 @@ async function check(body, config, readOptions) {
   });
   // `readable: false` is worth saying even when the check succeeded: it means this server could not see
   // the stored rows, so the administrator knows why a configured source looks unconfigured before they go
-  // looking in the wrong place.
-  return { ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable };
+  // looking in the wrong place. `source` is the engine's word for the source that answered (`central` or
+  // `github`), so the screen can name it without guessing from the release itself.
+  return {
+    ...answer,
+    config: describeUpdateConfig(stored.config),
+    github: describeGithubSource(stored.github),
+    readable: stored.readable,
+  };
 }
 
 /**
@@ -150,7 +160,12 @@ async function applyUpdate(body, config, readOptions, readDeployHook) {
     plugins,
     github: stored.github,
   });
-  const reported = { ...answer, config: describeUpdateConfig(stored.config), readable: stored.readable };
+  const reported = {
+    ...answer,
+    config: describeUpdateConfig(stored.config),
+    github: describeGithubSource(stored.github),
+    readable: stored.readable,
+  };
   // Asked only now: the deploy hook is a database read, and most calls to this route end at `up_to_date`.
   const deployHook = String((await readDeployHook().catch(() => '')) || '').trim();
   const support = await selfUpdateSupport();

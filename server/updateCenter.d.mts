@@ -47,6 +47,8 @@ export type PublicUpdateRelease = Omit<UpdateRelease, 'download_url'>;
 export interface UpdateConfig {
   central_url: string;
   token: string;
+  /** `owner/name` of the repository this site is updated from, or empty to use the GitHub integration's. */
+  repository: string;
   channel: string;
   auto_check: string;
   notify: boolean;
@@ -60,11 +62,15 @@ export interface UpdateConfig {
 export interface GithubUpdateSource {
   repo: string;
   token: string;
+  /** True when `updates_config.repository` named it, which is what makes GitHub the first source asked. */
+  explicit?: boolean;
 }
 
 /** The same configuration with the token replaced by `has_token`. */
 export interface UpdateConfigView {
   central_url: string;
+  /** The repository named on Settings → Updates, or empty when the GitHub integration names it instead. */
+  repository: string;
   channel: string;
   auto_check: string;
   notify: boolean;
@@ -153,12 +159,14 @@ export function updateConfigFrom(value: unknown): UpdateConfig;
 export function describeUpdateConfig(config: UpdateConfig): UpdateConfigView;
 
 /**
- * The repository a check may read directly: `RWP_RELEASE_REPO`/`GITHUB_REPO` and
- * `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN` from the environment, else the stored `github_config` row.
+ * The repository a check may read directly: `updates_config.repository` when Settings → Updates names one,
+ * else `RWP_RELEASE_REPO`/`GITHUB_REPO` and `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN` from the environment, else
+ * the stored `github_config` row.
  */
 export function githubUpdateSourceFrom(
   env?: Record<string, string | undefined>,
   stored?: unknown,
+  configured?: unknown,
 ): GithubUpdateSource | null;
 
 /** Which repository a direct release-tag read uses, and whether a credential came with it. */

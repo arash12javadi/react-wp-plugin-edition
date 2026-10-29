@@ -8,9 +8,11 @@
  * that was never published. So the tag is parsed once, here, and the central server, the check answer and
  * the screen all name the same release.
  *
- * Parsing and fetching are separate on purpose. `releaseFromGithub`, `releasesFromGithub` and
- * `latestReleaseFrom` are pure, which is what lets `scripts/checkUpdateEngine.mjs` prove the tag rules
- * without a network; `fetchGithubReleases` is the only function that knows the REST API.
+ * Parsing and fetching are separate on purpose. `releaseFromGithub`, `releasesFromGithub`,
+ * `releaseFromTag`, `releasesFromTags` and `latestReleaseFrom` are pure, which is what lets
+ * `scripts/checkUpdateEngine.mjs` prove the tag rules without a network; `fetchGithubReleases` is the only
+ * function that knows the REST API. It reads `/releases` first and falls back to `/tags`, because a
+ * repository can publish a version by tagging a commit without ever drafting a Release.
  *
  * The repository may be private, and only the platform is ever given a credential — `RWP_RELEASE_TOKEN`,
  * or a `GITHUB_TOKEN` where one already exists. A customer's site reads central's answer and never sees a
@@ -150,6 +152,53 @@ export const releasesFromGithub = (value) => (Array.isArray(value)
   ? value.map(releaseFromGithub).filter(Boolean)
   : []);
 
+/**
+ * One row of `GET /repos/{owner}/{repo}/tags`, in the shape `releaseFromGithub` answers with.
+ *
+ * A repository that publishes by tagging a commit and never drafting a GitHub Release answers `[]` to the
+ * releases endpoint, and its tags are the same fact one endpoint over: the tag *is* the published version.
+ * Reading them means a repository tagged `v2.4.2` is offered `v2.4.2` instead of "no release yet".
+ *
+ * A tag carries less than a release — no notes, no publish date, no asset — so `notes` stays empty and
+ * `changelog_url` points at GitHub's own page for that tag. `prerelease` is inferred from the tag itself
+ * (`v2.5.0-rc.1`), so a candidate tag is never offered on the stable channel.
+ *
+ * @param {unknown} value one tag row
+ * @param {string} [repo] `owner/name`, for the URL to open
+ */
+export const releaseFromTag = (value, repo = '') => {
+  const row = value && typeof value === 'object' ? value : null;
+  if (!row) return null;
+  const tag = trimmed(row.name);
+  const version = tagVersionFrom(tag);
+  if (!version) return null;
+  const name = trimmed(String(repo ?? ''));
+  return {
+    version,
+    tag: /^v/i.test(tag) ? `v${version}` : tag,
+    released: '',
+    notes: [],
+    changelog_url: name ? `https://github.com/${name}/releases/tag/${encodeURIComponent(tag)}` : '',
+    /** A tag has no asset, and the source archive URL is not part of this endpoint's answer. */
+    download_url: '',
+    commit: trimmed(row.commit?.sha),
+    draft: false,
+    prerelease: version.includes('-'),
+    critical: false,
+  };
+};
+
+/**
+ * The tag list of an API answer, with the tags this feature cannot compare dropped — a tag called
+ * `nightly` costs its own entry, never the whole check.
+ *
+ * @param {unknown} value
+ * @param {string} [repo]
+ */
+export const releasesFromTags = (value, repo = '') => (Array.isArray(value)
+  ? value.map((row) => releaseFromTag(row, repo)).filter(Boolean)
+  : []);
+
 /** True when a release may be offered on `channel`: a draft never, a pre-release only on `beta`. */
 export const isChannelRelease = (release, channel = 'stable') => Boolean(release)
   && release.draft !== true
@@ -178,29 +227,17 @@ export const latestReleaseFrom = (releases, { channel = 'stable' } = {}) => {
 export const releaseNotesText = (release) => (release?.notes || []).join('\n');
 
 /**
- * `GET /repos/{owner}/{repo}/releases`, newest first, as parsed releases.
+ * One GitHub list endpoint, answered as JSON.
  *
- * Only this function holds the credential, and only for the platform: `token` empty is a supported state
- * (public repository), which is what makes the platform's answer token-free for everyone else. The errors
- * are sentences a platform owner can act on — a 404 is the usual "private repo, no token", and a 403 with
- * an exhausted rate limit says so instead of looking like a permissions problem.
+ * Only this function holds the credential: `token` empty is a supported state (public repository), which
+ * is what makes the platform's answer token-free for everyone else. The errors are sentences a platform
+ * owner can act on — a 404 is the usual "private repo, no token", and a 403 with an exhausted rate limit
+ * says so instead of looking like a permissions problem.
  *
- * @param {{ repo: string, token?: string, fetchImpl?: typeof fetch, perPage?: number, origin?: string }} options
+ * @param {{ name: string, url: string, token?: string, fetchImpl?: typeof fetch }} options
+ * @returns {Promise<any[]>}
  */
-export async function fetchGithubReleases({
-  repo,
-  token = '',
-  fetchImpl = fetch,
-  perPage = GITHUB_RELEASES_PER_PAGE,
-  origin = GITHUB_API_ORIGIN,
-}) {
-  const target = repoFrom(repo);
-  if (!target) {
-    throw new GithubReleaseError('Set RWP_RELEASE_REPO to the repository the releases are published on, as "owner/name" (or https://github.com/owner/name).', 400);
-  }
-  const name = `${target.owner}/${target.repo}`;
-  const size = Math.min(Math.max(Number(perPage) || GITHUB_RELEASES_PER_PAGE, 1), 100);
-  const url = `${trimmed(origin) || GITHUB_API_ORIGIN}/repos/${name}/releases?per_page=${size}`;
+async function githubList({ name, url, token = '', fetchImpl = fetch }) {
   const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': GITHUB_API_VERSION,
@@ -216,7 +253,7 @@ export async function fetchGithubReleases({
       : `${url} could not be reached. Check this server's network access.`, 502);
   }
   if (response.status === 404) {
-    throw new GithubReleaseError(`GitHub has no repository or no releases at ${name}. A private repository answers 404 without a token, so set RWP_RELEASE_TOKEN on the central server if the repository is not public.`, 404);
+    throw new GithubReleaseError(`GitHub has no repository or no release tags at ${name}. A private repository answers 404 without a token, so set RWP_RELEASE_TOKEN on the central server if the repository is not public.`, 404);
   }
   if (response.status === 401) {
     throw new GithubReleaseError('GitHub refused the release token. Set RWP_RELEASE_TOKEN to a token that can read the repository\'s releases (Contents: read is enough).', 401);
@@ -234,5 +271,52 @@ export async function fetchGithubReleases({
     throw new GithubReleaseError(`${url} did not return valid JSON.`, 502);
   });
   if (!Array.isArray(body)) throw new GithubReleaseError(`${url} did not return a release list.`, 502);
-  return { repo: name, url, releases: releasesFromGithub(body), authenticated: Boolean(trimmed(token)) };
+  return body;
 }
+
+/**
+ * `GET /repos/{owner}/{repo}/releases`, newest first, and `GET /repos/{owner}/{repo}/tags` when that list
+ * has nothing that can be compared.
+ *
+ * The tags fallback is the whole point of the second request: a repository publishes a version by tagging
+ * a commit (`git tag v2.4.2 && git push --tags`), and a GitHub Release for that tag is optional. A
+ * repository tagged that way answers `[]` for releases, so a check that stopped there would tell an
+ * administrator "no release yet" while the tag it should be offered is one endpoint away.
+ *
+ * It is a *fallback* and not a merge, deliberately: a draft Release has a tag too, and a merged list would
+ * offer a version its author has not published yet. Tags are read only when there is no Release to compare
+ * — the draft rule stays exactly as it was.
+ *
+ * @param {{ repo: string, token?: string, fetchImpl?: typeof fetch, perPage?: number, origin?: string }} options
+ * @returns {Promise<{ repo: string, url: string, source: 'releases' | 'tags', releases: any[], authenticated: boolean }>}
+ */
+export async function fetchGithubReleases({
+  repo,
+  token = '',
+  fetchImpl = fetch,
+  perPage = GITHUB_RELEASES_PER_PAGE,
+  origin = GITHUB_API_ORIGIN,
+}) {
+  const target = repoFrom(repo);
+  if (!target) {
+    throw new GithubReleaseError('Set RWP_RELEASE_REPO to the repository the releases are published on, as "owner/name" (or https://github.com/owner/name).', 400);
+  }
+  const name = `${target.owner}/${target.repo}`;
+  const size = Math.min(Math.max(Number(perPage) || GITHUB_RELEASES_PER_PAGE, 1), 100);
+  const base = trimmed(origin) || GITHUB_API_ORIGIN;
+  const releasesUrl = `${base}/repos/${name}/releases?per_page=${size}`;
+  const releases = releasesFromGithub(await githubList({ name, url: releasesUrl, token, fetchImpl }));
+  if (releases.length > 0) {
+    return { repo: name, url: releasesUrl, source: 'releases', releases, authenticated: Boolean(trimmed(token)) };
+  }
+  const tagsUrl = `${base}/repos/${name}/tags?per_page=${size}`;
+  const tags = releasesFromTags(await githubList({ name, url: tagsUrl, token, fetchImpl }), name);
+  return {
+    repo: name,
+    url: tags.length ? tagsUrl : releasesUrl,
+    source: tags.length ? 'tags' : 'releases',
+    releases: tags,
+    authenticated: Boolean(trimmed(token)),
+  };
+}
+

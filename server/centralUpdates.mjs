@@ -67,7 +67,7 @@ const environmentOf = (env) => env || globalThis.process?.env || {};
  *
  * `enabled` needs both halves — a repository to read and at least one token to accept — because either one
  * alone would publish a route that cannot work, and a half-configured platform is worse than one that
- * answers 404 and lets its sites use the public feed.
+ * answers 404 and lets its sites read their own release tags.
  *
  * @param {Record<string, string | undefined>} [env]
  */

@@ -2,8 +2,9 @@
  * Settings → Updates on every host that runs the universal engine, at the paths `server.mjs` serves:
  *
  *   GET  /api/admin/updates                 what is installed, how it is configured, what this host can do
- *   POST /api/admin/updates/check           ask `react-wp.com`, or read this deployment's own GitHub
- *                                           release tags when it owns the repository
+ *   POST /api/admin/updates/check           read the release tags of the repository Settings → Updates
+ *                                           names, else ask `react-wp.com` (when a token is stored), else
+ *                                           read this deployment's own GitHub release tags
  *   POST /api/admin/system/update           apply one: call the deploy hook, or start a self-update run
  *   GET  /api/admin/system/update-status    how a self-update run is going, plus the recent ones
  *

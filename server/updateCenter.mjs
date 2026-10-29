@@ -10,11 +10,11 @@
  *      `system_settings.updates_config.token` — written by the signed-in administrator, read here only.
  *      The browser never holds it and never calls GitHub: that is what keeps a private repository
  *      private while still telling an administrator that an update exists.
- *   2. **Read GitHub directly when this deployment owns the repository.** A site with no central token
- *      — a platform owner running its own build — reads its release tags with the GitHub credential the
- *      Integrations hub already stores (`github_config`, or `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN`). This
- *      replaced the old public `updates.json` feed: one source of truth, the release tag, so a check can
- *      no longer answer 404 because a JSON file was not published, and a tag cannot disagree with it.
+ *   2. **Read GitHub directly when this deployment owns the repository.** A site reads its release tags
+ *      with the GitHub credential the Integrations hub already stores (`github_config`, or
+ *      `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN`), from the repository named in `updates_config.repository` when
+ *      Settings → Updates names one. One source of truth, the release tag, so a check cannot answer 404
+ *      because a JSON file was not published, and a tag cannot disagree with it.
  *   3. **Apply the update.** A Vercel/Netlify host is told to rebuild (`deploy_config`, Settings →
  *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
  *      Which one is chosen, and why, is `updatePlan`.
@@ -111,11 +111,18 @@ export const updateConfigFrom = (value) => {
   const central = trimmed(row.central_url).replace(/\/+$/, '');
   const channel = trimmed(row.channel).toLowerCase();
   const autoCheck = trimmed(row.auto_check).toLowerCase();
+  const repository = trimmed(row.repository);
   return {
     /** The origin of the update server, without a trailing slash. */
     central_url: /^https?:\/\//i.test(central) ? central : DEFAULT_CENTRAL_URL,
     /** The server-only bearer token. Never sent to the browser, never logged. */
     token: trimmed(row.token),
+    /**
+     * `owner/name` of the repository whose release tags this site is updated from, as named on
+     * Settings → Updates. Empty means "whichever repository the GitHub integration holds", and a value
+     * that is not a repository at all reads as empty rather than as a broken URL to fetch.
+     */
+    repository: repoFrom(repository) ? repository : '',
     channel: UPDATE_CHANNELS.includes(channel) ? channel : 'stable',
     auto_check: AUTO_CHECK_KEYS.includes(autoCheck) ? autoCheck : 'weekly',
     notify: row.notify !== false,
@@ -145,39 +152,55 @@ export const describeUpdateConfig = (config) => ({
   auto_check: config.auto_check,
   notify: config.notify,
   self_update: config.self_update,
+  /** The repository a check reads first, when Settings → Updates names one. */
+  repository: config.repository,
   has_token: config.token.length > 0,
   /**
-   * Which source an update check asks. `central` is a licensed site asking the platform; `github` is a
-   * deployment that owns the repository and reads its own release tags.
+   * Which source an update check asks first. `github` is the repository named on this screen, or a site
+   * with no central token reading its own release tags; `central` is a licensed site asking the platform.
    */
-  source: config.token ? 'central' : 'github',
+  source: config.repository || !config.token ? 'github' : 'central',
 });
 
 /**
  * The GitHub repository a check may read directly, or null.
  *
- * A platform owner's deployment owns the repository its releases are tagged on, so it does not need a
- * central server to be told about them — but that read needs a credential for a private repository, and
- * the Integrations hub already stores one (`github_config`, written by Settings → Integrations → GitHub).
- * The environment is consulted first because that is where a platform build pins its own repository:
+ * A deployment owns the repository its releases are tagged on, so it does not need a central server to be
+ * told about them — but that read needs a credential for a private repository, and the Integrations hub
+ * already stores one (`github_config`, written by Settings → Integrations → GitHub).
  *
- *   - `RWP_RELEASE_REPO` — `owner/name`, the same variable `server/centralUpdates.mjs` reads.
+ * The order is deliberate, because the wrong repository answers with the wrong release:
+ *
+ *   - `configured` — `updates_config.repository`, the repository Settings → Updates names. This is the
+ *     administrator pointing at the tags this *site* is released on (a plugin edition's own repository,
+ *     say), so nothing overrides it, and a check that finds it never asks the platform instead.
+ *   - `RWP_RELEASE_REPO` — `owner/name`, the variable a platform build pins (`server/centralUpdates.mjs`
+ *     reads the same one).
  *   - `GITHUB_REPO` — the name the GitHub card writes.
  *   - the stored `github_config.repository`.
  *
- * The token is `RWP_RELEASE_TOKEN`, else `GITHUB_TOKEN`, else the stored token; a public repository
- * needs none, which is why an empty token is a supported state rather than an error.
+ * The token is `RWP_RELEASE_TOKEN`, else `GITHUB_TOKEN`, else the token the GitHub integration stored; a
+ * public repository needs none, which is why an empty token is a supported state rather than an error.
+ *
+ * `explicit` says whether the repository came from the screen, which is what `checkForUpdates` reads to
+ * decide the order of its two sources.
  *
  * @param {Record<string, string | undefined>} [env]
  * @param {unknown} [stored] the `github_config` row
- * @returns {{ repo: string, token: string } | null}
+ * @param {unknown} [configured] `updates_config.repository`, as typed on Settings → Updates
+ * @returns {{ repo: string, token: string, explicit: boolean } | null}
  */
-export const githubUpdateSourceFrom = (env, stored) => {
+export const githubUpdateSourceFrom = (env, stored, configured) => {
   const environment = environmentOf(env);
   const row = stored && typeof stored === 'object' ? stored : {};
-  const repo = trimmed(environment.RWP_RELEASE_REPO) || trimmed(environment.GITHUB_REPO) || trimmed(row.repository);
+  const named = trimmed(configured);
+  const explicit = Boolean(repoFrom(named));
+  const repo = (explicit ? named : '')
+    || trimmed(environment.RWP_RELEASE_REPO)
+    || trimmed(environment.GITHUB_REPO)
+    || trimmed(row.repository);
   const token = trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN) || githubTokenFrom(row);
-  return repoFrom(repo) ? { repo, token } : null;
+  return repoFrom(repo) ? { repo, token, explicit } : null;
 };
 
 /**
@@ -208,9 +231,10 @@ export const describeGithubSource = (source) => ({
  */
 export async function readUpdatesConfig(options) {
   const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY], options);
+  const config = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
   return {
-    config: updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]),
-    github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY]),
+    config,
+    github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository),
     readable: rows.readable,
     error: rows.readable ? '' : rows.error,
   };
@@ -489,13 +513,14 @@ export const centralReleasesFrom = (body) => {
 
 
 /**
- * Reads this deployment's own release tags from GitHub — the source a platform owner's site uses.
+ * Reads the release tags of the repository this site is updated from — the repository Settings → Updates
+ * names, or the one the GitHub integration holds (`githubUpdateSourceFrom`).
  *
- * This is the replacement for the public `updates.json` feed, and it is a strictly better answer to the
- * same question: the tag GitHub lists *is* the release, so there is no file to forget to publish, no
- * cache to go stale and no second copy of a version number to disagree with the first. The whole
- * conversation is `server/githubReleases.mjs` — this function only picks the newest tag the configured
- * channel may be offered and hands it to `checkAnswerFrom` in the same shape a central answer has.
+ * The tag GitHub lists *is* the release: there is no file to forget to publish, no cache to go stale and
+ * no second copy of a version number to disagree with the first. The whole conversation is
+ * `server/githubReleases.mjs` — that file reads `/releases` and falls back to `/tags`, and this function
+ * only picks the newest tag the configured channel may be offered and hands it to `checkAnswerFrom` in
+ * the same shape a central answer has.
  *
  * A repository with no release tag yet is a *sentence*, not a 404: `null` back from
  * `latestReleaseFrom` means "tag a release" and the administrator is told exactly that.
@@ -579,42 +604,62 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
 };
 
 /**
- * The check both hosts run: the central server if this site has a token for it, GitHub's release tags
- * if this deployment owns the repository, and a sentence naming what to configure if neither applies.
+ * The check both hosts run: the repository Settings → Updates names, else the central server when this
+ * site has a token for it, else the release tags of whichever repository the GitHub integration holds —
+ * and a sentence naming what to configure when none of those applies.
  *
- * The order is deliberate. A licensed site asks the platform, which answers for the plugins it sells as
- * well as for the app. A platform owner — a site whose own repository publishes these releases — has no
- * reason to ask itself, and reads its tags directly with the credential the Integrations hub already
- * stores. Both paths end in `checkAnswerFrom`, so the screen cannot tell them apart except by the
- * `source` it is told.
+ * The order is deliberate, and it is what stops a check answering from the wrong repository:
+ *
+ *   - A repository named on Settings → Updates is the administrator saying "these are the tags this site
+ *     is released on", so it is asked first. A plugin or platform edition whose own repository publishes
+ *     these releases must never be answered by the central server's list of the core releases instead.
+ *   - A licensed site that names no repository asks the platform, which also answers for the plugins it
+ *     sells; its own tags answer when that fails.
+ *   - A site with no token has nothing to ask but GitHub.
+ *
+ * Every attempt that failed is kept as a sentence on the answer (`error`), so an administrator can see
+ * why the source they configured was not the one that replied. Both paths end in `checkAnswerFrom`, so
+ * the screen cannot tell them apart except by the `source` it is told.
  *
  * Nothing here reads `package.json`: this site's version is whatever the caller reports as installed,
  * which comes from the build's own tag, and the newest version is a release tag. A file that is edited
  * while a release is being prepared can therefore never be mistaken for the release.
  *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string } | null, fetchImpl?: typeof fetch }} options
+ * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string, explicit?: boolean } | null, fetchImpl?: typeof fetch }} options
  */
 export async function checkForUpdates({ config, current, plugins, github = null, fetchImpl = fetch }) {
-  let centralError = '';
-  if (config.token) {
+  const source = github || githubUpdateSourceFrom(undefined);
+  if (!source && !config.token) {
+    throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
+  }
+  /** GitHub first when the administrator named the repository, and always when there is no token to ask. */
+  const order = source && (source.explicit || !config.token)
+    ? ['github', ...(config.token ? ['central'] : [])]
+    : [...(config.token ? ['central'] : []), ...(source ? ['github'] : [])];
+  /** `{ message, status }` per source that refused, in the order they were tried. */
+  const failures = [];
+  for (const attempt of order) {
     try {
-      const central = await fetchCentralCheck({ config, current, plugins, fetchImpl });
-      return checkAnswerFrom({ source: 'central', ...central, current, plugins_installed: plugins });
+      const releases = attempt === 'github'
+        ? await fetchGithubCheck({ source, channel: config.channel, fetchImpl })
+        : await fetchCentralCheck({ config, current, plugins, fetchImpl });
+      return checkAnswerFrom({
+        source: attempt,
+        ...releases,
+        current,
+        plugins_installed: plugins,
+        error: failures.map((failure) => failure.message).join(' '),
+      });
     } catch (error) {
-      centralError = error instanceof Error ? error.message : 'The central update server could not be asked.';
+      failures.push({
+        message: error instanceof Error ? error.message : `The ${attempt === 'github' ? 'GitHub release tags' : 'central server'} could not be read.`,
+        status: Number(error?.status) || 0,
+      });
     }
   }
-  const source = github || githubUpdateSourceFrom(undefined);
-  if (!source) {
-    throw new UpdateError(centralError || 'No update source is configured for this site. Save the repository the releases are tagged on and a token for it under Settings → Integrations → GitHub (a public repository needs no token), or save an update token here to ask the central server.', 400);
-  }
-  try {
-    const releases = await fetchGithubCheck({ source, channel: config.channel, fetchImpl });
-    return checkAnswerFrom({ source: 'github', ...releases, current, plugins_installed: plugins, error: centralError });
-  } catch (error) {
-    const githubError = error instanceof Error ? error.message : 'The GitHub releases could not be read.';
-    throw new UpdateError(centralError ? `${centralError} ${githubError}` : githubError, error?.status || 502);
-  }
+  // Nothing answered. The last sentence is the most specific, so it is the one the status is taken from.
+  const message = failures.map((failure) => failure.message).filter(Boolean).join(' ');
+  throw new UpdateError(message || 'No update source answered.', failures[failures.length - 1]?.status || 502);
 }
 
 /* -- Applying an update -------------------------------------------------------------------------- */

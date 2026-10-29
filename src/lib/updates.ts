@@ -3,10 +3,11 @@
  *
  * There is no version file to fetch here and no `updates.json` to keep publishing. A version is
  * published by *tagging a release on GitHub* (`v2.4.1`), and the answer comes from the server
- * (`src/lib/updateCenter.ts` → `server/updateCenter.mjs`): either from `react-wp.com` when this site
- * holds a token for it, or straight from this deployment's own release tags. That is why nothing in this
- * file performs a check — it stores what the server said and compares it against the build that is
- * running, which is the one comparison a badge can make without guessing.
+ * (`src/lib/updateCenter.ts` → `server/updateCenter.mjs`): from the repository named on Settings →
+ * Updates, else from `react-wp.com` when this site holds a token for it, else from the release tags of
+ * whichever repository the GitHub integration holds. That is why nothing in this file performs a
+ * check — it stores what the server said and compares it against the build that is running, which is the
+ * one comparison a badge can make without guessing.
  *
  * Two facts worth keeping in mind:
  *
