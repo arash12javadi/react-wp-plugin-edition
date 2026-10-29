@@ -29,16 +29,26 @@
  * `node:crypto`. It is safe to call before the database is configured: with no stored identity it is a
  * silent no-op, and every network failure degrades to "no remote plugins".
  */
+import { currentEdition, DEV_EDITION } from './pluginEdition';
 import { rwp } from './rwp';
 
 /** localStorage keys for the site identity the central server issued. */
 export const REMOTE_SITE_TOKEN_KEY = 'rwp_site_token';
 export const REMOTE_LICENSE_KEY_KEY = 'rwp_license_key';
 
-/** Vite-inlined: the central licensing server's origin, e.g. `https://admin.example.com`. */
+/**
+ * Vite-inlined: the central licensing server's origin, e.g. `https://admin.example.com`.
+ *
+ * A customer build sets `VITE_RWP_REMOTE_LICENSE_URL` at build time. The development edition *is*
+ * the marketplace — its own deployment answers `remote/*` — so it falls back to its own origin and
+ * the admin tab works before that variable is configured anywhere.
+ */
 const remoteLicenseBaseUrl = () => {
   const configured = typeof import.meta.env !== 'undefined' ? import.meta.env.VITE_RWP_REMOTE_LICENSE_URL : '';
-  return String(configured || '').replace(/\/+$/, '');
+  const resolved = String(configured || '').replace(/\/+$/, '');
+  if (resolved) return resolved;
+  if (typeof window !== 'undefined' && currentEdition() === DEV_EDITION) return window.location.origin;
+  return '';
 };
 
 /** The central `remote/*` route prefix, named once so the loader and the server cannot disagree. */
@@ -79,6 +89,13 @@ export const clearSiteIdentity = () => {
 };
 
 /**
+ * The event a freshly loaded remote bundle announces itself with: `new CustomEvent('rwp:remote-plugin',
+ * { detail: { pluginId } })`. The admin marketplace listens for it so an install can say "active now"
+ * instead of asking the administrator to reload.
+ */
+export const REMOTE_PLUGIN_EVENT = 'rwp:remote-plugin';
+
+/**
  * The global a remote bundle registers through. Exposed once, so the bridge exists before any script
  * has loaded, and reused on later boots.
  */
@@ -89,6 +106,12 @@ export const installRemoteRegistry = () => {
       try {
         rwp.registerPlugin(plugin);
         rwp.activatePlugin(plugin?.id);
+        // A bundle is a plain script with no way to tell the app it arrived; this is that signal.
+        try {
+          window.dispatchEvent(new CustomEvent(REMOTE_PLUGIN_EVENT, { detail: { pluginId: String(plugin?.id || '') } }));
+        } catch {
+          /* an old browser without CustomEvent still gets a working plugin, just no live announcement */
+        }
         return () => rwp.deactivatePlugin(plugin?.id);
       } catch (error) {
         console.warn('[remote-plugins]', error instanceof Error ? error.message : error);
@@ -99,6 +122,43 @@ export const installRemoteRegistry = () => {
   window.__RWP_REMOTE__ = registry;
   return registry;
 };
+
+/**
+ * Resolves `true` once a remote bundle has registered and activated itself, or `false` after
+ * `timeoutMs`. A just-granted plugin arrives as `<script src>`: the server has said yes, but the
+ * browser still has to fetch and run it, so "installed" is only true when the registry agrees.
+ */
+export const waitForRemotePlugin = (pluginId, timeoutMs = 8000) => new Promise((resolve) => {
+  const target = String(pluginId || '');
+  const isActive = () => Boolean(rwp.getPlugins().some((plugin) => plugin.id === target && plugin.active));
+  if (!target) {
+    resolve(false);
+    return;
+  }
+  if (isActive()) {
+    resolve(true);
+    return;
+  }
+
+  let finished = false;
+  let poll = 0;
+  let deadline = 0;
+  const stop = (value) => {
+    if (finished) return;
+    finished = true;
+    window.clearInterval(poll);
+    window.clearTimeout(deadline);
+    window.removeEventListener(REMOTE_PLUGIN_EVENT, onEvent);
+    resolve(value);
+  };
+  function onEvent(event) {
+    if (String(event?.detail?.pluginId || '') === target && isActive()) stop(true);
+  }
+
+  deadline = window.setTimeout(() => stop(isActive()), timeoutMs);
+  poll = window.setInterval(() => { if (isActive()) stop(true); }, 200);
+  window.addEventListener(REMOTE_PLUGIN_EVENT, onEvent);
+});
 /**
  * The boot-time license check. Returns the central server's verdict; any status other than `active`
  * is reported faithfully so callers can block. Never throws.
@@ -148,21 +208,118 @@ export const activateRemoteLicense = async (licenseKey, domain = window.location
 };
 
 /**
+ * The orderings the storefront offers. `remote/catalog` accepts the same names, so the admin tab and
+ * the public `[rwp_marketplace]` block cannot drift apart in what they offer.
+ */
+export const CATALOG_SORTS = ['popular', 'newest', 'rating', 'price', 'price-desc'];
+
+/** How many cards one catalogue page holds unless the caller asks for something else. */
+export const CATALOG_PAGE_SIZE = 12;
+
+const catalogSort = (value) => (CATALOG_SORTS.includes(String(value || '')) ? String(value) : 'popular');
+
+const numberOr = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+
+const stringList = (value) => (Array.isArray(value) ? value.map((entry) => String(entry).trim()).filter(Boolean) : []);
+
+/**
+ * One catalogue row, coerced into the storefront shape. The central server sends these fields from
+ * `catalogEntry`; the camel⇄snake fallbacks keep an older deployment — or a raw `rwp_remote_plugins`
+ * row — readable rather than rendering a card of blanks.
+ */
+const catalogItem = (item) => ({
+  pluginId: String(item?.pluginId || item?.plugin_id || '').trim(),
+  name: String(item?.name || '').trim(),
+  version: String(item?.version || '').trim(),
+  plan: String(item?.plan || '').trim(),
+  priceUsd: numberOr(item?.priceUsd ?? item?.price_usd),
+  billingInterval: ['lifetime', 'monthly', 'yearly'].includes(String(item?.billingInterval || item?.billing_interval || ''))
+    ? String(item?.billingInterval || item?.billing_interval)
+    : 'lifetime',
+  description: String(item?.description || '').trim(),
+  category: String(item?.category || 'utility').trim() || 'utility',
+  author: String(item?.author || '').trim(),
+  tags: stringList(item?.tags),
+  features: stringList(item?.features),
+  docsUrl: String(item?.docsUrl || item?.docs_url || '').trim(),
+  ratingAvg: numberOr(item?.ratingAvg ?? item?.rating_avg),
+  ratingCount: numberOr(item?.ratingCount ?? item?.rating_count),
+  installs: numberOr(item?.installs),
+  updatedAt: String(item?.updatedAt || item?.updated_at || '').trim(),
+  integrity: String(item?.integrity || '').trim(),
+});
+
+/** The comparators behind `CATALOG_SORTS`, tolerant of a missing field. */
+const CATALOG_COMPARATORS = {
+  popular: (a, b) => b.installs - a.installs || b.ratingCount - a.ratingCount || a.name.localeCompare(b.name),
+  newest: (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)) || a.name.localeCompare(b.name),
+  rating: (a, b) => b.ratingAvg - a.ratingAvg || b.ratingCount - a.ratingCount || a.name.localeCompare(b.name),
+  price: (a, b) => a.priceUsd - b.priceUsd || a.name.localeCompare(b.name),
+  'price-desc': (a, b) => b.priceUsd - a.priceUsd || a.name.localeCompare(b.name),
+};
+
+const catalogMatches = (item, search, category) => {
+  if (category && item.category.toLowerCase() !== category.toLowerCase()) return false;
+  if (!search) return true;
+  const haystack = [item.name, item.description, item.category, item.author, ...item.tags].join(' ').toLowerCase();
+  return haystack.includes(search.toLowerCase());
+};
+
+/**
  * The central marketplace catalogue (metadata only). Never throws, so the admin tab can render a
  * friendly "the licensing server is unreachable" state instead of crashing the screen.
+ *
+ * `{ search, category, orderby, page, perPage }` is the same query the public `[rwp_marketplace]`
+ * block sends. A central server that predates the query contract ignores it and answers with the
+ * whole catalogue, which is why the filtering, sorting and paging is repeated here: the tab then
+ * behaves identically against either server.
  */
-export const fetchRemoteCatalog = async () => {
+export const fetchRemoteCatalog = async (query = {}) => {
   const base = remoteLicenseBaseUrl();
-  if (!base) return { ok: false, reason: 'not_configured', items: [] };
+  const page = Math.max(numberOr(query.page, 1), 1);
+  const perPage = Math.min(Math.max(numberOr(query.perPage, CATALOG_PAGE_SIZE), 1), 60);
+  const search = String(query.search || '').trim();
+  const category = String(query.category || '').trim();
+  const orderby = catalogSort(query.orderby);
+  const empty = { items: [], total: 0, page, perPage, categories: [], orderby };
+
+  if (!base) return { ok: false, reason: 'not_configured', ...empty };
+
   try {
-    const response = await fetch(`${remoteRoute('catalog')}`, { cache: 'no-store' });
+    const params = new URLSearchParams({ orderby, page: String(page), per_page: String(perPage) });
+    if (search) params.set('search', search);
+    if (category) params.set('category', category);
+    const response = await fetch(`${remoteRoute('catalog')}?${params.toString()}`, { cache: 'no-store' });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
-      return { ok: false, reason: payload?.reason || 'http_error', items: [] };
+      return { ok: false, reason: payload?.reason || 'http_error', error: String(payload?.error || ''), ...empty };
     }
-    return { ok: true, items: Array.isArray(payload.items) ? payload.items : [] };
+
+    const rows = (Array.isArray(payload.items) ? payload.items : []).map(catalogItem).filter((item) => item.pluginId);
+    let items = rows;
+    let total = Number(payload.total);
+    if (!Number.isFinite(total)) {
+      const matched = rows
+        .filter((item) => catalogMatches(item, search, category))
+        .sort(CATALOG_COMPARATORS[orderby] || CATALOG_COMPARATORS.popular);
+      total = matched.length;
+      items = matched.slice((page - 1) * perPage, page * perPage);
+    }
+    const categories = Array.isArray(payload.categories) && payload.categories.length
+      ? payload.categories.map((entry) => String(entry).trim()).filter(Boolean)
+      : [...new Set(rows.map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+
+    return {
+      ok: true,
+      items,
+      total,
+      page: numberOr(payload.page, page),
+      perPage: numberOr(payload.per_page, perPage),
+      categories,
+      orderby,
+    };
   } catch {
-    return { ok: false, reason: 'network_error', items: [] };
+    return { ok: false, reason: 'network_error', ...empty };
   }
 };
 

@@ -408,7 +408,7 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
       </Suspense>
     );
   } else if (section === 'plugins') {
-    content = subsection === 'marketplace' ? <AdminPluginsMarketplace /> : <PluginsManager />;
+    content = subsection === 'marketplace' ? <AdminPluginsMarketplace navigate={navigate} /> : <PluginsManager />;
   } else if (section === 'comments') {
     content = <CommentsManager />;
   } else if (section === 'profile') {

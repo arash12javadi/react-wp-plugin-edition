@@ -1,12 +1,26 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
+  activateRemoteLicense,
+  CATALOG_PAGE_SIZE,
   fetchRemoteCatalog,
   readSiteIdentity,
   startRemoteCheckout,
   syncRemotePlugins,
   verifyRemoteLicense,
+  waitForRemotePlugin,
 } from '../lib/remotePlugins';
 import styles from './AdminPluginsMarketplace.module.css';
+
+interface Props {
+  navigate?: (section: string, subsection?: string) => void;
+}
+
+/** The site identity the central server issued, as stored in this browser. */
+interface SiteIdentity {
+  siteToken: string;
+  licenseKey: string;
+  siteUrl: string;
+}
 
 /** The storefront shape the central server's `remote/catalog` returns (metadata only). */
 interface RemoteCatalogItem {
@@ -19,85 +33,344 @@ interface RemoteCatalogItem {
   description: string;
   category: string;
   integrity: string;
+  author: string;
+  tags: string[];
+  features: string[];
+  docsUrl: string;
+  ratingAvg: number;
+  ratingCount: number;
+  installs: number;
+  updatedAt: string;
 }
 
-const money = (value: number): string => (value <= 0 ? 'Free' : `$${Number(value).toFixed(2)}`);
+/** One page of the catalogue, as `fetchRemoteCatalog` normalises it. */
+interface CatalogPage {
+  ok: boolean;
+  reason?: string;
+  items: RemoteCatalogItem[];
+  total: number;
+  page: number;
+  perPage: number;
+  categories: string[];
+}
+
+/** A plugin the licensing server says this site may load. */
+interface EntitledPlugin {
+  pluginId: string;
+  name: string;
+  version: string;
+  plan: string;
+}
+
+interface LicenceState {
+  status: string;
+  reason: string;
+  plan: string;
+  expiresAt: string | null;
+  plugins: EntitledPlugin[];
+}
+
+const SORT_OPTIONS = [
+  { value: 'popular', label: 'Most popular' },
+  { value: 'newest', label: 'Recently updated' },
+  { value: 'rating', label: 'Top rated' },
+  { value: 'price', label: 'Price: low to high' },
+  { value: 'price-desc', label: 'Price: high to low' },
+];
+
+const EMPTY_PAGE: CatalogPage = { ok: true, items: [], total: 0, page: 1, perPage: CATALOG_PAGE_SIZE, categories: [] };
+
+const LICENCE_STATUS: Record<string, string> = {
+  active: 'Active',
+  expired: 'Expired',
+  pending_renewal: 'Renewal due',
+  revoked: 'Revoked',
+  invalid: 'Not verified',
+};
+
+const LICENCE_REASONS: Record<string, string> = {
+  not_activated: 'no licence key is stored in this browser',
+  missing_license: 'no licence key was sent',
+  unknown_license: 'the licence key is not recognised',
+  site_token_mismatch: 'this browser\'s site token does not match the licence',
+  domain_mismatch: 'the licence is bound to another domain',
+  license_expired: 'the licence has expired',
+  license_revoked: 'the licence has been revoked',
+  license_pending_renewal: 'a renewal is due',
+  not_configured: 'the marketplace server is not configured for this build',
+  network_error: 'the licensing server could not be reached',
+};
+
+/** "2026-10-29" → "29/10/2026"; an unparseable value is shown as nothing rather than "Invalid Date". */
+const day = (value: string | null) => {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
+};
+
+/** The category ids are slugs (`seo`, `commerce`); a card heading wants the word. */
+const label = (value: string) => (value ? value.charAt(0).toUpperCase() + value.slice(1) : value);
+
+/** A price, with the term only when there is one to charge. */
+const money = (item: RemoteCatalogItem) => {
+  if (item.priceUsd <= 0) return 'Free';
+  const term = item.billingInterval === 'monthly' ? '/mo' : item.billingInterval === 'yearly' ? '/yr' : '';
+  return `$${item.priceUsd.toFixed(2)}${term}`;
+};
+
+const reasonText = (reason: string) => LICENCE_REASONS[reason] || reason.replace(/_/g, ' ') || 'unknown reason';
+
+/** Why the catalogue is empty, in words an administrator can act on. */
+const catalogProblem = (reason?: string) => {
+  if (reason === 'not_configured') {
+    return 'The marketplace server is not configured for this build. Set VITE_RWP_REMOTE_LICENSE_URL to the central licensing server, then reload.';
+  }
+  if (reason === 'network_error') {
+    return 'The marketplace server could not be reached. Check this site\'s connection, then press Check again.';
+  }
+  return 'The marketplace catalogue could not be read. Press Check again in a moment.';
+};
+
+/** Why a licence key was refused. */
+const activationProblem = (reason?: string) => {
+  switch (reason) {
+    case 'missing_license':
+    case 'missing_fields':
+      return 'Enter the licence key you were sent.';
+    case 'unknown_license':
+      return 'That licence key is not one this marketplace issued. Check it against your receipt.';
+    case 'domain_mismatch':
+      return 'That licence is bound to a different domain. One licence covers one site — contact support to move it.';
+    case 'site_token_mismatch':
+      return 'This browser holds a site token that does not belong to that licence. Clear it and activate again.';
+    case 'license_expired':
+      return 'That licence has expired. Renew it, then activate this site again.';
+    case 'license_revoked':
+      return 'That licence has been revoked, so it cannot be bound to a site.';
+    case 'not_configured':
+      return 'The marketplace server is not configured for this build (VITE_RWP_REMOTE_LICENSE_URL is not set).';
+    case 'network_error':
+      return 'The licensing server could not be reached. Try again in a moment.';
+    default:
+      return `The licence could not be activated (${reasonText(reason || 'unknown')}).`;
+  }
+};
+
+/** Why checkout was refused, including the verdict the server sent back with it. */
+const checkoutProblem = (result: { reason?: string; status?: string } | null, plugin: RemoteCatalogItem) => {
+  if (!result) return 'Checkout could not be started.';
+  if (result.reason === 'not_activated' || result.reason === 'missing_identity') {
+    return 'This site has no stored licence identity yet. Activate it above, then buy.';
+  }
+  if (result.reason === 'not_configured') return 'The marketplace server is not configured for this build.';
+  if (result.reason === 'network_error') return 'The marketplace server could not be reached. Try again in a moment.';
+  if (result.reason === 'unknown_plugin') return `${plugin.name} is no longer listed in the marketplace.`;
+  if (result.reason === 'missing_plugin') return 'No plugin was named in the checkout request.';
+  if (result.status && result.status !== 'active') {
+    return `This site's licence is ${result.status}, so ${plugin.name} cannot be bought until it is active again.`;
+  }
+  return `Checkout for ${plugin.name} failed (${reasonText(result.reason || 'unknown')}).`;
+};
 
 /**
- * The admin "Plugins → Marketplace" tab: browse the central premium-plugin catalogue, buy a plugin
- * with the site's own token (NOWPayments, USDT TRC20), and — after the IPN confirms — the remote
- * loader recognises the new entitlement on the next sync, no manual key entry.
+ * The admin "Plugins → Marketplace" tab.
+ *
+ * Browse the central premium-plugin catalogue, install a free plugin or buy a paid one — and the
+ * site's own token travels with the request, so the licence is bound to this domain without anybody
+ * copying a key. What is installed then comes from the licensing server's verdict: a plugin the site
+ * is entitled to is injected by the remote loader, which is why a free install can say "active" a
+ * second later instead of asking for a reload.
  */
-export default function AdminPluginsMarketplace() {
-  const [identity] = useState(() => readSiteIdentity());
-  const [catalog, setCatalog] = useState<RemoteCatalogItem[] | null>(null);
-  const [entitled, setEntitled] = useState<Set<string>>(new Set());
-  const [licenseActive, setLicenseActive] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+export default function AdminPluginsMarketplace({ navigate }: Props) {
+  const [identity, setIdentity] = useState<SiteIdentity>(() => readSiteIdentity() as SiteIdentity);
+  const [licence, setLicence] = useState<LicenceState>({ status: 'unknown', reason: '', plan: '', expiresAt: null, plugins: [] });
+  const [catalog, setCatalog] = useState<CatalogPage>(EMPTY_PAGE);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [category, setCategory] = useState('');
+  const [orderby, setOrderby] = useState('popular');
+  const [page, setPage] = useState(1);
+  const [reloadToken, setReloadToken] = useState(0);
   const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [licenseKey, setLicenseKey] = useState('');
+  const [details, setDetails] = useState<RemoteCatalogItem | null>(null);
 
-  const load = useCallback(async () => {
-    setError('');
-    const [catalogResult, report] = await Promise.all([fetchRemoteCatalog(), verifyRemoteLicense()]);
-    if (!catalogResult.ok) {
-      setError('The plugin marketplace could not be reached. Check that the licensing server is configured.');
-      setCatalog([]);
-    } else {
-      setCatalog(catalogResult.items);
+  const activated = licence.status === 'active';
+  const entitled = useMemo(() => new Set(licence.plugins.map((plugin) => plugin.pluginId)), [licence.plugins]);
+  const pages = Math.max(1, Math.ceil(catalog.total / Math.max(catalog.perPage, 1)));
+  const statusLabel = licence.reason === 'not_activated' ? 'Not activated' : LICENCE_STATUS[licence.status] || 'Not verified';
+  const maskedToken = identity.siteToken ? `${identity.siteToken.slice(0, 8)}…${identity.siteToken.slice(-4)}` : '';
+
+  const refreshLicence = useCallback(async () => {
+    const current = readSiteIdentity() as SiteIdentity;
+    setIdentity(current);
+    if (!current.siteToken || !current.licenseKey) {
+      setLicence({ status: 'inactive', reason: 'not_activated', plan: '', expiresAt: null, plugins: [] });
+      return;
     }
-    setLicenseActive(report?.status === 'active');
-    setEntitled(new Set((report?.plugins || []).map((plugin) => plugin.pluginId)));
+    const report = (await verifyRemoteLicense(current)) as {
+      status?: string;
+      reason?: string;
+      license?: { plan?: string; expiresAt?: string | null };
+      plugins?: EntitledPlugin[];
+    };
+    setLicence({
+      status: String(report?.status || 'invalid'),
+      reason: String(report?.reason || ''),
+      plan: String(report?.license?.plan || ''),
+      expiresAt: report?.license?.expiresAt ? String(report.license.expiresAt) : null,
+      plugins: Array.isArray(report?.plugins) ? report.plugins : [],
+    });
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
-
-  // Returning from the NOWPayments redirect: success/cancelled are carried in the admin URL.
+  // Typing reaches the server only once the administrator has paused; a stale response is dropped.
   useEffect(() => {
-    const purchase = new URLSearchParams(window.location.search).get('purchase');
-    if (purchase === 'success') {
-      setNotice('Payment received — syncing your new plugin…');
-      void syncRemotePlugins().then(() => void load());
-    } else if (purchase === 'cancelled') {
-      setNotice('Checkout was cancelled. Nothing was charged.');
-    }
-  }, [load]);
+    const timer = window.setTimeout(() => setDebounced(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
-  const buy = async (plugin: RemoteCatalogItem) => {
+  useEffect(() => {
+    setPage(1);
+  }, [debounced, category, orderby]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    void (fetchRemoteCatalog({ search: debounced, category, orderby, page, perPage: CATALOG_PAGE_SIZE }) as Promise<CatalogPage>)
+      .then((result) => {
+        if (!live) return;
+        setCatalog(result.ok ? result : EMPTY_PAGE);
+        setError(result.ok ? '' : catalogProblem(result.reason));
+        setLoading(false);
+      });
+    return () => { live = false; };
+  }, [debounced, category, orderby, page, reloadToken]);
+
+
+  /**
+   * The first licence check, plus the return trip from NOWPayments. Both run once on mount: the
+   * `?purchase=` markers are then stripped from the URL, so reloading the tab cannot replay a sync.
+   */
+  const handledReturn = useRef(false);
+  useEffect(() => {
+    if (handledReturn.current) return;
+    handledReturn.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const purchase = params.get('purchase');
+    if (!purchase) {
+      void refreshLicence();
+      return;
+    }
+
+    const pluginId = params.get('plugin') || '';
+    params.delete('purchase');
+    params.delete('plugin');
+    const rest = params.toString();
+    window.history.replaceState({}, '', `/admin${rest ? `?${rest}` : ''}`);
+
+    if (purchase === 'cancelled') {
+      setNotice('Checkout cancelled — nothing was charged.');
+      void refreshLicence();
+      return;
+    }
+
+    setBusy(pluginId || 'return');
+    setNotice('Payment received — binding the licence to this site…');
+    void (async () => {
+      // NOWPayments redirects the buyer back before the IPN necessarily arrives, so the licence is
+      // re-checked a few times instead of once: the webhook usually lands within a couple of seconds.
+      let loaded = false;
+      for (let attempt = 0; attempt < 4 && !loaded; attempt += 1) {
+        if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 2500));
+        await syncRemotePlugins();
+        if (pluginId) loaded = await waitForRemotePlugin(pluginId, 1500);
+      }
+      await refreshLicence();
+      setBusy('');
+      setNotice(loaded
+        ? 'Payment confirmed. The plugin is licensed to this site and is loading now.'
+        : 'Payment confirmed. The new plugin is licensed to this site; reload the admin if it does not appear under Installed Plugins.');
+    })();
+  }, [refreshLicence]);
+
+  const activate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = licenseKey.trim();
+    if (!trimmed || busy) return;
+    setBusy('activate');
+    setError('');
+    setNotice('Activating and binding this site…');
+    const result = (await activateRemoteLicense(trimmed, window.location.origin)) as { status?: string; reason?: string };
+    if (result?.status === 'active') {
+      setLicenseKey('');
+      await refreshLicence();
+      await syncRemotePlugins();
+      setNotice(`Licence activated. ${window.location.origin} is the domain this site's plugins are bound to.`);
+    } else {
+      setError(activationProblem(result?.reason));
+      await refreshLicence();
+    }
+    setBusy('');
+  };
+
+  /** One button for both cases: a free plugin is granted on the spot, a paid one leaves for checkout. */
+  const install = async (plugin: RemoteCatalogItem) => {
+    if (busy) return;
     setBusy(plugin.pluginId);
     setError('');
     setNotice('');
-    const result = await startRemoteCheckout(plugin.pluginId);
+
+    const result = (await startRemoteCheckout(plugin.pluginId, identity.siteUrl || window.location.origin)) as {
+      ok?: boolean;
+      free?: boolean;
+      paymentUrl?: string;
+      reason?: string;
+      status?: string;
+    };
+
     if (!result?.ok) {
-      setError(result?.reason === 'not_activated'
-        ? 'Activate this site\'s premium license before buying plugins from the marketplace.'
-        : 'Checkout could not be started. Is the licensing server reachable?');
+      setError(checkoutProblem(result, plugin));
       setBusy('');
+      await refreshLicence();
       return;
     }
+
     if (result.free) {
-      setNotice(`${plugin.name} is now active on this site.`);
+      setNotice(`Adding ${plugin.name} to this site…`);
+      // The grant is already recorded server-side; the bundle still has to arrive and register.
       await syncRemotePlugins();
-      await load();
-    } else if (result.paymentUrl) {
-      // Same-tab redirect, like the public storefront: NOWPayments returns the buyer to the admin
-      // marketplace URL with `?purchase=success|cancelled`, which the effect above handles.
+      const loaded = await waitForRemotePlugin(plugin.pluginId);
+      await refreshLicence();
+      setBusy('');
+      setNotice(loaded
+        ? `${plugin.name} is installed and active. Its screens are in the sidebar now.`
+        : `${plugin.name} is licensed to this site. Reload the admin to finish loading it.`);
+      return;
+    }
+
+    if (result.paymentUrl) {
+      setNotice(`Opening the USDT (TRC20) checkout for ${plugin.name}…`);
       window.location.assign(result.paymentUrl);
       return;
     }
+
     setBusy('');
+    setError(`${plugin.name} could not be sent to checkout. Try again in a moment.`);
   };
 
-  const checkAgain = async () => {
-    setBusy('check');
-    setNotice('Checking…');
-    await syncRemotePlugins();
-    await load();
+  const refreshAll = async () => {
+    if (busy) return;
+    setBusy('refresh');
+    setNotice('Checking the licence and the catalogue…');
+    setReloadToken((token) => token + 1);
+    await refreshLicence();
     setBusy('');
-    setNotice('Licence checked. Entitled plugins are active on this site.');
+    setNotice('Marketplace refreshed.');
   };
-
-  const activated = Boolean(identity.siteToken && identity.licenseKey) && licenseActive;
 
   return (
     <div className={styles.wrap}>
@@ -105,57 +378,134 @@ export default function AdminPluginsMarketplace() {
         <div>
           <h2 className={styles.title}>Plugins Marketplace</h2>
           <p className={styles.subtitle}>
-            Browse and buy premium plugins from the central React-WP catalogue. Purchases are paid with
-            Tether (USDT, TRC20) and are bound to this site automatically.
+            Browse the React-WP catalogue, install a free plugin or buy a premium one. There is nothing
+            to copy: this site's token travels with the request, and the licence is bound to{' '}
+            <strong>{identity.siteUrl || 'this domain'}</strong>.
           </p>
         </div>
-        <button type="button" className={styles.secondary} disabled={busy === 'check'} onClick={() => void checkAgain()}>
-          {busy === 'check' ? 'Checking…' : 'Check again'}
-        </button>
+        <div className={styles.headerActions}>
+          <button type="button" className={styles.secondary} disabled={Boolean(busy)} onClick={() => void refreshAll()}>
+            {busy === 'refresh' ? 'Refreshing…' : 'Check again'}
+          </button>
+        </div>
       </header>
 
-      {!activated && (
-        <p className={styles.banner}>
-          This site has no active premium license, so purchases are disabled. Activate your license first —
-          the marketplace will then bind new plugins to this site automatically.
-        </p>
-      )}
+      <section className={styles.identity} aria-label="Site licence">
+        <div className={styles.identityMain}>
+          <span className={styles.identityLabel}>Licence</span>
+          <span className={activated ? styles.pillActive : styles.pillInactive}>{statusLabel}</span>
+          {activated && licence.plan ? <span className={styles.identityValue}>Plan <code>{licence.plan}</code></span> : null}
+          {activated && day(licence.expiresAt) ? <span className={styles.identityValue}>Renews {day(licence.expiresAt)}</span> : null}
+          <span className={styles.identityValue}>Domain <code>{identity.siteUrl || 'unknown'}</code></span>
+          {maskedToken ? <span className={styles.identityValue}>Token <code>{maskedToken}</code></span> : null}
+          {activated ? (
+            <span className={styles.identityValue}>
+              {licence.plugins.length} plugin{licence.plugins.length === 1 ? '' : 's'} licensed
+            </span>
+          ) : null}
+        </div>
+
+        {!activated && (
+          <form className={styles.activateForm} onSubmit={activate}>
+            <label className={styles.activateLabel} htmlFor="rwp-marketplace-license">
+              {licence.reason === 'not_activated'
+                ? 'Activate this site with your licence key: free plugins install straight away, paid ones checkout in USDT (TRC20).'
+                : `This site's licence cannot be used (${reasonText(licence.reason)}). Enter a valid key to bind it to ${identity.siteUrl || 'this domain'}.`}
+            </label>
+            <div className={styles.activateRow}>
+              <input
+                id="rwp-marketplace-license"
+                className={styles.input}
+                value={licenseKey}
+                onChange={(event) => setLicenseKey(event.target.value)}
+                placeholder="RWPL-…"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={busy === 'activate'}
+              />
+              <button type="submit" className={styles.primary} disabled={busy === 'activate' || !licenseKey.trim()}>
+                {busy === 'activate' ? 'Activating…' : 'Activate this site'}
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
+
       {notice && <p className={styles.notice} role="status">{notice}</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}
 
-      {!catalog ? (
-        <p className={styles.muted}>Loading plugins…</p>
-      ) : !catalog.length ? (
-        <p className={styles.muted}>No plugins are published in the marketplace yet.</p>
+      <div className={styles.toolbar}>
+        <input
+          className={styles.search}
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search the catalogue…"
+          aria-label="Search plugins"
+        />
+        <select
+          className={styles.select}
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+          aria-label="Category"
+        >
+          <option value="">All categories</option>
+          {catalog.categories.map((id) => <option key={id} value={id}>{label(id)}</option>)}
+        </select>
+        <select
+          className={styles.select}
+          value={orderby}
+          onChange={(event) => setOrderby(event.target.value)}
+          aria-label="Sort plugins"
+        >
+          {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+
+      {loading && !catalog.items.length ? (
+        <p className={styles.muted} role="status">Loading the catalogue…</p>
+      ) : !catalog.items.length ? (
+        <p className={styles.muted}>
+          {search || category
+            ? 'No plugin matches that search. Clear the filters to see the whole catalogue.'
+            : 'No plugin is published in the marketplace yet.'}
+        </p>
       ) : (
         <ul className={styles.grid}>
-          {catalog.map((plugin) => {
+          {catalog.items.map((plugin) => {
             const owned = entitled.has(plugin.pluginId);
-            const buying = busy === plugin.pluginId;
+            const working = busy === plugin.pluginId;
             return (
               <li key={plugin.pluginId} className={styles.card}>
                 <div className={styles.cardTop}>
-                  <span className={styles.category}>{plugin.category}</span>
-                  <strong className={styles.name}>{plugin.name}</strong>
-                  {plugin.version && <em className={styles.version}>v{plugin.version}</em>}
+                  <span className={styles.category}>{label(plugin.category)}</span>
+                  {plugin.version ? <em className={styles.version}>v{plugin.version}</em> : null}
                 </div>
-                {plugin.description && <p className={styles.description}>{plugin.description}</p>}
+                <button type="button" className={styles.name} onClick={() => setDetails(plugin)}>
+                  {plugin.name || plugin.pluginId}
+                </button>
+                {plugin.author ? <span className={styles.author}>by {plugin.author}</span> : null}
+                <p className={styles.description}>
+                  {plugin.description || 'The publisher has not described this plugin yet.'}
+                </p>
+                {plugin.tags.length > 0 && (
+                  <ul className={styles.tags}>
+                    {plugin.tags.slice(0, 4).map((tag) => <li key={tag} className={styles.tag}>{tag}</li>)}
+                  </ul>
+                )}
                 <div className={styles.cardFooter}>
-                  <strong className={styles.price}>
-                    {money(plugin.priceUsd)}
-                    {plugin.priceUsd > 0 && plugin.billingInterval === 'monthly' ? '/mo' : ''}
-                    {plugin.priceUsd > 0 && plugin.billingInterval === 'yearly' ? '/yr' : ''}
-                  </strong>
+                  <strong className={styles.price}>{money(plugin)}</strong>
                   {owned ? (
-                    <span className={styles.owned} title="Already entitled">✓ Active</span>
+                    <span className={styles.owned} title="Already licensed to this site">✓ Installed</span>
                   ) : (
                     <button
                       type="button"
                       className={styles.primary}
-                      disabled={buying || !activated}
-                      onClick={() => void buy(plugin)}
+                      disabled={Boolean(busy) || !activated}
+                      title={activated ? undefined : 'Activate this site first'}
+                      onClick={() => void install(plugin)}
                     >
-                      {buying ? 'Opening…' : plugin.priceUsd <= 0 ? 'Install free' : 'Buy / Checkout'}
+                      {working ? (plugin.priceUsd <= 0 ? 'Installing…' : 'Opening…') : plugin.priceUsd <= 0 ? 'Install free' : 'Buy now'}
                     </button>
                   )}
                 </div>
@@ -165,10 +515,172 @@ export default function AdminPluginsMarketplace() {
         </ul>
       )}
 
+      {pages > 1 && (
+        <nav className={styles.pagination} aria-label="Catalogue pages">
+          <button
+            type="button"
+            className={styles.secondary}
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+          >
+            Previous
+          </button>
+          <span className={styles.pageInfo}>
+            Page {catalog.page} of {pages} · {catalog.total} plugin{catalog.total === 1 ? '' : 's'}
+          </span>
+          <button
+            type="button"
+            className={styles.secondary}
+            disabled={page >= pages || loading}
+            onClick={() => setPage((current) => current + 1)}
+          >
+            Next
+          </button>
+        </nav>
+      )}
+
+      {licence.plugins.length > 0 && (
+        <section className={styles.entitlements} aria-label="Plugins licensed to this site">
+          <div className={styles.entitlementHead}>
+            <h3 className={styles.entitlementTitle}>Licensed to this site</h3>
+            <button type="button" className={styles.link} onClick={() => navigate?.('plugins', 'installed')}>
+              Manage installed plugins
+            </button>
+          </div>
+          <ul className={styles.entitlementList}>
+            {licence.plugins.map((plugin) => (
+              <li key={plugin.pluginId} className={styles.entitlement}>
+                <strong className={styles.entitlementName}>{plugin.name || plugin.pluginId}</strong>
+                <span className={styles.entitlementMeta}>
+                  <code>{plugin.pluginId}</code>
+                  {plugin.version ? ` · v${plugin.version}` : ''}
+                  {plugin.plan ? ` · ${plugin.plan}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <p className={styles.footerNote}>
-        Entitlements are verified by the central licensing server on every state sync. A plugin bought here
-        is loaded automatically — no license key to copy.
+        Paid plugins are billed in Tether (USDT, TRC20) through NOWPayments and confirmed by the
+        licensing server, which binds the entitlement to this site's token — there is no key to copy,
+        and a second domain cannot use it. A free plugin is granted the moment you press Install, and
+        the loader switches it on without a reload.
       </p>
+
+      {details ? (
+        <PluginDialog
+          plugin={details}
+          owned={entitled.has(details.pluginId)}
+          activated={activated}
+          busy={busy}
+          onClose={() => setDetails(null)}
+          onInstall={(plugin) => { setDetails(null); void install(plugin); }}
+        />
+      ) : null}
     </div>
   );
 }
+
+/**
+ * What one catalogue entry says about itself, opened from a card so the grid stays scannable. Same
+ * focus, Escape and backdrop conventions as `PluginDetailsModal`, because it is the same kind of
+ * dialog — and the install button is repeated here so a detail view is never a dead end.
+ */
+function PluginDialog({ plugin, owned, activated, busy, onClose, onInstall }: {
+  plugin: RemoteCatalogItem;
+  owned: boolean;
+  activated: boolean;
+  busy: string;
+  onClose: () => void;
+  onInstall: (plugin: RemoteCatalogItem) => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Held in a ref so a parent re-render (busy state, for instance) does not re-run the focus effect.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') closeRef.current(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <div className={styles.backdrop} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div
+        ref={dialogRef}
+        className={styles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rwp-marketplace-dialog-title"
+        tabIndex={-1}
+      >
+        <div className={styles.dialogHeader}>
+          <div>
+            <h3 id="rwp-marketplace-dialog-title" className={styles.dialogTitle}>
+              {plugin.name || plugin.pluginId}
+            </h3>
+            <p className={styles.dialogMeta}>
+              {label(plugin.category)}
+              {plugin.version ? ` · v${plugin.version}` : ''}
+              {plugin.author ? ` · ${plugin.author}` : ''}
+              {plugin.plan ? ` · plan ${plugin.plan}` : ''}
+            </p>
+          </div>
+          <button type="button" className={styles.close} onClick={onClose} aria-label="Close">×</button>
+        </div>
+
+        <div className={styles.dialogBody}>
+          <p className={styles.description}>
+            {plugin.description || 'The publisher has not described this plugin yet.'}
+          </p>
+          {plugin.features.length > 0 && (
+            <ul className={styles.features}>
+              {plugin.features.map((feature) => <li key={feature}>{feature}</li>)}
+            </ul>
+          )}
+          {plugin.tags.length > 0 && (
+            <ul className={styles.tags}>
+              {plugin.tags.map((tag) => <li key={tag} className={styles.tag}>{tag}</li>)}
+            </ul>
+          )}
+          <ul className={styles.dialogFacts}>
+            <li><span>Price</span><strong>{money(plugin)}</strong></li>
+            <li><span>Plugin id</span><code>{plugin.pluginId}</code></li>
+            {plugin.ratingCount > 0 ? (
+              <li><span>Rating</span><strong>{plugin.ratingAvg.toFixed(1)} ({plugin.ratingCount})</strong></li>
+            ) : null}
+            {day(plugin.updatedAt) ? <li><span>Updated</span><strong>{day(plugin.updatedAt)}</strong></li> : null}
+            {plugin.docsUrl ? (
+              <li>
+                <span>Docs</span>
+                <a className={styles.link} href={plugin.docsUrl} target="_blank" rel="noreferrer">Open documentation</a>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+
+        <div className={styles.dialogFooter}>
+          {owned ? (
+            <span className={styles.owned}>✓ Licensed to this site</span>
+          ) : (
+            <button
+              type="button"
+              className={styles.primary}
+              disabled={Boolean(busy) || !activated}
+              title={activated ? undefined : 'Activate this site first'}
+              onClick={() => onInstall(plugin)}
+            >
+              {busy === plugin.pluginId ? 'Working…' : plugin.priceUsd <= 0 ? 'Install free' : 'Buy now'}
+            </button>
+          )}
+          <button type="button" className={styles.secondary} onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

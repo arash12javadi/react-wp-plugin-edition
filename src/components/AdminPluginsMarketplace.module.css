@@ -25,7 +25,6 @@
   color: #475569;
 }
 
-.banner,
 .notice,
 .error,
 .muted {
@@ -35,12 +34,6 @@
   font-size: 0.86rem;
   background: #fff;
   border: 1px solid #e2e8f0;
-}
-
-.banner {
-  color: #92400e;
-  background: #fffbeb;
-  border-color: #fde68a;
 }
 
 .notice {
@@ -93,9 +86,48 @@
   color: #2271b1;
 }
 
+/* A button, not a heading: it opens the details dialog, so it must be reachable by keyboard. */
 .name {
+  align-self: flex-start;
+  border: 0;
+  padding: 0;
+  text-align: start;
+  font: inherit;
   font-size: 0.98rem;
+  font-weight: 700;
   color: #172033;
+  background: none;
+  cursor: pointer;
+}
+
+.name:hover,
+.name:focus-visible {
+  color: #2271b1;
+  text-decoration: underline;
+}
+
+/* Tucked under the name it belongs to, rather than floating in the card's 10px gap. */
+.author {
+  margin-top: -6px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  color: #4338ca;
+  background: #eef2ff;
 }
 
 .version {
@@ -176,3 +208,329 @@
   font-size: 0.8rem;
   color: #64748b;
 }
+
+/* ------------------------------------------------------------------------------------------------
+   The site licence. One row of facts an administrator can quote to support, and — until the site is
+   activated — the form that binds it, because nothing else on this screen works without it.
+   ---------------------------------------------------------------------------------------------- */
+
+.headerActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.identity {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.identityMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+
+.identityLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.pillActive,
+.pillInactive {
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 0.71rem;
+  font-weight: 700;
+}
+
+.pillActive {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.pillInactive {
+  color: #92400e;
+  background: #fffbeb;
+}
+
+.identityValue {
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+.identityValue code {
+  color: #334155;
+  overflow-wrap: anywhere;
+}
+
+.activateForm {
+  display: grid;
+  gap: 8px;
+  border-block-start: 1px solid #e2e8f0;
+  padding-block-start: 12px;
+}
+
+.activateLabel {
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.activateRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The three controls share one shape, so the toolbar reads as a single row of filters. */
+.input,
+.search,
+.select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: #172033;
+  background: #fff;
+}
+
+.input:focus-visible,
+.search:focus-visible,
+.select:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 1px;
+}
+
+.input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.search {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.select {
+  flex: 0 1 190px;
+}
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-block-start: 1px solid #e2e8f0;
+  padding-block-start: 12px;
+}
+
+.pageInfo {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+
+/* What the licensing server says this site may run — the answer to "did my purchase land?". */
+.entitlements {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.entitlementHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.entitlementTitle {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #172033;
+}
+
+.entitlementList {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entitlement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.entitlement + .entitlement {
+  border-block-start: 1px solid #f1f5f9;
+  padding-block-start: 8px;
+}
+
+.entitlementName {
+  font-size: 0.85rem;
+  color: #172033;
+}
+
+.entitlementMeta {
+  font-size: 0.78rem;
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+/* A button or a link, depending on the caller: it always looks like a quiet inline action. */
+.link {
+  border: 0;
+  padding: 0;
+  text-align: start;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #2271b1;
+  background: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link:hover,
+.link:focus-visible {
+  color: #1a5a8a;
+}
+
+
+/* ------------------------------------------------------------------------------------------------
+   The details dialog. Same geometry as PluginDetailsModal.module.css, so opening a catalogue entry
+   and opening an installed plugin feel like the same feature.
+   ---------------------------------------------------------------------------------------------- */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(15 23 42 / 55%);
+}
+
+.dialog {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  border-radius: 10px;
+  padding: 20px 22px;
+  color: #334155;
+  background: #fff;
+  box-shadow: 0 20px 50px rgb(15 23 42 / 30%);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+.dialogHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dialogTitle {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #1e293b;
+}
+
+.dialogMeta {
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+  color: #94a3b8;
+}
+
+.close {
+  border: 0;
+  padding: 2px 8px;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dialogBody {
+  display: grid;
+  gap: 12px;
+  margin-block: 14px;
+}
+
+.features {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-inline-start: 20px;
+  color: #475569;
+}
+
+.dialogFacts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dialogFacts li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #f1f5f9;
+  padding-block: 4px;
+}
+
+.dialogFacts span {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.dialogFacts strong,
+.dialogFacts code,
+.dialogFacts a {
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+.dialogFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  border-block-start: 1px solid #e2e8f0;
+  padding-block-start: 14px;
+}
+
