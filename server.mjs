@@ -18,6 +18,7 @@ import { handlePluginRequest, resolveOrigin } from './server/plugins.mjs';
 import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActivePluginIds } from './server/pluginFiles.mjs';
 import { InstallError, installPlugin, MAX_ZIP_BYTES } from './server/pluginInstaller.mjs';
 import { handleAdminRequest } from './server/adminRoutes.mjs';
+import { handleUpdateRequest } from './server/updateRoutes.mjs';
 import { handleSecurityRequest } from './server/securityRoutes.mjs';
 import { handleIntegrationsRequest, ownsIntegrationPath } from './server/integrationsRoutes.mjs';
 import { assistAuthMessages, handleAiAssistRequest, ownsAiAssistPath } from './server/aiAssist.mjs';
@@ -764,7 +765,8 @@ const server = http.createServer(async (request, response) => {
     // Per-plugin schema install, plugin uninstall and the site reset. Returns null for anything
     // it does not own (including /api/admin/plugins/upload below), so this can sit first.
     if (url.pathname.startsWith('/api/admin/')) {
-      const adminResult = await handleAdminRequest({
+      const file = await readConfig();
+      const admin = {
         method: request.method,
         pathname: url.pathname,
         query: Object.fromEntries(url.searchParams),
@@ -772,8 +774,26 @@ const server = http.createServer(async (request, response) => {
         body: request.method === 'POST' && url.pathname !== '/api/admin/plugins/upload'
           ? await readBody(request).catch(() => ({}))
           : {},
-        config: publicConfig(await readConfig()),
-      });
+        config: publicConfig(file),
+      };
+      // Settings → Updates first: it owns /api/admin/updates and /api/admin/system/update*, and
+      // returns null for everything else, so the two handlers chain instead of competing.
+      //
+      // The update token is in `system_settings`, which this server reads with a real connection —
+      // the publishable key cannot see it (RLS says only a signed-in administrator may read that
+      // table). Hence `readOptions`, built here from the config file exactly as `currentDeployHook`
+      // and `currentMedia` build it, rather than inside the route module.
+      const adminResult = (await handleUpdateRequest({
+        ...admin,
+        readOptions: {
+          databaseUrl: file?.databaseUrl,
+          dbType: file?.dbType,
+          supabaseUrl: file?.supabaseUrl,
+          supabaseKey: file?.supabasePublishableKey,
+          env: process.env,
+        },
+        readDeployHook: () => currentDeployHook(),
+      })) || (await handleAdminRequest(admin));
       if (adminResult) {
         json(request, response, adminResult.status, adminResult.body);
         return;

@@ -30,6 +30,7 @@ import { dbTypeFrom, type RuntimeConfig } from '../lib/runtime';
 import { readConfigFile, writeConfigFile, getRuntimeConfig, reloadRuntimeConfig } from './config';
 import { pluginsRouter } from './routes/plugins';
 import { pluginSchemaRouter } from './routes/pluginSchema';
+import { updatesRouter } from './routes/updates';
 import { registerIntegrationRoutes } from './integrations';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
@@ -694,6 +695,12 @@ app.delete('/api/media/:key', async (c) => {
 // paths `server.mjs` serves, so a deployment behaves like `npm start` from the Plugins screen on.
 app.route('/api/admin/plugins', pluginsRouter);
 app.route('/api/admin/plugins', pluginSchemaRouter);
+
+// -- Settings → Updates --------------------------------------------------------
+// The check, the plan and the four ways an update is applied, at the paths `server.mjs` serves. Mounted
+// on `/api/admin` because the family spans two prefixes (`/updates` and `/system/update`), and the router
+// only claims its own four paths, so `/api/admin/*` anything else falls through as before.
+app.route('/api/admin', updatesRouter);
 
 // -- Settings → Integrations ---------------------------------------------------
 // The status read and the three credential tests, at the paths the shared module owns.

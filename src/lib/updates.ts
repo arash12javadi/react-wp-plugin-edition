@@ -121,6 +121,15 @@ export const saveUpdateSettings = async (settings: UpdateSettings) => {
 
 export const loadUpdateStatus = () => readJsonOption<UpdateStatus>(updateStatusOption);
 
+/**
+ * Stores a check result for every administrator.
+ *
+ * Exported because the server-side check in `src/lib/updateCenter.ts` is now the one that runs, and the
+ * sidebar badge and Dashboard banner are still read from this row by `runScheduledUpdateCheck`. Writing
+ * it from there keeps one result on screen instead of a fresh answer next to a stale count.
+ */
+export const saveUpdateStatus = (status: UpdateStatus) => writeJsonOption(updateStatusOption, status);
+
 const isRelease = (value: unknown): value is FeedRelease =>
   Boolean(value && typeof value === 'object' && typeof (value as FeedRelease).version === 'string');
 
