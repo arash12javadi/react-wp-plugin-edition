@@ -8,9 +8,132 @@
     <title>React-WP</title>
     <!--rwp-seo-->
     <script>window.__REACT_WP_CONFIG__=null;</script>
+    <!--
+      Warm the backend's origin while the bundle is still being downloaded and parsed. The boot
+      sequence asks that origin for a row before the first render, so paying DNS + TLS for a cold
+      connection would put a round trip in front of a round trip. Supabase is the only backend the
+      browser talks to directly; the others are read through this site's own /api/db/query.
+    -->
+    <script>
+      (function () {
+        var config = window.__REACT_WP_CONFIG__;
+        var url = config && config.dbType === 'supabase' && config.supabaseUrl;
+        if (!url) return;
+        try {
+          var origin = new URL(url).origin;
+          ['preconnect', 'dns-prefetch'].forEach(function (rel) {
+            var link = document.createElement('link');
+            link.rel = rel;
+            link.href = origin;
+            if (rel === 'preconnect') link.crossOrigin = 'anonymous';
+            document.head.appendChild(link);
+          });
+        } catch (error) {
+          // A malformed URL is the configuration's problem, and the boot screen reports it.
+        }
+      })();
+    </script>
+    <!--
+      The boot screen, painted by the browser before any JavaScript runs, so the page is not blank
+      while the bundle loads. `src/components/BootSplash.tsx` renders exactly this — same mark,
+      label and bar in the same place — and React replaces this markup on its first commit. The two
+      must stay in step, so a change here belongs there too.
+    -->
+    <style>
+      .rwp-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 24px;
+        box-sizing: border-box;
+        color: #475569;
+        background: #f7f8fc;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .rwp-boot-mark {
+        position: relative;
+        width: 64px;
+        height: 64px;
+        display: grid;
+        place-items: center;
+        border-radius: 18px;
+        color: #fff;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        box-shadow: 0 10px 24px rgb(79 70 229 / 28%);
+        animation: rwp-boot-breath 1.8s ease-in-out infinite;
+      }
+      .rwp-boot-mark::after {
+        content: "";
+        position: absolute;
+        inset: -8px;
+        border: 2px solid rgb(79 70 229 / 30%);
+        border-radius: 26px;
+        animation: rwp-boot-bloom 1.8s ease-out infinite;
+      }
+      .rwp-boot-glyph {
+        font-size: 1.65rem;
+        font-weight: 800;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+      .rwp-boot-label {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 500;
+      }
+      .rwp-boot-track {
+        width: 168px;
+        max-width: 60vw;
+        height: 4px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgb(79 70 229 / 12%);
+      }
+      .rwp-boot-fill {
+        display: block;
+        width: 45%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #4f46e5, #8b5cf6);
+        animation: rwp-boot-sweep 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes rwp-boot-breath {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+      }
+      @keyframes rwp-boot-bloom {
+        0% { opacity: 0.9; transform: scale(0.92); }
+        100% { opacity: 0; transform: scale(1.16); }
+      }
+      @keyframes rwp-boot-sweep {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(222%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .rwp-boot-mark,
+        .rwp-boot-mark::after,
+        .rwp-boot-fill {
+          animation: none;
+        }
+        .rwp-boot-mark::after {
+          opacity: 0;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Replaced by the first React commit. Keep in step with src/components/BootSplash.tsx. -->
+      <div class="rwp-boot" role="status" aria-live="polite" aria-busy="true">
+        <div class="rwp-boot-mark" aria-hidden="true"><span class="rwp-boot-glyph">R</span></div>
+        <p class="rwp-boot-label">Loading…</p>
+        <div class="rwp-boot-track" aria-hidden="true"><span class="rwp-boot-fill"></span></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

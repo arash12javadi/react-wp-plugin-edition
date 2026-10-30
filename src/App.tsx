@@ -20,6 +20,7 @@ import AuthPage from './components/AuthPage';
 import PublicChrome from './components/PublicChrome';
 import PublicArchive, { archiveFromPath } from './components/PublicArchive';
 import { preloadSiteTemplates } from './components/SiteTemplate';
+import BootSplash from './components/BootSplash';
 import { canAccessAdmin, canManageSettings } from './lib/roles';
 import { loadCapabilityGrants } from './lib/capabilityGrants';
 import { installDefaultContent } from './lib/defaultContent';
@@ -29,7 +30,9 @@ import { startSessionGovernor } from './lib/session';
 import { useCurrentProfile } from './lib/profiles';
 import { defaultActivePluginIds, fetchPluginLicenseReport, isCommercialPlugin } from './lib/pluginLicense';
 import { describeDbError } from './lib/db';
-import { bootDatabase, checkInstallOnServer, clearStoredSession, type BootFailure } from './lib/boot';
+import { bootDatabase, checkInstallOnServer, clearStoredSession, type BootFailure, type BootResult } from './lib/boot';
+import { tryGetClient } from './lib/client';
+import { clearBootCache, readBootCache, writeBootCache } from './lib/bootCache';
 import {
   applyDocumentTitle, applySiteIcon, brandingFrom, defaultSettings, loadSettings, placeholderTitle,
   type SiteBranding, type SiteSettings as SiteSettingsValue, type ViewSiteTarget,
@@ -344,7 +347,9 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
   }
 
   if (authLoading || roleLoading) {
-    return <div className={styles.loadingScreen} role="status">Loading dashboard…</div>;
+    // The same screen the page booted on: the dashboard has not painted yet, so this continues it
+    // rather than replacing a full-page indicator with a line of text.
+    return <BootSplash label="Loading the dashboard…" />;
   }
 
   if (!session) {
@@ -508,96 +513,180 @@ export default function App() {
     let mounted = true;
     setCheckingDatabase(true);
     setBootFailure(null);
-    void bootDatabase().then(async (result) => {
+
+    /**
+     * Everything that has to be in place before the first render, once the database is known to
+     * answer: which plugins run, the app settings, the locale, the capability grants and — on the
+     * public site — the theme, the site templates and the routing.
+     *
+     * The independent reads go out together. Awaiting each one before starting the next is what made
+     * a page load eight round trips deep; only the steps that genuinely need the previous answer
+     * still queue, because the database strings need the locale and the theme, the templates and the
+     * routing need the plugins that register their renderers.
+     */
+    const prepare = async (client: Client) => {
+      const appSettings = loadAppSettings().catch(() => defaultAppSettings);
+      await Promise.all([
+        // A plugin that cannot initialise costs its own screens, not the whole site: without this
+        // catch the failure left `supabase` null and rendered the Setup Wizard over a site that is
+        // installed and readable.
+        initializePlugins(client).catch((error: unknown) => {
+          console.warn(`React-WP: plugins could not be initialised — ${describeDbError(error)}`);
+        }),
+        appSettings,
+        // Also before the first render. The locale decides dir="rtl" on <html> and the body font, so
+        // resolving it later would paint an RTL site left-to-right first.
+        initI18n(isAdminRoute ? 'admin' : 'public').catch(() => undefined),
+        // And the grants added under Settings → Roles: capability checks depend on them, for the role
+        // and for the signed-in person.
+        loadCapabilityGrants().catch(() => undefined),
+      ]);
+      // After the plugins, so their dictionaries and i18n filters are in place, and after the locale,
+      // because these are the Settings → Translations strings for it. Text must not change from the
+      // bundled wording to the edited one after the first paint.
+      await initDatabaseTranslations().catch(() => undefined);
+
+      const settings = await appSettings;
+      const path = window.location.pathname;
+      // A reset-password link whose address is missing from Supabase's Redirect URLs lands on the
+      // Site URL instead; the session it carries still belongs on the new-password screen.
+      if (arrivedFromRecoveryLink && path !== '/lost-password') {
+        // The client has stored the session by now, so the new-password form finds it. No early
+        // return: that would flash the Setup Wizard.
+        window.location.replace('/lost-password');
+      }
+      client.auth.onAuthStateChange((event) => {
+        if (event === 'PASSWORD_RECOVERY' && window.location.pathname !== '/lost-password') window.location.href = '/lost-password';
+      });
+      // The dashboard sets its own title and icon once branding loads, so it does not read the public
+      // routing first — that put two round trips in front of the admin for nothing.
+      let publicRouting = emptyRouting;
+      if (!isAdminRoute && !path.startsWith('/builder/')) {
+        injectTrackingScripts(settings.seo);
+        // Loaded before the first render so the saved layout does not flash in after the default one.
+        initThemePreview();
+        // Three reads that do not need each other: the theme row, the site templates and the routing
+        // options. Together, so a designed header or 404 never flashes in after the default either.
+        [publicRouting] = await Promise.all([
+          loadPublicRouting(client).catch(() => emptyRouting),
+          loadTheme().then(applyThemeDocument),
+          preloadSiteTemplates(),
+        ]);
+      }
       if (!mounted) return;
-      const client = result.client;
-      if (!client) {
-        // An empty database and an unreadable one are different answers now. Only a *fresh* one may
-        // reach the wizard; anything else is reported with its reason, and logged so a browser that
-        // is stuck on the wrong screen can be diagnosed from its console.
-        console.warn(`React-WP: database check failed — ${result.failure?.message ?? 'no database client'}`);
-        if (!result.freshInstall) {
-          setBootFailure({
-            failure: result.failure ?? { problem: 'connection', message: 'The database could not be read.' },
-            configured: result.configured,
-            dbType: result.dbType,
-          });
+      setRouting(publicRouting);
+      setSupabase(client);
+    };
+
+    /**
+     * A boot that ends without a client is either an empty site or an unreadable one, and those are
+     * different answers: only a *fresh* install may reach the wizard. Anything else is reported with
+     * its reason, and logged so a browser stuck on the wrong screen can be diagnosed from its
+     * console. The remembered verdict is dropped with it, so the next load checks before it paints
+     * rather than flashing a page the recovery screen is about to replace.
+     */
+    const reportFailure = (result: BootResult) => {
+      console.warn(`React-WP: database check failed — ${result.failure?.message ?? 'no database client'}`);
+      clearBootCache();
+      if (!result.freshInstall) {
+        setBootFailure({
+          failure: result.failure ?? { problem: 'connection', message: 'The database could not be read.' },
+          configured: result.configured,
+          dbType: result.dbType,
+        });
+      }
+    };
+
+    /**
+     * The boot itself. A verdict this browser saved on a recent load (`src/lib/bootCache.ts`) lets the
+     * page paint at once — the client is built from the page's own configuration, so there is nothing
+     * to wait for — and puts the check behind the paint, where a contradiction still reaches the
+     * recovery screen. Without one the check runs first, because only it can tell the Setup Wizard
+     * apart from the recovery screen.
+     */
+    const boot = async () => {
+      const remembered = readBootCache() ? tryGetClient() : null;
+
+      if (!remembered) {
+        const result = await bootDatabase();
+        if (!mounted) return;
+        if (!result.client) {
+          reportFailure(result);
+          setCheckingDatabase(false);
+          return;
         }
-        setCheckingDatabase(false);
+        if (result.clearedSession.length) {
+          console.warn(`React-WP: recovered by clearing this browser's stored session (${result.clearedSession.join(', ')}).`);
+        }
+        writeBootCache();
+        try {
+          await prepare(result.client);
+        } catch (error: unknown) {
+          console.warn(`React-WP: the page could not be prepared — ${describeDbError(error)}`);
+        } finally {
+          if (mounted) setCheckingDatabase(false);
+        }
         return;
       }
+
+      // The re-check runs beside the work rather than in front of it.
+      const verification = bootDatabase();
+      try {
+        await prepare(remembered);
+      } catch (error: unknown) {
+        console.warn(`React-WP: the page could not be prepared — ${describeDbError(error)}`);
+      }
+      if (mounted) setCheckingDatabase(false);
+      const result = await verification;
+      if (!mounted) return;
+      if (!result.client) {
+        // The remembered verdict was wrong after all: take the page down rather than let it render
+        // reads this check could not make.
+        setSupabase(null);
+        reportFailure(result);
+        return;
+      }
+      writeBootCache();
       if (result.clearedSession.length) {
         console.warn(`React-WP: recovered by clearing this browser's stored session (${result.clearedSession.join(', ')}).`);
+        // The client the page is already using still holds the session that was just dropped, so
+        // every authenticated read through it would fail. A reload is the same recovery the check
+        // just performed, and the stored verdict makes it paint immediately.
+        window.location.reload();
       }
-      try {
-        await initializePlugins(client);
-        const appSettings = await loadAppSettings().catch(() => defaultAppSettings);
-        await Promise.all([
-          // Also before the first render. The locale decides dir="rtl" on <html> and the body
-          // font, so resolving it later would paint an RTL site left-to-right first. Plugins are
-          // already initialised above, so their dictionaries and i18n filters are in place.
-          // Then the Settings → Translations strings for that locale, for the same reason: text
-          // must not change from the bundled wording to the edited one after the first paint.
-          initI18n(isAdminRoute ? 'admin' : 'public').catch(() => undefined)
-            .then(() => initDatabaseTranslations()).catch(() => undefined),
-          // Before anything renders too: capability checks depend on the grants added under
-          // Settings → Roles, for the role and for the signed-in person.
-          loadCapabilityGrants().catch(() => undefined),
-        ]);
-        const path = window.location.pathname;
-        // A reset-password link whose address is missing from Supabase's Redirect URLs lands on
-        // the Site URL instead; the session it carries still belongs on the new-password screen.
-        if (arrivedFromRecoveryLink && path !== '/lost-password') {
-          // The client has stored the session by now (getSession above waited for it), so the
-          // new-password form finds it. No early return: that would flash the Setup Wizard.
-          window.location.replace('/lost-password');
-        }
-        client.auth.onAuthStateChange((event) => {
-          if (event === 'PASSWORD_RECOVERY' && window.location.pathname !== '/lost-password') window.location.href = '/lost-password';
-        });
-        if (!isAdminRoute && !path.startsWith('/builder/')) {
-          injectTrackingScripts(appSettings.seo);
-          // Loaded before the first render so the saved layout does not flash in after the default one.
-          initThemePreview();
-          applyThemeDocument(await loadTheme());
-          // Before the first render too, so a designed header or 404 never flashes in after the default.
-          await preloadSiteTemplates();
-        }
-        const publicRouting = await loadPublicRouting(client).catch(() => emptyRouting);
-        if (mounted) {
-          setRouting(publicRouting);
-          setSupabase(client);
-        }
-      } finally {
-        if (mounted) setCheckingDatabase(false);
-      }
-    });
+    };
+
+    void boot();
     return () => {
       mounted = false;
     };
   }, [bootAttempt]);
 
+  // A failure that lands after the page painted still wins: the check contradicted the remembered
+  // verdict, so the screens behind it would only render reads that cannot work. An unreadable
+  // database is not an empty one — the wizard is only for a site that has none, and opening it over
+  // a configured site is a decision the recovery screen asks for, not something a failed read may
+  // do on its own.
+  if (bootFailure && !wizardRequested) {
+    return (
+      <DatabaseUnreachable
+        detail={bootFailure.failure.message}
+        problem={bootFailure.failure.problem}
+        configured={bootFailure.configured}
+        dbType={bootFailure.dbType}
+        onRetry={() => setBootAttempt((attempt) => attempt + 1)}
+        onResetSession={resetStoredSession}
+        onRunWizard={() => setWizardRequested(true)}
+      />
+    );
+  }
+
+  // index.html paints the same screen before the bundle runs, so this is a handover, not a flash.
   if (checkingDatabase) {
-    return <div className={styles.loadingScreen} role="status">Checking database connection…</div>;
+    return <BootSplash />;
   }
 
   if (!supabase) {
-    // An unreadable database is not an empty one: the wizard is only for a site that has none.
-    // Opening it over a configured site is a decision the recovery screen asks for, not something a
-    // failed read may do on its own.
-    if (bootFailure && !wizardRequested) {
-      return (
-        <DatabaseUnreachable
-          detail={bootFailure.failure.message}
-          problem={bootFailure.failure.problem}
-          configured={bootFailure.configured}
-          dbType={bootFailure.dbType}
-          onRetry={() => setBootAttempt((attempt) => attempt + 1)}
-          onResetSession={resetStoredSession}
-          onRunWizard={() => setWizardRequested(true)}
-        />
-      );
-    }
     // The wizard resets the cached adapters, clears its scratch keys and hard-navigates to / itself.
     return <SetupWizard onAlreadyInstalled={recheckInstalled} />;
   }

@@ -1,0 +1,129 @@
+/*
+ * The boot screen. The same picture as the inline `<style>` in index.html — change both together,
+ * or the handover from the static page to React becomes a visible jump.
+ *
+ * Class names are hashed by the CSS-module build, but `@keyframes` names are not: they stay global,
+ * so they are written `rwp-boot-splash-*` by hand to keep them apart from the inline copy in
+ * index.html (whose names are `rwp-boot-*`) and from anything a theme ships.
+ */
+
+.screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  box-sizing: border-box;
+  color: #475569;
+  background: #f7f8fc;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* The mark: the app's own gradient tile, breathing, with a ring that blooms out of it. */
+.mark {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  box-shadow: 0 10px 24px rgb(79 70 229 / 28%);
+  animation: rwp-boot-splash-breath 1.8s ease-in-out infinite;
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border: 2px solid rgb(79 70 229 / 30%);
+  border-radius: 26px;
+  animation: rwp-boot-splash-bloom 1.8s ease-out infinite;
+}
+
+.glyph {
+  font-size: 1.65rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.label {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.track {
+  width: 168px;
+  max-width: 60vw;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(79 70 229 / 12%);
+}
+
+.fill {
+  display: block;
+  width: 45%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4f46e5, #8b5cf6);
+  animation: rwp-boot-splash-sweep 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.detail {
+  margin: 0;
+  max-width: 34ch;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+@keyframes rwp-boot-splash-breath {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+@keyframes rwp-boot-splash-bloom {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.16);
+  }
+}
+
+@keyframes rwp-boot-splash-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(222%);
+  }
+}
+
+/* A boot screen is not a place to spend someone's battery or make them queasy: the mark and the
+   bar stay put, and the bar simply reads as a partially filled track. */
+@media (prefers-reduced-motion: reduce) {
+  .mark,
+  .mark::after,
+  .fill {
+    animation: none;
+  }
+
+  .mark::after {
+    opacity: 0;
+  }
+}

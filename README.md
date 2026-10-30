@@ -277,6 +277,27 @@ react-wp/
 
 </details>
 
+<details>
+<summary><b>Startup: what the first paint waits for</b></summary>
+
+`index.html` paints a boot screen from an inline `<style>` before any JavaScript runs, and
+`src/components/BootSplash.tsx` renders the same one, so React takes over without the page jumping.
+The Supabase origin is `preconnect`ed while the bundle downloads.
+
+The first visit asks the database for one row before rendering anything — that is what tells an
+uninstalled site (Setup Wizard) apart from an unreadable one (recovery screen). Every load after it
+does not: `src/lib/bootCache.ts` remembers the successful verdict in `localStorage`, tied to the
+page's backend and Supabase URL, so a warm load builds the client from that configuration, paints,
+and runs the same check behind the paint — a contradiction still replaces the page with the recovery
+screen. Only successes are stored, so a database that was fixed never leaves a browser stuck on the
+recovery screen.
+
+Whatever the two paths share — plugins, app settings, locale, capability grants, and on the public
+site the theme, the site templates and the routing — goes out in parallel; only the steps that need
+the previous answer wait for it.
+
+</details>
+
 [🔝 Back to top](#table-of-contents)
 
 ---
