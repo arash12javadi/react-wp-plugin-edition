@@ -17,7 +17,7 @@
  * sentence to show, and the log keeps the raw output.
  */
 import { spawn } from 'node:child_process';
-import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
 
 const recordFile = process.argv[2];
 if (!recordFile) {
@@ -90,9 +90,21 @@ try {
     await log('Already on the newest commit for that ref: rebuilding anyway.');
   }
   await save({ target });
+  // Core-only rule: the user's installed plugins live in `plugins/` as untracked folders, and their
+  // activation state lives in the database. `git merge --ff-only` and `git reset --hard` never remove
+  // untracked files, so the merge below cannot delete a plugin — but the guarantee is checked here so a
+  // future change to the runner cannot silently start touching them.
+  await save({ step: 'preserving-plugins' });
+  const pluginsBefore = new Set(await readdir('plugins').catch(() => []));
   // `--ff-only` rather than a hard reset: a branch that has diverged from origin is the administrator's
   // to reconcile, and a reset would discard commits the site is running.
   await run('git', ['merge', '--ff-only', target]);
+
+  const pluginsAfter = new Set(await readdir('plugins').catch(() => []));
+  const lostPlugins = [...pluginsBefore].filter((name) => !pluginsAfter.has(name));
+  if (lostPlugins.length > 0) {
+    await log(`WARNING: the core update removed plugin folder(s) ${lostPlugins.join(', ')} — a core update must never touch plugins. Restore them before restarting.`);
+  }
 
   await save({ step: 'installing-packages' });
   await run(npm, ['install', '--no-audit', '--no-fund']);

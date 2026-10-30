@@ -76,6 +76,12 @@ export interface UpdateConfigView {
   has_token: boolean;
   /** Which source a check asks first: the named repository, the central server when there is a token for it, else GitHub. */
   source: 'central' | 'github';
+  /**
+   * True when this viewer is an end user whose updates are managed by `react-wp.com`: the server has
+   * already redacted `repository`, `central_url`, `has_token` and the GitHub source, and the screen hides
+   * the "Where updates come from" section.
+   */
+  managed?: boolean;
 }
 
 /**
@@ -159,7 +165,7 @@ export interface UpdatesOverview {
 
 /** How an update would be applied. `up_to_date` is a `manual` plan whose reason says so. */
 export interface UpdatePlan {
-  mode: 'manual' | 'deploy-hook' | 'self';
+  mode: 'manual' | 'deploy-hook' | 'self' | 'central';
   up_to_date?: boolean;
   reason: string;
   /** The steps the screen can show while the work runs. */
@@ -204,7 +210,16 @@ export type UpdateOutcome =
     plan: UpdatePlan;
     check: UpdateCheckAnswer;
   }
-  | { kind: 'self'; run: SelfUpdateRun; plan: UpdatePlan; check: UpdateCheckAnswer };
+  | { kind: 'self'; run: SelfUpdateRun; plan: UpdatePlan; check: UpdateCheckAnswer }
+  | {
+    /** A managed (end-user) site: the platform deployed it. `queued` mirrors the deploy-hook outcome. */
+    kind: 'managed';
+    queued: boolean;
+    message: string;
+    version: string;
+    plan: UpdatePlan;
+    check: UpdateCheckAnswer;
+  };
 
 /**
  * The signed-in administrator's token. Every route in this file decides what may be done from it —
@@ -284,6 +299,16 @@ export const applyUpdate = async (options: { site?: string; ref?: string } = {})
   if (plan.mode === 'manual') {
     // 409: a refusal that carries its sentence in `plan.reason`. Anything else under `manual` is that same answer.
     return { kind: 'manual', plan, check };
+  }
+  if (plan.mode === 'central' || body.mode === 'central') {
+    return {
+      kind: 'managed',
+      queued: body.queued === true,
+      message: String(body.message || ''),
+      version: String(body.version || ''),
+      plan,
+      check,
+    };
   }
   if (plan.mode === 'deploy-hook' || status === 502) {
     return {
@@ -366,7 +391,7 @@ export interface VersionStateEntry {
   at: string;
   from: string;
   to: string;
-  mode: 'deploy-hook' | 'self' | 'manual';
+  mode: 'deploy-hook' | 'self' | 'manual' | 'managed';
   status: 'started' | 'triggered' | 'completed' | 'failed';
   error?: string;
 }

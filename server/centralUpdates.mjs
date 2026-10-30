@@ -42,6 +42,30 @@ export const CENTRAL_CHECK_ALIAS = '/api/admin/updates/check';
 /** Both paths, in the order a caller should try them. */
 export const CENTRAL_CHECK_PATHS = [CENTRAL_CHECK_PATH, CENTRAL_CHECK_ALIAS];
 
+/**
+ * The managed-update route: a provisioned site asks the platform to *apply* the release its last check
+ * found. Same bearer token as the check, so nothing extra is issued for the right to be updated.
+ */
+export const CENTRAL_APPLY_PATH = '/api/v1/updates/apply';
+
+/**
+ * The seam the platform's `rwp-saas-installer` fills in: given the authenticated site's request, deploy
+ * the requested release to that site's project. The default answers "not configured" rather than
+ * pretending a deploy happened, because the deploy itself is the platform's Vercel/file-upload engine.
+ *
+ * @type {(input: { body: any, config: ReturnType<typeof centralConfigFrom> }) => Promise<{ ok: boolean, status?: number, queued?: boolean, message?: string, version?: string, error?: string }>}
+ */
+let centralApplyDeploy = async () => ({
+  ok: false,
+  status: 501,
+  error: 'Managed updates are not wired on this platform yet. The platform owner must connect its rwp-saas-installer deploy engine to the update token so a one-click update can deploy the release.',
+});
+
+/** Registers the deploy engine. Called once by `rwp-saas-installer` on the platform. */
+export const setCentralApplyDeploy = (deploy) => {
+  if (typeof deploy === 'function') centralApplyDeploy = deploy;
+};
+
 /** How long one GitHub answer is reused. A release is published a few times a week, not a few times a second. */
 export const CENTRAL_CACHE_SECONDS = 60;
 
@@ -225,15 +249,24 @@ export async function handleCentralUpdateRequest({
   now = Date.now(),
 } = {}) {
   const path = trimmed(String(pathname ?? '')).replace(/\/+$/, '');
-  if (!CENTRAL_CHECK_PATHS.includes(path)) return null;
+  const isApply = path === CENTRAL_APPLY_PATH;
+  if (!CENTRAL_CHECK_PATHS.includes(path) && !isApply) return null;
   const config = centralConfigFrom(env);
   if (!config.enabled) return null;
   if (String(method).toUpperCase() !== 'POST') {
-    return { status: 405, body: { error: 'Method not allowed. A check is a POST, because it carries the version this site runs.' } };
+    return { status: 405, body: { error: 'Method not allowed. A check or an update is a POST, because it carries the site\'s token and version.' } };
   }
   try {
     const auth = authorizeCentral({ headers, config });
     if (!auth.ok) return { status: auth.status, body: { error: auth.error } };
+    if (isApply) {
+      const deploy = await centralApplyDeploy({ body, config });
+      if (!deploy.ok) return { status: deploy.status || 501, body: { error: deploy.error || 'The platform could not deploy the update.' } };
+      return {
+        status: 200,
+        body: { queued: deploy.queued !== false, message: deploy.message || 'The update was handed to the platform.', version: deploy.version || '' },
+      };
+    }
     return { status: 200, body: await centralCheckAnswer({ body, config, fetchImpl, now }) };
   } catch (error) {
     // Everything caught here is *this* deployment's problem — the repository name, the release token, a
@@ -242,10 +275,14 @@ export async function handleCentralUpdateRequest({
     // which environment variables this server reads. A 404 is relayed as 502 because a caller reads 404
     // as "wrong path" and would stop asking.
     const status = Number.isInteger(error?.status) ? error.status : 502;
-    console.error(`central update check failed (${status}): ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`central update request failed (${status}): ${error instanceof Error ? error.message : String(error)}`);
     return {
       status: status === 404 ? 502 : status,
-      body: { error: 'The central server could not read the release list from GitHub just now. Try again in a minute; this site keeps its last known release until then.' },
+      body: {
+        error: isApply
+          ? 'The central server could not deploy the update just now. Try again in a minute; the site keeps its last known release until then.'
+          : 'The central server could not read the release list from GitHub just now. Try again in a minute; this site keeps its last known release until then.',
+      },
     };
   }
 }

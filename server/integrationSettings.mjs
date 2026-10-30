@@ -342,6 +342,37 @@ export const authorizeSettingsManager = (supabaseUrl, supabaseKey, accessToken) 
   authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, accessToken, 'manage_options');
 
 /**
+ * The caller's role from `public.profiles`, via the `current_user_role()` RPC — the same question
+ * `authorizePlatformOwner` asks. Returns `''` when the session is invalid, the site is not installed,
+ * or the RPC cannot be reached, so a route can fall back to its least-privileged answer rather than
+ * guessing a role it could not prove.
+ *
+ * Used by the update routes to tell the platform owner (the Setup Wizard's `administrator`) from an end
+ * user (a provisioned `super_admin` or a role granted `manage_options`): only the owner sees where
+ * updates come from.
+ */
+export async function currentUserRole(supabaseUrl, supabaseKey, accessToken) {
+  if (!accessToken) return '';
+  const baseUrl = String(supabaseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl || !supabaseKey) return '';
+  const headers = { apikey: supabaseKey, Authorization: `Bearer ${accessToken}` };
+  try {
+    const userResponse = await fetch(`${baseUrl}/auth/v1/user`, { headers });
+    if (!userResponse.ok) return '';
+    const roleResponse = await fetch(`${baseUrl}/rest/v1/rpc/current_user_role`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!roleResponse.ok) return '';
+    const answer = await roleResponse.json();
+    return typeof answer === 'string' ? answer.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * The roles that own an installation, spelled once for the check below and its sentences.
  *
  * `administrator` is the site's own owner — the role the Setup Wizard gives the first account — and
@@ -350,6 +381,17 @@ export const authorizeSettingsManager = (supabaseUrl, supabaseKey, accessToken) 
  * `server/schemaPrivileges.mjs`) spells the same two names in SQL: change one, change all three.
  */
 export const PLATFORM_OWNER_ROLES = ['administrator', 'super_admin'];
+
+/**
+ * The one account that owns the *update channel* — the Setup Wizard's `administrator`, i.e. the person
+ * who runs this installation and holds its GitHub / deploy configuration. An end user, even a
+ * provisioned `super_admin`, is a customer of that owner: their updates are fetched and applied by
+ * `react-wp.com`, so they never see GitHub.
+ */
+export const UPDATE_OWNER_ROLES = ['administrator'];
+
+/** Whether `role` may see and change where updates come from (GitHub, the central token, self-update). */
+export const isUpdateOwnerRole = (role) => UPDATE_OWNER_ROLES.includes(String(role || '').trim());
 
 /** The sentences a platform-owner refusal carries. */
 const PLATFORM_OWNER_MESSAGES = {

@@ -40,16 +40,19 @@ import {
   requirePluginManager,
   statusOf,
 } from '../pluginHostAccess';
+import { currentUserRole, isUpdateOwnerRole } from '../../../server/integrationSettings.mjs';
 import {
   AUTO_CHECK_KEYS,
   PLUGIN_DIRECTORY_PATH,
   UPDATE_CHANNELS,
+  applyCentralUpdate,
   applyDeployHookUpdate,
   checkForUpdates,
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
   readUpdatesConfig,
+  resolveInstalledVersion,
   updatePlan,
 } from '../../../server/updateCenter.mjs';
 import {
@@ -69,9 +72,17 @@ export const updatesRouter = new Hono();
  * workflow that checks out `v2.4.1` can export `2.4.1` in the same step, and that is the only value that
  * cannot lag behind the code actually running. Otherwise `package.json`, which the same workflow writes
  * immediately before pushing the tag, is the answer. Read on the server, never sent by the browser.
+ *
+ * A provisioned site's `package.json` is the *template's* version, so a third source outranks it: the tag
+ * the SaaS installer recorded in `saas_installer_config.installed_version`, which `readUpdatesConfig`
+ * returns and `installedFor` folds into the same order both hosts share.
  */
-const installedAppVersion =
-  String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '') || String(packageVersion || '').trim();
+const pinnedAppVersion = String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
+const packageAppVersion = String(packageVersion || '').trim();
+
+/** The installed version, resolving the SaaS installer's recorded tag ahead of the static manifest. */
+const installedFor = (stored: { installed: string }) =>
+  resolveInstalledVersion({ pinned: pinnedAppVersion, saas: stored.installed, fallback: packageAppVersion });
 
 /**
  * Everything that can be refused with a status before any work starts: whether this site is installed,
@@ -86,6 +97,20 @@ async function prepare(c: Context): Promise<RuntimeConfig> {
   await requirePluginManager(token, config);
   return config;
 }
+
+/**
+ * Whether the caller owns the update channel — the Setup Wizard's `administrator` — and may therefore see
+ * where updates come from. A provisioned `super_admin` (or a role granted `manage_options`) is an end
+ * user: their check is answered by `react-wp.com` and their screen never names GitHub.
+ *
+ * Under Supabase the role is resolved from `public.profiles`; every other backend is a self-hosted
+ * checkout, whose administrator is its owner.
+ */
+const viewerOwner = async (config: RuntimeConfig, c: Context): Promise<boolean> => {
+  if (config.dbType !== 'supabase') return true;
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+  return isUpdateOwnerRole(await currentUserRole(config.supabaseUrl || '', config.supabasePublishableKey || '', token));
+};
 
 /** The one shape a refusal takes here: the `{ error }` body both hosts answer with. */
 const fail = (c: Context, error: unknown) =>
@@ -129,11 +154,12 @@ async function selfSupport() {
 async function overview(c: Context): Promise<Response> {
   try {
     const config = await prepare(c);
+    const owner = await viewerOwner(config, c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     return c.json({
-      installed: installedAppVersion,
-      config: describeUpdateConfig(stored.config),
-      github: describeGithubSource(stored.github),
+      installed: installedFor(stored),
+      config: describeUpdateConfig(stored.config, owner),
+      github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
       error: stored.error,
       support: await selfSupport(),
@@ -156,20 +182,22 @@ async function overview(c: Context): Promise<Response> {
 async function check(c: Context): Promise<Response> {
   try {
     const config = await prepare(c);
+    const owner = await viewerOwner(config, c);
     const body = await readJson(c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     const answer = await checkForUpdates({
       config: stored.config,
-      current: { app: installedAppVersion, site: String(body.site || '').trim() },
+      current: { app: installedFor(stored), site: String(body.site || '').trim() },
       plugins: installedPluginsFrom(body.plugins),
       github: stored.github,
+      owner,
     });
     // The configuration goes back with the answer, with the token replaced by `has_token`: the screen
     // shows which source replied, and `readable: false` explains why a stored token looked unconfigured.
     return c.json({
       ...answer,
-      config: describeUpdateConfig(stored.config),
-      github: describeGithubSource(stored.github),
+      config: describeUpdateConfig(stored.config, owner),
+      github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
     });
   } catch (error) {
@@ -188,29 +216,55 @@ async function check(c: Context): Promise<Response> {
 async function applyUpdate(c: Context): Promise<Response> {
   try {
     const config = await prepare(c);
+    const owner = await viewerOwner(config, c);
     const body = await readJson(c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
+    const installed = installedFor(stored);
     const answer = await checkForUpdates({
       config: stored.config,
-      current: { app: installedAppVersion, site: String(body.site || '').trim() },
+      current: { app: installed, site: String(body.site || '').trim() },
       plugins: installedPluginsFrom(body.plugins),
       github: stored.github,
+      owner,
     });
     const reported = {
       ...answer,
-      config: describeUpdateConfig(stored.config),
-      github: describeGithubSource(stored.github),
+      config: describeUpdateConfig(stored.config, owner),
+      github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
     };
+    // A managed site's update is applied by the platform (react-wp.com), never by this host. Core-only by
+    // construction: `to` is the core release (`answer.app.latest`) and nothing about a plugin travels here.
+    if (!owner) {
+      if (!answer.app.update_available) {
+        return c.json({
+          mode: 'central',
+          up_to_date: true,
+          reason: `This site already runs ${installed}, the latest release react-wp.com publishes.`,
+          check: reported,
+        });
+      }
+      const result = await applyCentralUpdate({
+        config: stored.config,
+        current: { app: installed, site: String(body.site || '').trim() },
+        to: answer.app.latest,
+      });
+      return c.json(
+        { ...result, plan: { mode: 'central', reason: result.message }, check: reported },
+        (result.queued ? 200 : 502) as ContentfulStatusCode,
+      );
+    }
     // Asked only now: the hook is a database read, and most calls to this route end at `up_to_date`.
     const deployHook = await deployHookUrl(config).catch(() => '');
     const support = await selfSupport();
+    // Core only: the plan, the deploy hook and the self-updater act on the core release
+    // (`answer.app.latest`), never on a plugin release. Plugin updates have their own lifecycle.
     const plan = updatePlan({
       config: stored.config,
       deployHook,
       selfUpdate: support.supported,
       latestVersion: answer.app.latest,
-      installedVersion: installedAppVersion,
+      installedVersion: installed,
     });
 
     if (plan.up_to_date) return c.json({ ...plan, check: reported });
@@ -230,7 +284,7 @@ async function applyUpdate(c: Context): Promise<Response> {
     }
     const run = await startSelfUpdate({
       to: answer.app.latest,
-      from: installedAppVersion,
+      from: installed,
       ref: String(body.ref || '').trim(),
     });
     // 202: accepted, not finished. The screen polls `update-status?id=` with the id it just got.

@@ -18,6 +18,7 @@
 import type { Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
+  CENTRAL_APPLY_PATH,
   CENTRAL_CHECK_ALIAS,
   CENTRAL_CHECK_PATH,
   centralConfigFrom,
@@ -50,5 +51,6 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
 
   app.post(CENTRAL_CHECK_PATH, reply);
   app.post(CENTRAL_CHECK_ALIAS, reply);
+  app.post(CENTRAL_APPLY_PATH, reply);
   return true;
 }

@@ -23,17 +23,20 @@
  */
 import { readFile } from 'node:fs/promises';
 import { authorizePluginManager } from './pluginFiles.mjs';
+import { currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
 import {
   AUTO_CHECK_KEYS,
   PLUGIN_DIRECTORY_PATH,
   UpdateError,
   UPDATE_CHANNELS,
+  applyCentralUpdate,
   applyDeployHookUpdate,
   checkForUpdates,
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
   readUpdatesConfig,
+  resolveInstalledVersion,
   updatePlan,
 } from './updateCenter.mjs';
 import {
@@ -51,32 +54,38 @@ const fail = (error) => ({
 });
 
 /**
- * The version this build reports.
+ * The deploy's own pin — `RWP_APP_VERSION`, the tag a release workflow checked out and exported in the
+ * same step. It cannot lag behind the code actually running, so it wins over every other source.
+ */
+const pinnedVersion = () => String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
+
+/**
+ * The `package.json` this build was compiled from. The fallback of last resort: it is the template's
+ * version for a provisioned site, which is exactly what the SaaS installer's record corrects.
+ */
+export async function packageVersion() {
+  try {
+    const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
+    return String(JSON.parse(raw)?.version || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The version this build reports when no SaaS installer record names a release tag.
  *
  * `RWP_APP_VERSION` wins when the deployment pins it to the release tag it was built from, which is the
  * only value that cannot lag: a release workflow that checks out `v2.4.1` can export `2.4.1` in the same
- * step. Otherwise the build's own `package.json` — written by the same workflow just before the tag is
- * pushed — is the answer. The number is read on the server, never sent by the browser: a client that
- * could name its own version could hide an update from itself. Cached after the first read, because this
+ * step. Otherwise the build's own `package.json` is the answer. Cached after the first read, because this
  * file cannot change while the process runs.
  */
 let installedVersionCache = '';
 
 export async function installedVersion() {
   if (installedVersionCache) return installedVersionCache;
-  const pinned = String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
-  if (pinned) {
-    installedVersionCache = pinned;
-    return pinned;
-  }
-  try {
-    const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
-    const version = String(JSON.parse(raw)?.version || '').trim();
-    installedVersionCache = version;
-    return version;
-  } catch {
-    return '';
-  }
+  installedVersionCache = pinnedVersion() || await packageVersion();
+  return installedVersionCache;
 }
 
 /** The caller's permission, or a refusal. Every route below needs an administrator. */
@@ -94,20 +103,31 @@ async function requireManager(config, headers) {
 }
 
 /**
+ * Whether the caller is the update owner — the Setup Wizard's `administrator` — who alone may see where
+ * updates come from. A provisioned `super_admin` (or a role granted `manage_options`) is an end user, so
+ * this answers `false` and the routes below redact GitHub and force the central source.
+ */
+const viewerOwner = async (config, headers) => {
+  const token = (headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  return isUpdateOwnerRole(await currentUserRole(config?.supabaseUrl, config?.supabasePublishableKey, token));
+};
+
+/**
  * The plugin versions the screen reported, cleaned up — `installedPluginsFrom`'s rules, called through
  * the shared module so both hosts accept exactly the same list.
  */
 const pluginList = (value) => installedPluginsFrom(value);
 
 /** GET /api/admin/updates — everything the screen needs before it offers a button. */
-async function overview({ readOptions }) {
+async function overview({ readOptions, owner = true }) {
   const stored = await readUpdatesConfig(readOptions);
   const support = await selfUpdateSupport();
+  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
   return {
-    installed: await installedVersion(),
-    config: describeUpdateConfig(stored.config),
-    /** The repository a direct read uses, and whether a credential came with it. */
-    github: describeGithubSource(stored.github),
+    installed,
+    config: describeUpdateConfig(stored.config, owner),
+    /** The repository a direct read uses, and whether a credential came with it. End users never see this. */
+    github: describeGithubSource(stored.github, owner),
     /** False when this server cannot read `system_settings` at all: the token is stored, not missing. */
     readable: stored.readable,
     error: stored.error,
@@ -120,14 +140,16 @@ async function overview({ readOptions }) {
 }
 
 /** POST /api/admin/updates/check { plugins?: [{ id, name?, version }], site? } */
-async function check(body, config, readOptions) {
+async function check(body, config, readOptions, owner = true) {
   const stored = await readUpdatesConfig(readOptions);
   const plugins = pluginList(body.plugins);
+  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
   const answer = await checkForUpdates({
     config: stored.config,
-    current: { app: await installedVersion(), site: String(body.site || '').trim() },
+    current: { app: installed, site: String(body.site || '').trim() },
     plugins,
     github: stored.github,
+    owner,
   });
   // `readable: false` is worth saying even when the check succeeded: it means this server could not see
   // the stored rows, so the administrator knows why a configured source looks unconfigured before they go
@@ -135,8 +157,8 @@ async function check(body, config, readOptions) {
   // `github`), so the screen can name it without guessing from the release itself.
   return {
     ...answer,
-    config: describeUpdateConfig(stored.config),
-    github: describeGithubSource(stored.github),
+    config: describeUpdateConfig(stored.config, owner),
+    github: describeGithubSource(stored.github, owner),
     readable: stored.readable,
   };
 }
@@ -150,25 +172,47 @@ async function check(body, config, readOptions) {
  * configure — and each carries the check it was based on, so the screen never has to guess which release
  * it just asked for.
  */
-async function applyUpdate(body, config, readOptions, readDeployHook) {
+async function applyUpdate(body, config, readOptions, readDeployHook, owner = true) {
   const stored = await readUpdatesConfig(readOptions);
-  const installed = await installedVersion();
+  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
   const plugins = pluginList(body.plugins);
   const answer = await checkForUpdates({
     config: stored.config,
     current: { app: installed, site: String(body.site || '').trim() },
     plugins,
     github: stored.github,
+    owner,
   });
   const reported = {
     ...answer,
-    config: describeUpdateConfig(stored.config),
-    github: describeGithubSource(stored.github),
+    config: describeUpdateConfig(stored.config, owner),
+    github: describeGithubSource(stored.github, owner),
     readable: stored.readable,
   };
+  // A managed site's update is applied by the platform (react-wp.com), never by this host. Core-only by
+  // construction: `to` is the core release (`answer.app.latest`) and nothing about a plugin travels here.
+  if (!owner) {
+    if (!answer.app.update_available) {
+      return {
+        status: 200,
+        body: { mode: 'central', up_to_date: true, reason: `This site already runs ${installed}, the latest release react-wp.com publishes.`, check: reported },
+      };
+    }
+    const result = await applyCentralUpdate({
+      config: stored.config,
+      current: { app: installed, site: String(body.site || '').trim() },
+      to: answer.app.latest,
+    });
+    return {
+      status: result.queued ? 200 : 502,
+      body: { mode: 'central', ...result, plan: { mode: 'central', reason: result.message }, check: reported },
+    };
+  }
   // Asked only now: the deploy hook is a database read, and most calls to this route end at `up_to_date`.
   const deployHook = String((await readDeployHook().catch(() => '')) || '').trim();
   const support = await selfUpdateSupport();
+  // Core only: the plan, the deploy hook and the self-updater act on the core release (`answer.app.latest`),
+  // never on a plugin release. Plugin updates have their own lifecycle under Plugins → Installed.
   const plan = updatePlan({
     config: stored.config,
     deployHook,
@@ -228,9 +272,10 @@ export async function handleUpdateRequest({
   if (!owned) return null;
   try {
     await requireManager(config, headers);
+    const owner = await viewerOwner(config, headers);
     if (pathname === '/api/admin/updates') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
-      return { status: 200, body: await overview({ config, readOptions }) };
+      return { status: 200, body: await overview({ config, readOptions, owner }) };
     }
     if (pathname === '/api/admin/system/update-status') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
@@ -238,9 +283,9 @@ export async function handleUpdateRequest({
     }
     if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
     if (pathname === '/api/admin/updates/check') {
-      return { status: 200, body: await check(body, config, readOptions) };
+      return { status: 200, body: await check(body, config, readOptions, owner) };
     }
-    return await applyUpdate(body, config, readOptions, readDeployHook);
+    return await applyUpdate(body, config, readOptions, readDeployHook, owner);
   } catch (error) {
     if (!(error instanceof UpdateError)) console.error(`${pathname} failed:`, error);
     return fail(error);

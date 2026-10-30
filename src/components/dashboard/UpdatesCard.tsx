@@ -29,6 +29,7 @@ import {
   type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview, type VersionStateEntry,
 } from '../../lib/updateCenter';
 import { autoCheckIntervals, compareVersions, saveUpdateStatus, type AutoCheck, type UpdateStatus } from '../../lib/updates';
+import type { UserRole } from '../../lib/roles';
 import styles from './Dashboard.module.css';
 
 /** How long the screen waits between polls of a running self-update. */
@@ -125,11 +126,16 @@ function TokenField({ hasToken, value, disabled, onChange, onForget }: {
 }
 
 
-export default function UpdatesCard({ onStatus, navigate }: {
+export default function UpdatesCard({ role, onStatus, navigate }: {
+  role: UserRole;
   onStatus?: (status: UpdateStatus) => void;
   /** Sends the administrator to the screen that configures the missing half — GitHub, or the deploy hook. */
   navigate?: (section: string, subsection?: string) => void;
 }) {
+  // The one account that owns the update channel: the Setup Wizard's `administrator` (me). Everyone else —
+  // a provisioned `super_admin`, or a role granted `manage_options` — is an end user whose updates are
+  // managed by react-wp.com, so they never see GitHub and their check is always answered centrally.
+  const isOwner = role === 'administrator';
   const [overview, setOverview] = useState<UpdatesOverview | null>(null);
   const [check, setCheck] = useState<UpdateCheckAnswer | null>(null);
   const [run, setRun] = useState<SelfUpdateRun | null>(null);
@@ -354,6 +360,20 @@ export default function UpdatesCard({ onStatus, navigate }: {
         setFeedback(`Deploying update… The deploy hook was called for ${asTag(outcome.check.app.latest)}. The platform is rebuilding this site now.`);
         return;
       }
+      if (outcome.kind === 'managed') {
+        await remember({
+          at: new Date().toISOString(),
+          from: outcome.check.app.installed,
+          to: outcome.check.app.latest,
+          mode: 'managed',
+          status: outcome.queued ? 'triggered' : 'failed',
+          ...(outcome.queued ? {} : { error: outcome.message || 'React-WP.com refused the update.' }),
+        });
+        setFeedback(outcome.queued
+          ? `Update sent to React-WP.com — it is deploying ${asTag(outcome.version || outcome.check.app.latest)} to this site now.`
+          : outcome.message);
+        return;
+      }
       stopDeployTimer();
       setDeployStage('');
       setDeployStartedAt(0);
@@ -386,16 +406,20 @@ export default function UpdatesCard({ onStatus, navigate }: {
     setFeedback('');
     try {
       // `token` is only sent when the administrator typed one: the stored value is never read back into
-      // this form, so an empty field has to mean "leave it alone" rather than "erase it".
-      await saveUpdateConfig({
-        central_url: form.central_url.trim(),
-        repository: (form.repository ?? '').trim(),
-        channel: form.channel,
-        auto_check: form.auto_check,
-        notify: form.notify,
-        self_update: form.self_update,
-        ...(token.trim() ? { token: token.trim() } : {}),
-      });
+      // this form, so an empty field has to mean "leave it alone" rather than "erase it". An end user's
+      // patch names only the two scheduling settings, so a save can never overwrite the owner's repository,
+      // token or self-update switch with the redacted values this screen showed them.
+      await saveUpdateConfig(isOwner
+        ? {
+          central_url: form.central_url.trim(),
+          repository: (form.repository ?? '').trim(),
+          channel: form.channel,
+          auto_check: form.auto_check,
+          notify: form.notify,
+          self_update: form.self_update,
+          ...(token.trim() ? { token: token.trim() } : {}),
+        }
+        : { auto_check: form.auto_check, notify: form.notify });
       setToken('');
       setFeedback('Update settings saved.');
       await load();
@@ -457,7 +481,7 @@ export default function UpdatesCard({ onStatus, navigate }: {
             <p className={styles.muted}>
               React-WP <code>{installedTag}</code>
               {source ? ` · ${source === 'central' ? 'checked through React-WP.com' : 'read from this repository’s release tags'}` : ''}
-              {form ? ` · ${form.has_token ? 'update token stored' : 'no update token'}` : ''}
+              {isOwner && form ? ` · ${form.has_token ? 'update token stored' : 'no update token'}` : ''}
             </p>
           </div>
           <div className={styles.buttonRow}>
@@ -475,7 +499,7 @@ export default function UpdatesCard({ onStatus, navigate }: {
         <div className={styles.versionBar}>
           <span className={styles.versionChip}>Installed <code>{installedTag}</code></span>
           <span className={styles.versionArrow} aria-hidden="true">→</span>
-          <span className={styles.versionChip}>GitHub release <code>{latestTag || '—'}</code></span>
+          <span className={styles.versionChip}>{isOwner ? 'GitHub release' : 'Latest release'} <code>{latestTag || '—'}</code></span>
           {!check ? (
             <span className={styles.badgeOk}>Not checked yet</span>
           ) : coreUpdate ? (
@@ -546,7 +570,7 @@ export default function UpdatesCard({ onStatus, navigate }: {
                             {entry.release.notes.map((note) => <li key={note}>{note}</li>)}
                           </ul>
                         ) : <span className={styles.muted}>No release notes.</span>}
-                        {entry.release?.changelog_url && (
+                        {entry.release?.changelog_url && isOwner && (
                           <p className={styles.help}>
                             <a className={styles.inlineLink} href={entry.release.changelog_url} target="_blank" rel="noreferrer">
                               Open this release on GitHub ↗
@@ -611,101 +635,116 @@ export default function UpdatesCard({ onStatus, navigate }: {
       <section className={styles.panel} aria-labelledby="updates-source-heading">
         <div className={styles.panelHead}>
           <div>
-            <h2 id="updates-source-heading">Where updates come from</h2>
+            <h2 id="updates-source-heading">{isOwner ? 'Where updates come from' : 'Update schedule'}</h2>
             <p className={styles.muted}>
-              A version is published by tagging a release on GitHub — <code>v2.4.1</code>. The release repository
-              is read first, with the GitHub credential stored under Settings → Integrations → GitHub; a site
-              that also stores a token for the update server asks it instead when no repository is named. Either
-              way the token below is written to <code>system_settings.updates_config</code> and read only by the
-              server: this screen is never sent it back (<code>has_token</code> is all it sees), so nothing in the
-              browser can leak it and a private repository stays private.
+              {isOwner ? (
+                <>
+                  A version is published by tagging a release on GitHub — <code>v2.4.1</code>. The release repository
+                  is read first, with the GitHub credential stored under Settings → Integrations → GitHub; a site
+                  that also stores a token for the update server asks it instead when no repository is named. Either
+                  way the token below is written to <code>system_settings.updates_config</code> and read only by the
+                  server: this screen is never sent it back (<code>has_token</code> is all it sees), so nothing in the
+                  browser can leak it and a private repository stays private.
+                </>
+              ) : (
+                <>
+                  Updates for this site are provided by <strong>React-WP.com</strong>. It checks the releases and
+                  deploys them for you, so there is nothing to configure here except how often the dashboard checks
+                  and whether new releases appear in the sidebar.
+                </>
+              )}
             </p>
           </div>
         </div>
 
-        <div className={styles.field}>
-          GitHub release tags
-          <p className={styles.help}>
-            {overview?.github?.configured
-              ? <>
-                Reading <code>{overview.github.repo}</code>
-                {overview.github.has_token ? ' with the stored GitHub token' : ' — a public repository, so no token is needed'}.
-                {' '}A release is published by tagging it: <code>v1.2.3</code>.
-                {' '}
-                <span className={styles.muted}>
-                  {form?.repository
-                    ? 'Named on this screen; empty it to use the GitHub integration’s repository instead.'
-                    : 'Named by the GitHub integration; set it above to check a different repository.'}
-                </span>
-                {navigate && (
-                  <>
-                    {' '}
-                    <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>
-                      Change the token in Settings → Integrations → GitHub
-                    </button>
-                  </>
-                )}
-              </>
-              : <>
-                No repository is configured, so nothing can be checked: name it under Release repository above
-                {navigate
-                  ? <>, or in <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>Settings → Integrations → GitHub</button>.</>
-                  : ' — or in Settings → Integrations → GitHub. A public repository needs no token.'}
-              </>}
-          </p>
-        </div>
+        {isOwner && (
+          <div className={styles.field}>
+            GitHub release tags
+            <p className={styles.help}>
+              {overview?.github?.configured
+                ? <>
+                  Reading <code>{overview.github.repo}</code>
+                  {overview.github.has_token ? ' with the stored GitHub token' : ' — a public repository, so no token is needed'}.
+                  {' '}A release is published by tagging it: <code>v1.2.3</code>.
+                  {' '}
+                  <span className={styles.muted}>
+                    {form?.repository
+                      ? 'Named on this screen; empty it to use the GitHub integration’s repository instead.'
+                      : 'Named by the GitHub integration; set it above to check a different repository.'}
+                  </span>
+                  {navigate && (
+                    <>
+                      {' '}
+                      <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>
+                        Change the token in Settings → Integrations → GitHub
+                      </button>
+                    </>
+                  )}
+                </>
+                : <>
+                  No repository is configured, so nothing can be checked: name it under Release repository above
+                  {navigate
+                    ? <>, or in <button type="button" className={styles.linkButton} onClick={() => navigate('settings', 'integrations')}>Settings → Integrations → GitHub</button>.</>
+                    : ' — or in Settings → Integrations → GitHub. A public repository needs no token.'}
+                </>}
+            </p>
+          </div>
+        )}
 
         {form ? (
           <form className={styles.formFields} onSubmit={save}>
-            <label className={styles.field}>
-              Release repository
-              <input
-                type="text"
-                value={form.repository ?? ''}
-                placeholder={overview?.github?.repo || 'owner/repository'}
-                onChange={(event) => setForm({ ...form, repository: event.target.value })}
-              />
-              <span className={styles.help}>
-                The repository this site&apos;s releases are tagged on, as <code>owner/repository</code>. A check
-                reads its release tags first, with the GitHub token stored under Settings → Integrations → GitHub
-                (a public repository needs none). Empty means the repository the GitHub integration names.
-              </span>
-            </label>
+            {isOwner && (
+              <>
+                <label className={styles.field}>
+                  Release repository
+                  <input
+                    type="text"
+                    value={form.repository ?? ''}
+                    placeholder={overview?.github?.repo || 'owner/repository'}
+                    onChange={(event) => setForm({ ...form, repository: event.target.value })}
+                  />
+                  <span className={styles.help}>
+                    The repository this site&apos;s releases are tagged on, as <code>owner/repository</code>. A check
+                    reads its release tags first, with the GitHub token stored under Settings → Integrations → GitHub
+                    (a public repository needs none). Empty means the repository the GitHub integration names.
+                  </span>
+                </label>
 
-            <label className={styles.field}>
-              Update server
-              <input
-                type="url"
-                value={form.central_url}
-                placeholder="https://react-wp.com"
-                onChange={(event) => setForm({ ...form, central_url: event.target.value })}
-              />
-              <span className={styles.help}>
-                Asked when no repository is named above. Leave empty to use react-wp.com.
-              </span>
-            </label>
+                <label className={styles.field}>
+                  Update server
+                  <input
+                    type="url"
+                    value={form.central_url}
+                    placeholder="https://react-wp.com"
+                    onChange={(event) => setForm({ ...form, central_url: event.target.value })}
+                  />
+                  <span className={styles.help}>
+                    Asked when no repository is named above. Leave empty to use react-wp.com.
+                  </span>
+                </label>
 
-            <TokenField
-              hasToken={form.has_token}
-              value={token}
-              disabled={saving}
-              onChange={setToken}
-              onForget={() => void forgetToken()}
-            />
+                <TokenField
+                  hasToken={form.has_token}
+                  value={token}
+                  disabled={saving}
+                  onChange={setToken}
+                  onForget={() => void forgetToken()}
+                />
 
-            <label className={styles.field}>
-              Channel
-              <select
-                value={form.channel}
-                onChange={(event) => setForm({ ...form, channel: event.target.value === 'beta' ? 'beta' : 'stable' })}
-              >
-                {(overview?.channels?.length ? overview.channels : ['stable', 'beta']).map((name) => (
-                  <option key={name} value={name}>{name === 'beta' ? 'Beta — release candidates' : 'Stable — released versions'}</option>
-                ))}
-              </select>
-              <span className={styles.help}>Beta releases are published before they are announced, and are the ones to try a fix on.</span>
-            </label>
-
+                <label className={styles.field}>
+                  Channel
+                  <select
+                    value={form.channel}
+                    onChange={(event) => setForm({ ...form, channel: event.target.value === 'beta' ? 'beta' : 'stable' })}
+                  >
+                    {(overview?.channels?.length ? overview.channels : ['stable', 'beta']).map((name) => (
+                      <option key={name} value={name}>{name === 'beta' ? 'Beta — release candidates' : 'Stable — released versions'}</option>
+                    ))}
+                  </select>
+                  <span className={styles.help}>Beta releases are published before they are announced, and are the ones to try a fix on.</span>
+                </label>
+              </>
+            )}
 
             <label className={styles.field}>
               Check for updates
@@ -729,20 +768,24 @@ export default function UpdatesCard({ onStatus, navigate }: {
               Show new releases in the dashboard
             </label>
 
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={form.self_update}
-                onChange={(event) => setForm({ ...form, self_update: event.target.checked })}
-              />
-              Let this server update its own checkout
-            </label>
-            <p className={styles.help}>
-              Off by default. When on, and this host runs from a clean git checkout, Update now fetches the
-              release, installs, builds and restarts the site on the server itself. A Vercel deployment never
-              does this — it asks its deploy hook to rebuild, because a function cannot rewrite its own
-              deployment.
-            </p>
+            {isOwner && (
+              <>
+                <label className={styles.checkRow}>
+                  <input
+                    type="checkbox"
+                    checked={form.self_update}
+                    onChange={(event) => setForm({ ...form, self_update: event.target.checked })}
+                  />
+                  Let this server update its own checkout
+                </label>
+                <p className={styles.help}>
+                  Off by default. When on, and this host runs from a clean git checkout, Update now fetches the
+                  release, installs, builds and restarts the site on the server itself. A Vercel deployment never
+                  does this — it asks its deploy hook to rebuild, because a function cannot rewrite its own
+                  deployment.
+                </p>
+              </>
+            )}
 
             <div className={styles.buttonRow}>
               <button type="submit" className={styles.primaryButton} disabled={saving}>

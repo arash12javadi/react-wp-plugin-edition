@@ -16,6 +16,9 @@ export const VERSION_STATE_HISTORY_LIMIT: number;
 
 export const DEFAULT_CENTRAL_URL: string;
 export const CENTRAL_CHECK_PATH: string;
+export const CENTRAL_CHECK_FALLBACK_PATH: string;
+export const CENTRAL_CHECK_PATHS: readonly string[];
+export const CENTRAL_APPLY_PATH: string;
 export const PLUGIN_DIRECTORY_PATH: string;
 
 export const UPDATE_CHANNELS: readonly string[];
@@ -77,6 +80,8 @@ export interface UpdateConfigView {
   self_update: boolean;
   has_token: boolean;
   source: 'central' | 'github';
+  /** True for an end user whose updates are managed by react-wp.com. */
+  managed?: boolean;
 }
 
 /** What the browser knows and the server cannot: which build is running. */
@@ -156,7 +161,9 @@ export function compareVersions(a: string, b: string): number;
 export function isVersion(value: unknown): boolean;
 
 export function updateConfigFrom(value: unknown): UpdateConfig;
-export function describeUpdateConfig(config: UpdateConfig): UpdateConfigView;
+export function describeUpdateConfig(config: UpdateConfig, owner?: boolean): UpdateConfigView;
+export function saasInstalledVersionFrom(value: unknown): string;
+export function resolveInstalledVersion(input: { pinned?: string; saas?: string; fallback?: string }): string;
 
 /**
  * The repository a check may read directly: `updates_config.repository` when Settings → Updates names one,
@@ -170,7 +177,7 @@ export function githubUpdateSourceFrom(
 ): GithubUpdateSource | null;
 
 /** Which repository a direct release-tag read uses, and whether a credential came with it. */
-export function describeGithubSource(source?: GithubUpdateSource | null): {
+export function describeGithubSource(source?: GithubUpdateSource | null, owner?: boolean): {
   repo: string;
   has_token: boolean;
   configured: boolean;
@@ -180,6 +187,8 @@ export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
   config: UpdateConfig;
   /** The GitHub repository this deployment may read release tags from, or null. */
   github: GithubUpdateSource | null;
+  /** The release tag the SaaS installer recorded, as a plain version — or ''. */
+  installed: string;
   readable: boolean;
   error: string;
 }>;
@@ -208,6 +217,13 @@ export function fetchGithubCheck(options: {
   fetchImpl?: typeof fetch;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
+export function applyCentralUpdate(options: {
+  config: UpdateConfig;
+  current: CurrentVersion;
+  to: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ queued: boolean; message: string; version: string; mode: 'central' }>;
+
 export function checkAnswerFrom(input: {
   source: 'central' | 'github';
   app: UpdateRelease;
@@ -215,6 +231,7 @@ export function checkAnswerFrom(input: {
   current: CurrentVersion;
   plugins_installed: InstalledPluginVersion[];
   error?: string;
+  coreOnly?: boolean;
 }): UpdateCheck;
 
 export function checkForUpdates(options: {
@@ -224,6 +241,8 @@ export function checkForUpdates(options: {
   /** The repository this deployment may read directly; defaults to `githubUpdateSourceFrom()`. */
   github?: GithubUpdateSource | null;
   fetchImpl?: typeof fetch;
+  /** False for an end user, whose check is always answered by the central server. */
+  owner?: boolean;
 }): Promise<UpdateCheck>;
 
 export function triggerDeployHookUrl(

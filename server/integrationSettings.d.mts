@@ -70,6 +70,19 @@ export function authorizeSettingsManager(
   accessToken: string,
 ): Promise<{ ok: boolean; status?: number; error?: string }>;
 
+/** The caller's role from `public.current_user_role()`, or '' when it cannot be proven. */
+export function currentUserRole(
+  supabaseUrl: string,
+  supabaseKey: string,
+  accessToken: string,
+): Promise<string>;
+
+/** The roles that own the update channel — the Setup Wizard's `administrator` alone. */
+export const UPDATE_OWNER_ROLES: readonly string[];
+
+/** Whether `role` may see and change where updates come from. */
+export function isUpdateOwnerRole(role: string): boolean;
+
 /**
  * Confirms the caller is the platform owner (`super_admin`), through
  * `public.current_user_role()` — a role check, not a capability one, because `user_has_cap` answers

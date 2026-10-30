@@ -29,7 +29,7 @@
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
  * `environmentOf`, so a Workers deployment that has none does not crash on import.
  */
-import { GITHUB_CONFIG_KEY, githubTokenFrom } from './integrationConfig.mjs';
+import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
 import { fetchGithubReleases, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
 import { compareVersions, isVersion } from './versions.mjs';
@@ -60,6 +60,8 @@ export const DEFAULT_CENTRAL_URL = 'https://react-wp.com';
 export const CENTRAL_CHECK_PATH = '/api/v1/updates/check';
 export const CENTRAL_CHECK_FALLBACK_PATH = '/api/admin/updates/check';
 export const CENTRAL_CHECK_PATHS = [CENTRAL_CHECK_PATH, CENTRAL_CHECK_FALLBACK_PATH];
+/** The managed-update route, in step with `CENTRAL_APPLY_PATH` in `server/centralUpdates.mjs`. */
+export const CENTRAL_APPLY_PATH = '/api/v1/updates/apply';
 export const PLUGIN_DIRECTORY_PATH = '/api/v1/plugins';
 
 /** The release channels a site may follow. `beta` receives pre-releases, `stable` does not. */
@@ -85,6 +87,32 @@ export class UpdateError extends Error {
 const environmentOf = (env) => env || globalThis.process?.env || {};
 
 const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
+
+/**
+ * The release tag the SaaS installer recorded when it last built or updated this site, as a plain
+ * version (no `v`). Empty when this site was not provisioned through `rwp-saas-installer` — a
+ * self-hosted checkout, or a platform instance that has never been deployed from its own card.
+ *
+ * This is the only record that names the *exact* GitHub release a provisioned site was built from:
+ * its `package.json` is the template's own (and lags the tag), while the installer writes the tag it
+ * deployed into `saas_installer_config.installed_version`.
+ */
+export const saasInstalledVersionFrom = (value) => {
+  const version = trimmed(saasInstallerConfigFrom(value).installed_version).replace(/^v/i, '');
+  return isVersion(version) ? version : '';
+};
+
+/**
+ * Which version this host reports as installed. One order, shared by both hosts so they cannot disagree:
+ *
+ *   1. the deploy's own pin (`RWP_APP_VERSION`) — the tag the running code was built from, which cannot lag;
+ *   2. the tag the SaaS installer recorded (`saas_installer_config.installed_version`);
+ *   3. the `package.json` the build was compiled from.
+ *
+ * Each answer is normalised to a plain version (no `v`), the shape every comparison in this file expects.
+ */
+export const resolveInstalledVersion = ({ pinned = '', saas = '', fallback = '' }) =>
+  trimmed(pinned).replace(/^v/i, '') || trimmed(saas).replace(/^v/i, '') || trimmed(fallback).replace(/^v/i, '');
 
 /* -- Versions ------------------------------------------------------------------------------------ */
 
@@ -144,22 +172,33 @@ export const updateConfigFrom = (value) => {
  * Every answer that names the configuration goes through here, so a token pasted into the wrong field
  * cannot travel back through the API it was meant for.
  *
+ * `owner` is the one account that may see *where* updates come from. An end user — a provisioned site's
+ * `super_admin`, or a role that was merely granted `manage_options` — receives a redacted view: the
+ * GitHub repository, the central URL and the token's presence are none of their business, their check
+ * is always answered by `react-wp.com`, and the only controls they keep are the scheduling ones below.
+ *
  * @param {ReturnType<typeof updateConfigFrom>} config
+ * @param {boolean} [owner=true]
  */
-export const describeUpdateConfig = (config) => ({
-  central_url: config.central_url,
-  channel: config.channel,
+export const describeUpdateConfig = (config, owner = true) => ({
+  /** The origin of the central update server. Hidden from end users, whose updates are managed. */
+  central_url: owner ? config.central_url : '',
+  channel: owner ? config.channel : 'stable',
   auto_check: config.auto_check,
   notify: config.notify,
-  self_update: config.self_update,
-  /** The repository a check reads first, when Settings → Updates names one. */
-  repository: config.repository,
-  has_token: config.token.length > 0,
+  /** The server never self-updates an end user's managed instance; the platform deploys it. */
+  self_update: owner ? config.self_update : false,
+  /** The repository a check reads first, when Settings → Updates names one. Hidden from end users. */
+  repository: owner ? config.repository : '',
+  has_token: owner ? config.token.length > 0 : false,
+  /** Whether this site's updates are fetched and applied by the platform (`central`) or by the owner. */
+  managed: !owner,
   /**
-   * Which source an update check asks first. `github` is the repository named on this screen, or a site
-   * with no central token reading its own release tags; `central` is a licensed site asking the platform.
+   * Which source an update check asks first. For an end user this is always `central`: they must never
+   * read a GitHub repository, and `react-wp.com` answers on their behalf. For the owner the original rule
+   * holds — GitHub when a repository is named or no central token is stored, else the central server.
    */
-  source: config.repository || !config.token ? 'github' : 'central',
+  source: !owner ? 'central' : (!config.token || config.repository) ? 'github' : 'central',
 });
 
 /**
@@ -207,13 +246,19 @@ export const githubUpdateSourceFrom = (env, stored, configured) => {
  * The resolved GitHub source, safe to show an administrator: which repository, and whether a credential
  * came with it. The token itself never leaves the server, exactly as with the central one.
  *
+ * An end user is never told about GitHub at all: their answer is an empty, unconfigured source, because
+ * the repository their site is built from is the platform's private template, not their business.
+ *
  * @param {{ repo: string, token: string } | null} [source]
+ * @param {boolean} [owner=true]
  */
-export const describeGithubSource = (source) => ({
-  repo: trimmed(source?.repo),
-  has_token: trimmed(source?.token).length > 0,
-  configured: trimmed(source?.repo).length > 0,
-});
+export const describeGithubSource = (source, owner = true) => (owner
+  ? {
+    repo: trimmed(source?.repo),
+    has_token: trimmed(source?.token).length > 0,
+    configured: trimmed(source?.repo).length > 0,
+  }
+  : { repo: '', has_token: false, configured: false });
 
 /**
  * The stored configuration, read the way this deployment can read `system_settings` — through the
@@ -230,11 +275,13 @@ export const describeGithubSource = (source) => ({
  * @param {import('./integrationSettings.mjs').IntegrationReadOptions} options
  */
 export async function readUpdatesConfig(options) {
-  const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY], options);
+  const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY], options);
   const config = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
   return {
     config,
     github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository),
+    /** The release tag the SaaS installer recorded, as a plain version — or '' when it recorded none. */
+    installed: saasInstalledVersionFrom(rows.settings[SAAS_INSTALLER_CONFIG_KEY]),
     readable: rows.readable,
     error: rows.readable ? '' : rows.error,
   };
@@ -487,6 +534,49 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
 }
 
 /**
+ * `POST {central}/api/v1/updates/apply` — a managed site's one-click update. The platform's
+ * `rwp-saas-installer` deploys the release to the site's own project; this file never sees a Vercel token
+ * or a GitHub repository, only the update token and the version the site wants.
+ *
+ * @param {{ config: any, current: { app: string, site?: string }, to: string, fetchImpl?: typeof fetch }} options
+ */
+export async function applyCentralUpdate({ config, current, to, fetchImpl = fetch }) {
+  if (!config.token) {
+    throw new UpdateError('This site is managed by react-wp.com, but its update token could not be read. Ask the site owner to restore the platform connection.', 400);
+  }
+  const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
+  const url = `${base}${CENTRAL_APPLY_PATH}`;
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: centralHeaders(config, current.app),
+      body: JSON.stringify({ site: trimmed(current.site), to, from: current.app, channel: config.channel }),
+      signal: AbortSignal.timeout(20_000),
+      cache: 'no-store',
+    });
+  } catch (error) {
+    throw new UpdateError(networkMessage(error, url), 502);
+  }
+  if (response.status === 404) {
+    throw new UpdateError(`react-wp.com does not offer one-click updates at ${url} yet. Ask the site owner to enable managed updates on the platform.`, 404);
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new UpdateError('react-wp.com refused this site\'s update token. The update cannot be applied until the platform re-issues it.', 401);
+  }
+  if (!response.ok) throw new UpdateError(`react-wp.com answered HTTP ${response.status} for the update.`, 502);
+  const body = await response.json().catch(() => {
+    throw new UpdateError(`${url} did not return valid JSON.`, 502);
+  });
+  return {
+    queued: body.queued !== false,
+    message: String(body.message || ''),
+    version: String(body.version || ''),
+    mode: 'central',
+  };
+}
+
+/**
  * The releases inside a central answer, in either shape the platform may answer with.
  *
  * Reading both costs one `||`: a site whose platform has been upgraded, and a site that has not, both keep
@@ -554,9 +644,9 @@ export async function fetchGithubCheck({ source, channel = 'stable', fetchImpl =
  * has an update, plugins included". Two names because the two questions are different, and a screen that
  * conflated them would offer an Update Now button for a plugin.
  *
- * @param {{ source: 'central'|'github', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string }} input
+ * @param {{ source: 'central'|'github', app: any, plugins: Record<string, any>, current: { app: string, site?: string }, plugins_installed: Array<{ id: string, name?: string, version: string }>, error?: string, coreOnly?: boolean }} input
  */
-export const checkAnswerFrom = ({ source, app, plugins, current, plugins_installed, error = '' }) => {
+export const checkAnswerFrom = ({ source, app, plugins, current, plugins_installed, error = '', coreOnly = false }) => {
   const installed = trimmed(current.app);
   const appUpdateAvailable = compareVersions(app.version, installed) > 0;
   const latestTag = app.tag || `v${app.version}`;
@@ -564,20 +654,24 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
   if (appUpdateAvailable) {
     updates.push({ id: 'react-wp', name: 'React-WP', kind: 'app', installed, latest: app.version, release: publicRelease(app) });
   }
-  const named = new Map(plugins_installed.map((plugin) => [plugin.id, plugin]));
-  Object.entries(plugins).forEach(([id, release]) => {
-    const installedPlugin = named.get(id);
-    if (!installedPlugin) return;
-    if (compareVersions(release.version, installedPlugin.version) <= 0) return;
-    updates.push({
-      id,
-      name: installedPlugin.name || id,
-      kind: 'plugin',
-      installed: installedPlugin.version,
-      latest: release.version,
-      release: publicRelease(release),
+  // Core-only is the rule this feature enforces: a plugin release is *reported*, never part of the core
+  // update. `coreOnly` removes even the report, so an end user's screen shows one update and one button.
+  if (!coreOnly) {
+    const named = new Map(plugins_installed.map((plugin) => [plugin.id, plugin]));
+    Object.entries(plugins).forEach(([id, release]) => {
+      const installedPlugin = named.get(id);
+      if (!installedPlugin) return;
+      if (compareVersions(release.version, installedPlugin.version) <= 0) return;
+      updates.push({
+        id,
+        name: installedPlugin.name || id,
+        kind: 'plugin',
+        installed: installedPlugin.version,
+        latest: release.version,
+        release: publicRelease(release),
+      });
     });
-  });
+  }
   return {
     format: 'rwp-update-center',
     version: 1,
@@ -590,7 +684,7 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
       update_available: appUpdateAvailable,
       release: publicRelease(app),
     },
-    plugins: Object.fromEntries(Object.entries(plugins).map(([id, release]) => [id, publicRelease(release)])),
+    plugins: coreOnly ? {} : Object.fromEntries(Object.entries(plugins).map(([id, release]) => [id, publicRelease(release)])),
     updates,
     update_available: updates.length > 0,
     /** The central contract, four names a customer's site can rely on without reading anything else. */
@@ -625,17 +719,24 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
  * which comes from the build's own tag, and the newest version is a release tag. A file that is edited
  * while a release is being prepared can therefore never be mistaken for the release.
  *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string, explicit?: boolean } | null, fetchImpl?: typeof fetch }} options
+ * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string, explicit?: boolean } | null, fetchImpl?: typeof fetch, owner?: boolean }} options
  */
-export async function checkForUpdates({ config, current, plugins, github = null, fetchImpl = fetch }) {
-  const source = github || githubUpdateSourceFrom(undefined);
+export async function checkForUpdates({ config, current, plugins, github = null, fetchImpl = fetch, owner = true }) {
+  // An end user's site is managed by the platform: it never reads GitHub directly. The owner's named
+  // repository is *their* release channel, but a provisioned instance has exactly one — react-wp.com.
+  const source = owner ? (github || githubUpdateSourceFrom(undefined)) : null;
   if (!source && !config.token) {
+    if (!owner) {
+      throw new UpdateError('Updates for this site are provided by react-wp.com. If the update token cannot be read, ask the site owner to restore the platform connection.', 400);
+    }
     throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
   }
   /** GitHub first when the administrator named the repository, and always when there is no token to ask. */
-  const order = source && (source.explicit || !config.token)
-    ? ['github', ...(config.token ? ['central'] : [])]
-    : [...(config.token ? ['central'] : []), ...(source ? ['github'] : [])];
+  const order = owner
+    ? (source && (source.explicit || !config.token)
+      ? ['github', ...(config.token ? ['central'] : [])]
+      : [...(config.token ? ['central'] : []), ...(source ? ['github'] : [])])
+    : ['central'];
   /** `{ message, status }` per source that refused, in the order they were tried. */
   const failures = [];
   for (const attempt of order) {
@@ -649,6 +750,8 @@ export async function checkForUpdates({ config, current, plugins, github = null,
         current,
         plugins_installed: plugins,
         error: failures.map((failure) => failure.message).join(' '),
+        // End users see the core only. Plugin releases follow their own lifecycle, never this button.
+        coreOnly: !owner,
       });
     } catch (error) {
       failures.push({

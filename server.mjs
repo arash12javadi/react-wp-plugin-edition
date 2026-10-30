@@ -767,12 +767,13 @@ const server = http.createServer(async (request, response) => {
       json(request, response, 200, { success: true, skipped: Boolean(result.skipped) });
       return;
     }
-    // The platform's update API: `POST /api/v1/updates/check`, and the `/api/admin/updates/check` alias
-    // older clients ask for. Nothing here on an ordinary site — `centralConfigFrom` reports `enabled`
-    // only for a deployment that holds the release repository and the tokens its customers were issued —
-    // and the check comes *before* the body is read on purpose: consuming it here would leave the
-    // tenant's own `/api/admin/updates/check` below with an empty body.
-    if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check') {
+    // The platform's update API: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias
+    // older clients ask for, and `POST /api/v1/updates/apply` for a managed site's one-click update.
+    // Nothing here on an ordinary site — `centralConfigFrom` reports `enabled` only for a deployment that
+    // holds the release repository and the tokens its customers were issued — and the check comes *before*
+    // the body is read on purpose: consuming it here would leave the tenant's own
+    // `/api/admin/updates/check` below with an empty body.
+    if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check' || url.pathname === '/api/v1/updates/apply') {
       if (centralConfigFrom(process.env).enabled) {
         const central = await handleCentralUpdateRequest({
           method: request.method,
