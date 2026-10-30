@@ -19,7 +19,7 @@ import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActi
 import { InstallError, installPlugin, MAX_ZIP_BYTES } from './server/pluginInstaller.mjs';
 import { handleAdminRequest } from './server/adminRoutes.mjs';
 import { handleUpdateRequest } from './server/updateRoutes.mjs';
-import { centralConfigFrom, handleCentralUpdateRequest } from './server/centralUpdates.mjs';
+import { centralConfigFrom, centralPlatformConfig, handleCentralUpdateRequest } from './server/centralUpdates.mjs';
 import { handleSecurityRequest } from './server/securityRoutes.mjs';
 import { handleIntegrationsRequest, ownsIntegrationPath } from './server/integrationsRoutes.mjs';
 import { assistAuthMessages, handleAiAssistRequest, ownsAiAssistPath } from './server/aiAssist.mjs';
@@ -769,18 +769,34 @@ const server = http.createServer(async (request, response) => {
     }
     // The platform's update API: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias
     // older clients ask for, and `POST /api/v1/updates/apply` for a managed site's one-click update.
-    // Nothing here on an ordinary site — `centralConfigFrom` reports `enabled` only for a deployment that
-    // holds the release repository and the tokens its customers were issued — and the check comes *before*
-    // the body is read on purpose: consuming it here would leave the tenant's own
-    // `/api/admin/updates/check` below with an empty body.
+    //
+    // The `/api/v1` paths are ours to answer on every deployment, because the repository a platform
+    // publishes from may live in its own rows rather than in the environment (`centralPlatformConfig`);
+    // `handleCentralUpdateRequest` answers `null` for a site that is not the platform, which is the
+    // fall-through this had before. The `/api/admin` alias is taken only when the environment declares this
+    // deployment the platform, because on a customer's site that path is its own dashboard's check — and
+    // the body is read after the decision for the same reason: consuming it here would leave that route
+    // with an empty body.
     if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check' || url.pathname === '/api/v1/updates/apply') {
-      if (centralConfigFrom(process.env).enabled) {
+      const centralAlias = url.pathname === '/api/admin/updates/check';
+      if (!centralAlias || centralConfigFrom(process.env).enabled) {
+        const centralFile = await readConfig();
         const central = await handleCentralUpdateRequest({
           method: request.method,
           pathname: url.pathname,
           headers: request.headers,
           body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
           env: process.env,
+          config: await centralPlatformConfig({
+            env: process.env,
+            readOptions: {
+              databaseUrl: centralFile?.databaseUrl,
+              dbType: centralFile?.dbType,
+              supabaseUrl: centralFile?.supabaseUrl,
+              supabaseKey: centralFile?.supabasePublishableKey,
+              env: process.env,
+            },
+          }),
         });
         if (central) {
           // A managed update answers with the release package's bytes; every other answer is JSON.

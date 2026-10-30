@@ -5,9 +5,11 @@
  *
  *   1. **A version is a GitHub release tag.** `v2.4.1` parses, `nightly` does not, and `2.10.0` sorts
  *      above `2.9.9` — not lexicographically, which is what would offer a downgrade.
- *   2. **The platform answers, the site asks.** A deployment with no repository or no token list serves
- *      no route at all, so a customer's `/api/admin/updates/check` keeps belonging to its own dashboard;
- *      an unauthenticated caller gets 401 and never a release list.
+ *   2. **The platform answers, the site asks.** A deployment with neither a repository nor a token list
+ *      serves no route at all, so a customer's `/api/admin/updates/check` keeps belonging to its own
+ *      dashboard. A *check* is public — a site that was never given a token still reads a version — while
+ *      the release *package* always costs one, and a half-configured platform names the missing variable
+ *      instead of answering 404.
  *   3. **One payload, two shapes.** The fields the contract promises (`installedVersion`, `latestVersion`,
  *      `updateAvailable`, `releaseNotes`, `releaseUrl`) and the release list this project's own screens
  *      read describe the same release, and the client accepts either.
@@ -31,7 +33,9 @@ import {
 } from '../server/githubReleases.mjs';
 import {
   clearCentralReleaseCache,
+  clearStoredReleaseSource,
   centralConfigFrom,
+  centralPlatformConfig,
   handleCentralUpdateRequest,
 } from '../server/centralUpdates.mjs';
 import {
@@ -258,16 +262,32 @@ test('a failed tag read is a failure, not "no release yet"', async () => {
 
 const platformEnv = { RWP_RELEASE_REPO: 'acme/react-wp', RWP_CENTRAL_TOKENS: 'site-token' };
 
-test('a deployment is the platform only when it has a repository and a token to accept', () => {
-  assert.equal(centralConfigFrom({}).enabled, false);
-  assert.equal(centralConfigFrom({ RWP_RELEASE_REPO: 'acme/react-wp' }).enabled, false);
-  assert.equal(centralConfigFrom({ RWP_CENTRAL_TOKENS: 't1' }).enabled, false);
+test('a deployment is the platform when it holds a token or names a repository', () => {
+  assert.equal(centralConfigFrom({}).enabled, false, 'a site with neither half answers 404, as it always did');
+  // Either half mounts the routes. Requiring both is what made a real platform answer `No API endpoint at
+  // /api/v1/updates/apply.` to its own sites: its repository was on the installer card, not in the
+  // environment.
+  const repositoryOnly = centralConfigFrom({ RWP_RELEASE_REPO: 'acme/react-wp' });
+  assert.equal(repositoryOnly.enabled, true);
+  assert.equal(repositoryOnly.checkEnabled, true);
+  assert.equal(repositoryOnly.applyEnabled, false, 'no token means no release package');
+  const tokenOnly = centralConfigFrom({ RWP_CENTRAL_TOKENS: 't1' });
+  assert.equal(tokenOnly.enabled, true);
+  assert.equal(tokenOnly.checkEnabled, false, 'no repository means nothing to answer against');
+  assert.equal(tokenOnly.applyEnabled, false);
   const config = centralConfigFrom(platformEnv);
   assert.equal(config.enabled, true);
+  assert.equal(config.checkEnabled, true);
+  assert.equal(config.applyEnabled, true);
   assert.deepEqual(config.tokens, ['site-token']);
   assert.equal(config.channel, 'stable');
   assert.equal(config.cacheSeconds, 60);
   assert.equal(centralConfigFrom({ RWP_RELEASE_CHANNEL: 'beta' }).channel, 'beta');
+  // Checks are public unless the platform says otherwise.
+  assert.equal(config.publicChecks, true);
+  assert.equal(centralConfigFrom({ RWP_CENTRAL_PUBLIC_CHECKS: 'off' }).publicChecks, false);
+  // A repository read from this deployment's own rows fills the same slot as the environment's.
+  assert.equal(centralConfigFrom({ RWP_CENTRAL_TOKENS: 't1' }, { repo: 'acme/stored' }).repo, 'acme/stored');
 });
 
 test('a customer site answers nothing at the platform paths, so its own routes stay its own', async () => {
@@ -276,16 +296,99 @@ test('a customer site answers nothing at the platform paths, so its own routes s
   assert.equal(await handleCentralUpdateRequest({ pathname: '/api/admin/updates', method: 'GET', env: platformEnv }), null);
 });
 
-test('the platform refuses an anonymous or wrong token before it reads a release', async () => {
+test('a check is public, and a token that is sent is still verified', async () => {
   clearCentralReleaseCache();
   const fetchImpl = stubFetch([githubRow('v2.4.1')]);
-  const anonymous = await handleCentralUpdateRequest({ pathname: '/api/v1/updates/check', method: 'POST', headers: {}, env: platformEnv, fetchImpl });
-  assert.equal(anonymous.status, 401);
+  const anonymous = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/check',
+    method: 'POST',
+    headers: {},
+    body: { installedVersion: 'v1.3.1' },
+    env: platformEnv,
+    fetchImpl,
+  });
+  assert.equal(anonymous.status, 200, 'a site with no token still reads the release list');
+  assert.equal(anonymous.body.latestVersion, 'v2.4.1');
   const wrong = await handleCentralUpdateRequest({ pathname: '/api/v1/updates/check', method: 'POST', headers: { authorization: 'Bearer nope' }, env: platformEnv, fetchImpl });
-  assert.equal(wrong.status, 403);
+  assert.equal(wrong.status, 403, 'a token that is not one of ours is refused rather than ignored');
+  assert.equal(fetchImpl.calls[0].init.headers.Authorization, undefined, 'no token is invented for the public check');
+  clearCentralReleaseCache();
+  const closed = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/check',
+    method: 'POST',
+    headers: {},
+    body: { installedVersion: 'v1.3.1' },
+    env: { ...platformEnv, RWP_CENTRAL_PUBLIC_CHECKS: 'off' },
+    fetchImpl,
+  });
+  assert.equal(closed.status, 401, 'RWP_CENTRAL_PUBLIC_CHECKS=off restores the token requirement');
   const read = await handleCentralUpdateRequest({ pathname: '/api/v1/updates/check', method: 'GET', headers: { authorization: 'Bearer site-token' }, env: platformEnv, fetchImpl });
   assert.equal(read.status, 405);
-  assert.equal(fetchImpl.calls.length, 0, 'no GitHub call happens for a caller that may not ask');
+});
+
+test('a half-configured platform names what is missing instead of answering 404', async () => {
+  const noRepo = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/apply',
+    method: 'POST',
+    headers: { authorization: 'Bearer site-token' },
+    env: { RWP_CENTRAL_TOKENS: 'site-token' },
+  });
+  assert.equal(noRepo.status, 503, 'a token with no repository is a configuration problem, not a wrong path');
+  assert.match(noRepo.body.error, /RWP_RELEASE_REPO/);
+  const noToken = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/apply',
+    method: 'POST',
+    headers: { authorization: 'Bearer site-token' },
+    env: { RWP_RELEASE_REPO: 'acme/react-wp' },
+  });
+  assert.equal(noToken.status, 503);
+  assert.match(noToken.body.error, /RWP_CENTRAL_TOKEN/);
+  // A platform that closed its checks and accepts no token cannot answer one either, and says which half
+  // is missing rather than pretending the route does not exist.
+  const closed = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/check',
+    method: 'POST',
+    env: { RWP_RELEASE_REPO: 'acme/react-wp', RWP_CENTRAL_PUBLIC_CHECKS: 'off' },
+  });
+  assert.equal(closed.status, 503);
+  assert.match(closed.body.error, /RWP_CENTRAL_TOKEN/);
+});
+
+test('a platform whose repository is only in its own rows still answers', async () => {
+  // How a real platform is configured: the template repository is saved on the installer card, which writes
+  // `saas_installer_config`. None of that is in the environment, and it used to leave the platform
+  // answering `No API endpoint at /api/v1/updates/apply.`
+  clearStoredReleaseSource();
+  const rows = {
+    saas_installer_config: JSON.stringify({ template_repo: 'acme/react-wp' }),
+    github_config: JSON.stringify({ repository: '', token: 'ghp_stored' }),
+  };
+  const config = await centralPlatformConfig({
+    env: { RWP_CENTRAL_TOKENS: 'site-token' },
+    readOptions: { readSetting: async (name) => rows[name] || '' },
+  });
+  assert.equal(config.repo, 'acme/react-wp');
+  assert.equal(config.checkEnabled, true);
+  assert.equal(config.applyEnabled, true);
+  assert.equal(config.githubToken, 'ghp_stored', 'the credential the GitHub card saved is used to read it');
+
+  const fetched = stubFetch([githubRow('v2.4.1')]);
+  const answer = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/check',
+    method: 'POST',
+    body: { installedVersion: 'v1.3.1' },
+    env: {},
+    config,
+    fetchImpl: fetched,
+  });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.latestVersion, 'v2.4.1');
+
+  // Nothing stored and nothing in the environment is still a 404: an ordinary site answers nothing.
+  clearStoredReleaseSource();
+  const plain = await centralPlatformConfig({ env: {}, readOptions: { readSetting: async () => '' } });
+  assert.equal(plain.enabled, false);
+  clearStoredReleaseSource();
 });
 
 test('the platform answers the contract the customer reads', async () => {
@@ -623,19 +726,37 @@ test('a managed site is never answered by GitHub, even when the platform refuses
   );
 });
 
-test('a managed site with no platform connection is pointed at support, not at a settings screen', async () => {
+test('a managed site with no token still reads the release list', async () => {
+  // The fix for a site provisioned before it was handed a token: a check is public, so "no token saved" is
+  // no longer a reason to answer nothing at all.
+  const fetchImpl = stubRoutes([['/updates/check', { latestVersion: 'v2.4.1', releaseNotes: '- x' }]]);
+  const answer = await checkForUpdates({
+    config: { central_url: 'https://react-wp.com', channel: 'stable' },
+    current: { app: '1.3.1' },
+    plugins: [],
+    github: { repo: 'acme/react-wp', token: 'ghp_stored' },
+    fetchImpl,
+    owner: false,
+  });
+  assert.equal(answer.source, 'central');
+  assert.equal(answer.app.latest, '2.4.1');
+  assert.equal(fetchImpl.calls[0].init.headers.Authorization, undefined, 'no token is invented for it');
+  assert.ok(fetchImpl.calls.every((call) => !call.url.includes('github.com')), 'a managed site never reads GitHub');
+});
+
+test('a managed site the platform will not answer is pointed at support, not at a settings screen', async () => {
   await assert.rejects(
     checkForUpdates({
-      config: { channel: 'stable' },
+      config: { central_url: 'https://react-wp.com', channel: 'stable' },
       current: { app: '1.3.1' },
       plugins: [],
       github: { repo: 'acme/react-wp', token: 'ghp_stored' },
-      fetchImpl: async () => new Response('{}', { status: 200 }),
+      fetchImpl: async () => new Response(JSON.stringify({ error: 'a token is required' }), { status: 401 }),
       owner: false,
     }),
     (error) => {
       assert.equal(error.message, MANAGED_MESSAGES.not_connected);
-      assert.equal(error.status, 502, 'the site cannot check, which is not the customer asking something wrong');
+      assert.equal(error.status, 401, 'the site cannot check, which is not the customer asking something wrong');
       assert.doesNotMatch(error.message, /token|repository|GitHub|Settings →/);
       return true;
     },

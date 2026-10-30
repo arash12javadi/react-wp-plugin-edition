@@ -703,10 +703,11 @@ app.route('/api/admin/plugins', pluginSchemaRouter);
 // on `/api/admin` because the family spans two prefixes (`/updates` and `/system/update`), and the router
 // only claims its own four paths, so `/api/admin/*` anything else falls through as before.
 //
-// The platform's own check goes first, and only exists on a deployment that *is* the platform
-// (`RWP_RELEASE_REPO` + `RWP_CENTRAL_TOKENS`): Hono answers with the first registration that matches, so a
-// platform's `/api/admin/updates/check` is the GitHub release answer, while every other site keeps the
-// tenant route below for itself and answers 404 at `/api/v1/updates/check`.
+// The platform's own API is registered first. Its two `/api/v1` paths exist on every deployment and answer
+// 404 where this site is not the platform, because the repository a platform publishes from may live in
+// its own `system_settings` rows; the `/api/admin/updates/check` alias is mounted only where the
+// environment declares it (`RWP_RELEASE_REPO` / `RWP_CENTRAL_TOKEN`), so a customer's own
+// `/api/admin/updates/check` keeps answering from the tenant router below.
 registerCentralUpdateRoutes(app);
 app.route('/api/admin', updatesRouter);
 

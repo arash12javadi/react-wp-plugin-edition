@@ -87,10 +87,11 @@ export const AUTO_CHECK_KEYS = ['off', 'admin', 'daily', 'weekly', 'monthly'];
  * Updates", "leave empty to use react-wp.com", "a public repository needs no token") are therefore wrong
  * on that screen, and would send someone looking for a switch that is not there. So the managed wording
  * lives here, in one place, and every managed refusal in this file uses it: `fetchCentralCheck` when the
- * platform refuses or is unreachable, `checkForUpdates` when no connection is stored at all.
+ * platform refuses or is unreachable, and `managedUpdateSupport` when this host cannot install the package
+ * the platform publishes.
  */
 export const MANAGED_MESSAGES = {
-  /** No token is stored (or the row cannot be read), so there is no connection to ask through. */
+  /** The platform would not answer without a token, and this site has none (or the row cannot be read). */
   not_connected: 'React-WP.com could not confirm this site’s platform connection, so the release list is not available just now. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
   /** The platform answered 401/403: the token it was given is not one it accepts. */
   refused: 'React-WP.com did not accept this site’s platform connection. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
@@ -102,8 +103,12 @@ export const MANAGED_MESSAGES = {
   no_api: 'React-WP.com has no update API at the address this site uses, so no release list could be read. Contact React-WP support and they will point it at the right one.',
   /** The platform answered, but with nothing that names a release. */
   no_release: 'React-WP.com answered without naming a release, so there is nothing to compare this site against just now. Contact React-WP support and they will check what it publishes for this site.',
-  /** The one way a managed site installs a release cannot work on this host. */
-  cannot_apply: 'React-WP.com publishes this site’s releases, but this server cannot install one by itself just now. Contact React-WP support and they will apply the update for you.',
+  /**
+   * A host that cannot install a package: the platform applies the release to it instead, which is what the
+   * platform's own installer card is for. Never an instruction, and never a promise of a button here — the
+   * screen hides the one it cannot honour.
+   */
+  cannot_apply: 'React-WP.com publishes this site’s releases and installs them for you, so there is nothing to change here. If a release has not arrived within a day of being published, contact React-WP support.',
 };
 
 /** A refusal that carries the status code to answer with, the same way `InstallError` does. */
@@ -315,13 +320,24 @@ export const describeGithubSource = (source, owner = true) => (owner
  * supposed to ask. It never turns a configured site into a different one — an environment token only
  * fills a hole.
  *
+ * `RWP_CENTRAL_URL` is the same hole for the address, and it is what lets a platform point the sites it
+ * provisions at its own domain without editing a row in each of their databases.
+ *
  * @param {import('./integrationSettings.mjs').IntegrationReadOptions} options
  */
 export async function readUpdatesConfig(options) {
   const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY], options);
+  const environment = environmentOf(options?.env);
   const stored = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
-  const environmentToken = trimmed(environmentOf(options?.env).RWP_UPDATE_TOKEN);
-  const config = stored.token || !environmentToken ? stored : { ...stored, token: environmentToken };
+  const row = rows.settings[UPDATE_CONFIG_KEY] && typeof rows.settings[UPDATE_CONFIG_KEY] === 'object' ? rows.settings[UPDATE_CONFIG_KEY] : {};
+  const environmentToken = trimmed(environment.RWP_UPDATE_TOKEN);
+  const environmentCentral = trimmed(environment.RWP_CENTRAL_URL).replace(/\/+$/, '');
+  const config = {
+    ...stored,
+    // Both environment values fill a hole only: a token or an address saved on Settings → Updates wins.
+    ...(stored.token || !environmentToken ? {} : { token: environmentToken }),
+    ...(trimmed(row.central_url) || !/^https?:\/\//i.test(environmentCentral) ? {} : { central_url: environmentCentral }),
+  };
   return {
     config,
     github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository),
@@ -520,8 +536,13 @@ export const installedPluginsFrom = (value) => {
  * Asks the central server for the latest releases.
  *
  * The body carries what the site runs, which is what lets `react-wp.com` answer for the plugins *this*
- * site has rather than for the whole catalogue. The token is required: without it central cannot tell a
- * licensed site from a stranger, and the caller reads its own GitHub release tags instead.
+ * site has rather than for the whole catalogue.
+ *
+ * The token is *sent* whenever this site has one, and its absence is no longer a reason to refuse before
+ * asking: the release list is public on a platform that publishes it, so a site provisioned before this
+ * feature existed — or one whose token was never written into its environment — still learns the newest
+ * version instead of being told its platform connection is broken. A platform that wants a token for a
+ * check answers 401, which is handled below.
  *
  * `managed` changes only what a failure *says*. A customer cannot save a token, name a repository or
  * publish a release, so every refusal is one of `MANAGED_MESSAGES`; the owner keeps the sentences that
@@ -536,14 +557,6 @@ export const installedPluginsFrom = (value) => {
  * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, version: string }>, fetchImpl?: typeof fetch, managed?: boolean }} options
  */
 export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch, managed = false }) {
-  if (!config.token) {
-    // The refusal an owner can act on is the one a customer cannot: say the right thing to each. A managed
-    // site has no token field to fill in and no repository to fall back on, so it is told what is true —
-    // the platform connection could not be confirmed — and pointed at support.
-    throw managed
-      ? new UpdateError(MANAGED_MESSAGES.not_connected, 502)
-      : new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; this deployment\'s own GitHub release tags answer until then.', 400);
-  }
   const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
   const request = {
     method: 'POST',
@@ -578,9 +591,11 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
     }
     if (response.status === 401 || response.status === 403) {
       // A managed site's token is the platform's own connection, issued and revoked by it: asking a
-      // customer to re-enter it is asking them for a value they were never given.
+      // customer to re-enter it is asking them for a value they were never given. A site that sent *no*
+      // token is told the connection could not be confirmed, which is exactly what happened — the platform
+      // would not answer a check without one.
       throw new UpdateError(managed
-        ? MANAGED_MESSAGES.refused
+        ? (config.token ? MANAGED_MESSAGES.refused : MANAGED_MESSAGES.not_connected)
         : 'The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
     }
     if (!response.ok) {
@@ -765,12 +780,10 @@ export async function checkForUpdates({ config, current, plugins, github = null,
   // An end user's site is managed by the platform: it never reads GitHub directly. The owner's named
   // repository is *their* release channel, but a provisioned instance has exactly one — react-wp.com.
   const source = owner ? (github || githubUpdateSourceFrom(undefined)) : null;
-  if (!source && !config.token) {
-    if (!owner) {
-      // The one thing that can be missing on a managed site is the platform connection itself, and no
-      // screen this reader can open holds it: `not_connected` says so without naming a token at all.
-      throw new UpdateError(MANAGED_MESSAGES.not_connected, 502);
-    }
+  // A managed site asks the platform with or without a token: a check is public, so a site that was never
+  // handed one still reads the newest release. Only the owner, who can choose a source and has none, is
+  // asked to configure one.
+  if (owner && !source && !config.token) {
     throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
   }
   /** GitHub first when the administrator named the repository, and always when there is no token to ask. */

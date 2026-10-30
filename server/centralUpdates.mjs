@@ -14,14 +14,23 @@
  *   { "installedVersion": "v1.3.1", "latestVersion": "v2.4.1", "updateAvailable": true,
  *     "releaseNotes": "- …", "releaseUrl": "https://github.com/…/releases/tag/v2.4.1", … }
  *
- * Three rules this file keeps:
+ * Four rules this file keeps:
  *
  *   - **The tag is the answer.** `latestVersion` is the newest GitHub release tag, chosen by tag order and
  *     filtered by the channel, never a `package.json` version. `server/githubReleases.mjs` does the
  *     parsing; this file decides who may ask and how the answer is shaped.
- *   - **Off unless it is the platform.** No token list, no repository, no route: a customer's site that
- *     happens to run this code answers 404 at `/api/v1/updates/check` and keeps its own
- *     `/api/admin/updates/check` for its dashboard. `enabled` is the switch, and it is set by environment.
+ *   - **Only the platform answers, and it does not have to be configured twice.** A deployment that holds
+ *     an update token *or* names the repository it publishes mounts these routes; a customer's site holds
+ *     neither, answers 404 at `/api/v1/updates/check` and keeps its own `/api/admin/updates/check` for its
+ *     dashboard. Requiring both halves at once is what made a real platform answer
+ *     `No API endpoint at /api/v1/updates/apply.` to its own sites, so `enabled` is `true` when either
+ *     half is present, and the remaining half is reported as the 503 that names it
+ *     (`centralRefusalFor`) instead of as a path that does not exist.
+ *   - **The release list is public; the package is not.** A check needs no token, because a site that was
+ *     provisioned before this feature existed still has to be able to read a version number — and one that
+ *     was never handed a token must not be told its platform connection is broken. `apply` hands out the
+ *     product's own source, so it stays token-gated. `RWP_CENTRAL_PUBLIC_CHECKS=off` restores the older
+ *     rule that a check needs a token too.
  *   - **Cheap and forgiving.** Answers are cached for a minute, and a GitHub failure serves the last
  *     cached answer instead of an error — a platform's rate limit must not blank every customer's Updates
  *     screen.
@@ -31,7 +40,9 @@
  * Vercel function.
  */
 import { fetchGithubReleases, latestReleaseFrom } from './githubReleases.mjs';
-import { UPDATE_CHANNELS, checkAnswerFrom } from './updateCenter.mjs';
+import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
+import { readIntegrationRows } from './integrationSettings.mjs';
+import { UPDATE_CHANNELS, checkAnswerFrom, githubUpdateSourceFrom } from './updateCenter.mjs';
 import { buildCoreReleaseZip } from './releasePackage.mjs';
 
 /** The route the platform publishes. Also `CENTRAL_CHECK_PATH` in `server/updateCenter.mjs`. */
@@ -73,33 +84,105 @@ const environmentOf = (env) => env || globalThis.process?.env || {};
 /**
  * What this deployment is: the platform, or an ordinary site.
  *
- * `enabled` needs both halves — a repository to read and at least one token to accept — because either one
- * alone would publish a route that cannot work, and a half-configured platform is worse than one that
- * answers 404 and lets its sites read their own release tags.
+ * `enabled` — the switch both hosts read before mounting the routes — is `true` as soon as *either* half
+ * exists: a token to accept, or a repository to read. Requiring both at once is what made a real platform
+ * answer `No API endpoint at /api/v1/updates/apply.` to its own sites: it had saved the repository on the
+ * installer card and the token in its environment, and neither half was where this function looked. A
+ * deployment with neither half still answers 404 everywhere, which is what keeps a customer's
+ * `/api/admin/updates/check` its own.
+ *
+ * `repo` may legitimately be empty at mount time, because the repository a platform publishes from is
+ * usually a `system_settings` row rather than an environment variable; `centralPlatformConfig` fills it in
+ * per request from `stored`, and a request that still has none is refused with the sentence naming what to
+ * set rather than with a 404.
  *
  * @param {Record<string, string | undefined>} [env]
+ * @param {{ repo?: string, token?: string }} [stored] the repository and credential read from this
+ *   deployment's own `github_config` / `saas_installer_config` rows
  */
-export const centralConfigFrom = (env) => {
+export const centralConfigFrom = (env, stored = {}) => {
   const environment = environmentOf(env);
   const tokens = `${trimmed(environment.RWP_CENTRAL_TOKENS)},${trimmed(environment.RWP_CENTRAL_TOKEN)}`
     .split(',')
     .map((token) => token.trim())
     .filter(Boolean);
-  const releaseRepo = trimmed(environment.RWP_RELEASE_REPO);
+  const releaseRepo = trimmed(environment.RWP_RELEASE_REPO) || trimmed(stored.repo);
   const cacheSeconds = Number(environment.RWP_RELEASE_CACHE_SECONDS);
+  const publicChecks = !/^(off|false|no|0)$/i.test(trimmed(environment.RWP_CENTRAL_PUBLIC_CHECKS));
   return {
     tokens,
     /** `owner/name`, or empty. Validated again by `fetchGithubReleases` before it becomes a URL. */
     repo: releaseRepo,
-    githubToken: trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN),
+    githubToken: trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN) || trimmed(stored.token),
     channel: trimmed(environment.RWP_RELEASE_CHANNEL).toLowerCase() === 'beta' ? 'beta' : 'stable',
     cacheSeconds: Number.isFinite(cacheSeconds) && cacheSeconds >= 0 ? cacheSeconds : CENTRAL_CACHE_SECONDS,
-    enabled: tokens.length > 0 && Boolean(releaseRepo),
+    /** Whether the routes exist here at all: a token to accept, or a repository to answer from. */
+    enabled: tokens.length > 0 || Boolean(releaseRepo),
+    /** Whether a release list can be answered: a repository, and a token unless checks are public. */
+    checkEnabled: Boolean(releaseRepo) && (publicChecks || tokens.length > 0),
+    /** Whether the release *package* may be handed out — that always costs a token. */
+    applyEnabled: Boolean(releaseRepo) && tokens.length > 0,
+    /** Whether a check may be answered without a token. `RWP_CENTRAL_PUBLIC_CHECKS=off` turns this off. */
+    publicChecks,
   };
 };
 
+/** How long a repository read from this platform's own settings is reused. */
+const STORED_REPO_CACHE_MS = 60_000;
+
+/** The last repository/credential resolved from `system_settings`. Empty until one is found. */
+let storedReleaseSource = { at: 0, value: { repo: '', token: '' } };
+
+/** Drops the cached repository. Exported for the self-check, and for a card that just saved a new one. */
+export const clearStoredReleaseSource = () => {
+  storedReleaseSource = { at: 0, value: { repo: '', token: '' } };
+};
+
+/**
+ * The configuration the routes actually answer with: the environment first, then the repository and
+ * credential this deployment saved on its own cards.
+ *
+ * The fallback exists because configuring a platform is a screen, not a deploy: the owner names the
+ * template repository on the installer card and connects GitHub on the integrations card, which write
+ * `saas_installer_config` and `github_config`. A platform whose release repository lives only in those
+ * rows used to answer 404 at `/api/v1/updates/apply` — its own sites were told there was no update API.
+ *
+ * A row that cannot be read is not an error here: it leaves `repo` empty, and the request is refused with
+ * the sentence that names the environment variable, which is the one answer that cannot be wrong.
+ *
+ * @param {{ env?: Record<string, string | undefined>, readOptions?: any, now?: number }} [input]
+ */
+export async function centralPlatformConfig({ env, readOptions, now = Date.now() } = {}) {
+  const base = centralConfigFrom(env);
+  // Already configured: no row is read.
+  if (base.repo) return base;
+  let source = storedReleaseSource.value;
+  if (now - storedReleaseSource.at >= STORED_REPO_CACHE_MS) {
+    const rows = await readIntegrationRows(
+      [GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY],
+      readOptions || { env: environmentOf(env) },
+    ).catch(() => null);
+    const settings = rows?.settings || {};
+    const github = githubUpdateSourceFrom(undefined, settings[GITHUB_CONFIG_KEY], '');
+    const installer = saasInstallerConfigFrom(settings[SAAS_INSTALLER_CONFIG_KEY]);
+    // The credential is read from the GitHub row directly rather than from `githubUpdateSourceFrom`, which
+    // answers `null` unless that same row also names a repository — and on a platform the repository is
+    // usually on the installer card instead, with only the token here.
+    source = {
+      repo: trimmed(github?.repo) || installer.template_repo,
+      token: githubTokenFrom(settings[GITHUB_CONFIG_KEY]),
+    };
+    // Cached whether or not it found something: a deployment that is not the platform must not read these
+    // rows for every request that happens to ask a platform path, and a platform that has just saved a
+    // repository starts answering within the minute.
+    storedReleaseSource = { at: now, value: source };
+  }
+  return centralConfigFrom(env, source);
+}
+
 /** `Authorization: Bearer …` from a plain node header object, a Fetch `Headers`, or a pre-read value. */
-const authorizationFrom = (headers) => {
+/** Whether the caller sent a token, read exactly as `authorizeCentral` reads it. Exported for the self-check. */
+export const authorizationFrom = (headers) => {
   const raw = typeof headers?.get === 'function'
     ? headers.get('authorization')
     : (headers?.authorization ?? headers?.Authorization);
@@ -214,14 +297,52 @@ export async function centralCheckAnswer({ body, config, fetchImpl = fetch, now 
 }
 
 /**
- * The route both hosts mount: `POST /api/v1/updates/check`, and the `/api/admin/updates/check` alias.
+ * The 503 a platform owes its sites when it is switched on but half-configured.
+ *
+ * This is the answer that replaces a 404 nobody could act on: a site reads 404 as "wrong address" and
+ * stops asking, while the operator reads this sentence and sets the variable it names. The text names
+ * environment variables, which is why it never reaches a customer as is — the site maps any non-OK answer
+ * to `MANAGED_MESSAGES` before it reaches a screen.
+ *
+ * @param {ReturnType<typeof centralConfigFrom>} config
+ * @param {'check'|'apply'} kind
+ */
+const centralRefusalFor = (config, kind) => {
+  if (!config.repo) {
+    return {
+      status: 503,
+      body: { error: 'This platform has no release repository, so it cannot answer update requests yet. Set RWP_RELEASE_REPO on this server, or name the template repository on the installer card.' },
+    };
+  }
+  if (!config.publicChecks && config.tokens.length === 0) {
+    return {
+      status: 503,
+      body: { error: 'This platform publishes releases but accepts no update tokens, so it cannot answer update requests. Set RWP_CENTRAL_TOKEN (or RWP_CENTRAL_TOKENS) on this server.' },
+    };
+  }
+  if (kind === 'apply' && config.tokens.length === 0) {
+    return {
+      status: 503,
+      body: { error: 'This platform accepts no update tokens, so it cannot hand out release packages. Set RWP_CENTRAL_TOKEN (or RWP_CENTRAL_TOKENS) on this server.' },
+    };
+  }
+  return null;
+};
+
+/**
+ * The route both hosts mount: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias, and
+ * `POST /api/v1/updates/apply`.
  *
  * Returns **null** — not 404 — for a path it does not own, or for a deployment that is not the platform.
  * That is what lets `server.mjs` and the Hono app chain this in front of their own admin routes without
  * changing the answer an ordinary site gives: a customer's `/api/admin/updates/check` is still its own
  * dashboard's check, and `/api/v1/updates/check` is still an unknown path.
  *
- * @param {{ method?: string, pathname?: string, headers?: any, body?: any, env?: Record<string, string | undefined>, fetchImpl?: typeof fetch, now?: number }} input
+ * A **check** is answered without a token — the release list is not the product, and a site that was never
+ * handed a token still has to be able to read a version number — while a token that *is* sent is still
+ * verified, so a revoked site is told so. An **apply** is always token-gated: it hands out the package.
+ *
+ * @param {{ method?: string, pathname?: string, headers?: any, body?: any, env?: Record<string, string | undefined>, config?: any, fetchImpl?: typeof fetch, now?: number }} input
  */
 export async function handleCentralUpdateRequest({
   method = 'POST',
@@ -229,20 +350,27 @@ export async function handleCentralUpdateRequest({
   headers = {},
   body = {},
   env,
+  config: resolved = null,
   fetchImpl = fetch,
   now = Date.now(),
 } = {}) {
   const path = trimmed(String(pathname ?? '')).replace(/\/+$/, '');
   const isApply = path === CENTRAL_APPLY_PATH;
   if (!CENTRAL_CHECK_PATHS.includes(path) && !isApply) return null;
-  const config = centralConfigFrom(env);
+  const config = resolved || centralConfigFrom(env);
   if (!config.enabled) return null;
   if (String(method).toUpperCase() !== 'POST') {
     return { status: 405, body: { error: 'Method not allowed. A check or an update is a POST, because it carries the site\'s token and version.' } };
   }
   try {
-    const auth = authorizeCentral({ headers, config });
-    if (!auth.ok) return { status: auth.status, body: { error: auth.error } };
+    const withheld = centralRefusalFor(config, isApply ? 'apply' : 'check');
+    if (withheld) return withheld;
+    // A token that was sent is always verified, even for a public check: that is how a site learns its
+    // credential was revoked. Only its *absence* is tolerated, and only where checks are public.
+    if (isApply || authorizationFrom(headers) || !config.publicChecks) {
+      const auth = authorizeCentral({ headers, config });
+      if (!auth.ok) return { status: auth.status, body: { error: auth.error } };
+    }
     if (isApply) {
       const pkg = await buildCoreReleaseZip({
         repo: config.repo,

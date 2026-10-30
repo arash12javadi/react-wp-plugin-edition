@@ -12,13 +12,16 @@
  * checkout, or one sentence naming what to configure when neither applies. This card shows which, and
  * never guesses.
  *
- * Three rules this component keeps:
+ * Four rules this component keeps:
  *
  *   - **Never claim an update is installed.** A self-update run reports its own outcome, and only a
  *     finished run is recorded in `system_settings.version_state`. A failed run leaves the recorded
  *     version alone, which is what makes that record worth keeping.
  *   - **Always say why a button will not work.** `support.reason` is the server's sentence, shown before
  *     the button rather than after a click that could never have succeeded.
+ *   - **Never draw a button this host cannot honour.** A managed site whose host cannot install a package
+ *     is one the platform updates for it: the sentence is shown plainly and `Update now` is not rendered at
+ *     all, because a button whose only possible answer is 409 is worse than no button.
  *   - **Never hold the token.** The field below writes it and then shows `has_token`; there is no read
  *     path back, by design.
  */
@@ -470,6 +473,10 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   }
 
   const support = overview?.support;
+  // A managed site's host either installs the package the platform publishes or it does not. When it does
+  // not — a Vercel deployment, whose files are read-only — React-WP applies the release to the project
+  // itself, so there is no button to offer here and nothing this reader could do with one.
+  const managedHosted = !isOwner && Boolean(support) && support.supported === false;
   const updates = check?.updates || [];
   const appUpdate = updates.find((entry) => entry.kind === 'app');
   const busy = checking || applying || isRunInFlight(run);
@@ -500,9 +507,11 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
             <button type="button" className={styles.secondaryButton} disabled={busy} onClick={() => void checkNow()}>
               {checking ? 'Checking…' : 'Check for updates'}
             </button>
-            <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void updateNow()}>
-              {applying ? 'Starting…' : 'Update now'}
-            </button>
+            {!managedHosted && (
+              <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void updateNow()}>
+                {applying ? 'Starting…' : 'Update now'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -526,12 +535,15 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
           )}
         </div>
 
-        {support && !support.supported && (
+        {managedHosted ? (
+          // Said plainly rather than boxed as a warning: for this reader there is nothing to fix and nothing
+          // to press. The platform publishes the release and applies it to the site.
+          <p className={styles.muted}>{support?.reason}</p>
+        ) : support && !support.supported ? (
           <div className={styles.warning} role="status">
-            {isOwner && <><strong>This host updates from its repository.</strong> </>}
-            {support.reason}
+            <strong>This host updates from its repository.</strong> {support.reason}
           </div>
-        )}
+        ) : null}
         {isOwner && overview?.error && <div className={styles.warning} role="status">{overview.error}</div>}
         {check?.error && <div className={styles.warning} role="status">{check.error}</div>}
 
