@@ -827,7 +827,9 @@ function authorizeRequest(action: string, body: Record<string, unknown>, role: U
     /**
      * The three rows of `system_settings` that belong to the installation — the GitHub credential it
      * publishes with, the deploy hook that rebuilds it and the template it provisions sites from
-     * (`PLATFORM_SETTING_KEYS`) — answer to the `super_admin` role alone.
+     * (`PLATFORM_SETTING_KEYS`) — answer to the platform owner's roles alone (`administrator` and
+     * `super_admin`, which is what `isPlatformOwner` asks), never to a role that was merely granted
+     * `manage_options`.
      *
      * Nothing reads them with a bare `select`: the settings screens call `getSystemSetting`, one key at
      * a time, which the gate below covers. A table read is therefore refused unless it names the key it
@@ -842,7 +844,7 @@ function authorizeRequest(action: string, body: Record<string, unknown>, role: U
     if ((action === 'select' || action === 'selectOne') && table === 'system_settings' && !isPlatformOwner(role)) {
       const platform = platformKeyOf(body);
       if (platform) {
-        return { status: 403, message: `"${platform}" belongs to the platform owner: only the super_admin role may read it.` };
+        return { status: 403, message: `"${platform}" belongs to the platform owner: only the administrator and super_admin roles may read it.` };
       }
       if (!settingKeysFrom(body).length) {
         return { status: 403, message: 'Reading "system_settings" needs the setting_key it wants; a whole-table read is the platform owner’s.' };
@@ -856,7 +858,7 @@ function authorizeRequest(action: string, body: Record<string, unknown>, role: U
   if ((action === 'getSystemSetting' || action === 'setSystemSetting') && !isPlatformOwner(role)) {
     const key = str(body.key) ?? '';
     if (PLATFORM_SETTING_KEYS.includes(key)) {
-      return { status: role ? 403 : 401, message: `"${key}" belongs to the platform owner: only the super_admin role may read or change it.` };
+      return { status: role ? 403 : 401, message: `"${key}" belongs to the platform owner: only the administrator and super_admin roles may read or change it.` };
     }
   }
 
@@ -891,7 +893,7 @@ function authorizeRequest(action: string, body: Record<string, unknown>, role: U
   if (table === 'system_settings' && !isPlatformOwner(role)) {
     const platform = platformKeyOf(body);
     if (platform) {
-      return { status: 403, message: `"${platform}" belongs to the platform owner: only the super_admin role may change it.` };
+      return { status: 403, message: `"${platform}" belongs to the platform owner: only the administrator and super_admin roles may change it.` };
     }
     if (!settingKeysFrom(body).length) {
       return { status: 403, message: 'Changing "system_settings" needs the setting_key it changes; the platform owner’s rows are not reachable any other way.' };

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { client, getSystemSetting, setSystemSetting } from '../../lib/db';
 import { fetchProfile } from '../../lib/profiles';
-import { hasCapability, isPlatformOwner, type UserRole } from '../../lib/roles';
+import { getUserRole, hasCapability, isPlatformOwner, type UserRole } from '../../lib/roles';
 import { useIntegrationsRegistry, type RwpIntegrationCard } from '../../core/integrations';
 import {
   aiCompatibleBaseUrls,
@@ -91,12 +91,16 @@ function useViewerRole(): UserRole | null {
     void (async () => {
       try {
         const { data } = await client.auth.getSession();
-        const id = data.session?.user?.id;
-        if (!id) return;
-        const profile = await fetchProfile(id);
-        if (mounted && profile?.role) setRole(profile.role as UserRole);
+        const user = data.session?.user;
+        if (!user) return;
+        const profile = await fetchProfile(user.id);
+        // `profiles` is the authority, and `getUserRole` is the fallback `useCurrentProfile` already
+        // makes (`src/lib/profiles.ts`). Without it a profile row that could not be read — a failing
+        // policy, a row the trigger has not written yet — left the role null, and the hub then dropped
+        // every plugin card and said nothing, which looks exactly like a lost setting.
+        if (mounted) setRole(profile?.role ? profile.role as UserRole : getUserRole(user));
       } catch {
-        // A viewer whose profile cannot be read simply sees no plugin cards.
+        // A viewer whose session cannot be read at all is signed out as far as this screen is concerned.
       }
     })();
     return () => { mounted = false; };
@@ -999,9 +1003,10 @@ export default function IntegrationsHub() {
    *
    * Two gates, and they are different questions. `capability` asks what a role may do, so a role granted
    * `manage_options` under Settings → Roles sees the card that capability belongs to. `platformOwnerOnly`
-   * asks who owns the installation, which no grant answers: it is the super admin's card or nobody's,
-   * because the rows behind it (this site's GitHub token, the repository it commits to, the hook that
-   * rebuilds it) decide what this installation *is*, not who may edit a post on it.
+   * asks who owns the installation, which no grant answers: it is the cards of the roles that own this
+   * site — `administrator`, or the `super_admin` a provisioned installation has (`isPlatformOwner`) — and
+   * nobody else's, because the rows behind them (this site's GitHub token, the repository it commits to,
+   * the hook that rebuilds it) decide what this installation *is*, not who may edit a post on it.
    */
   const pluginCards = cards.filter((card) => {
     if (card.platformOwnerOnly && !(role && isPlatformOwner(role))) return false;
@@ -1015,8 +1020,8 @@ export default function IntegrationsHub() {
    * Before this sentence existed, an administrator's hub simply had three cards where the platform
    * owner's hub has six, and nothing on screen said why: the GitHub token, the repository this
    * installation commits to and the hook that rebuilds it were saved and working, and the screen that
-   * manages them looked like it had lost them. `system_settings` refuses those rows to anyone who is
-   * not `super_admin`, so there is nothing to show — but there is something to say.
+   * manages them looked like it had lost them. `system_settings` refuses those rows to any role that was
+   * only *granted* `manage_options`, so there is nothing to show — but there is something to say.
    */
   const ownerOnlyCards = cards.filter((card) => card.platformOwnerOnly);
   const hiddenOwnerCards = role && !isPlatformOwner(role) ? ownerOnlyCards : [];
@@ -1044,8 +1049,10 @@ export default function IntegrationsHub() {
           <strong>{hiddenOwnerCards.map((card) => card.title).join(', ')}</strong>{' '}
           {hiddenOwnerCards.length === 1 ? 'belongs' : 'belong'} to the platform owner: this
           installation&apos;s own GitHub token, the repository it publishes to and the hook that rebuilds
-          it are the <code>super_admin</code>&apos;s to manage, whatever capabilities an administrator
-          holds. Sign in as the super admin account to configure {hiddenOwnerCards.length === 1 ? 'it' : 'them'}.
+          it are held by the role that owns this site — <code>administrator</code>, or a{' '}
+          <code>super_admin</code> on a provisioned installation — and a role that was merely granted a
+          capability does not become the owner. Sign in as an administrator to configure{' '}
+          {hiddenOwnerCards.length === 1 ? 'it' : 'them'}.
         </p>
       ) : null}
 

@@ -39,11 +39,17 @@ export interface SecuritySettings {
   session_max_age_hours: number;
   session_remember_me_days: number;
   session_cookie_samesite: SameSitePolicy;
+  /**
+   * The administrator's switch for the whole limiter. Off means requests are not counted at all,
+   * so the thresholds below survive untouched and turning it back on does not refuse everyone who
+   * browsed in the meantime.
+   */
+  rate_limit_enabled: boolean;
   /** One window, shared by both limiter tiers. */
   rate_limit_window_minutes: number;
-  /** Sign-in, verification and admin endpoints. */
+  /** Maximum attempts per window on sign-in, verification and admin endpoints. */
   rate_limit_auth_max: number;
-  /** Everything else under /api. */
+  /** Maximum requests per window on everything else under /api. */
   rate_limit_api_max: number;
   anti_bot_provider: AntiBotProvider;
   /** Public by design: it is rendered into the CAPTCHA widget. */
@@ -69,6 +75,7 @@ export const defaultSecuritySettings: SecuritySettings = {
   session_max_age_hours: 24,
   session_remember_me_days: 30,
   session_cookie_samesite: 'Lax',
+  rate_limit_enabled: true,
   rate_limit_window_minutes: 15,
   rate_limit_auth_max: 5,
   rate_limit_api_max: 100,
@@ -100,6 +107,15 @@ const toBoolean = (value: string | undefined, fallback: boolean) => {
   return value === 'true' || value === '1';
 };
 
+/**
+ * The same rule the server applies to `rate_limit_enabled` (securitySettings.mjs): only a value
+ * that clearly says no is off, so a typo in the options table reads the same in both places.
+ */
+const toSwitch = (value: string | undefined, fallback: boolean) => {
+  if (value === undefined || value === '') return fallback;
+  return !/^(false|0|off|no)$/i.test(value.trim());
+};
+
 const knownForms: AntiBotForm[] = ['login', 'register', 'lost_password', 'comment', 'contact'];
 
 /**
@@ -128,6 +144,7 @@ export const loadSecuritySettings = async (): Promise<SecuritySettings> => {
     session_max_age_hours: toNumber(values.session_max_age_hours, defaultSecuritySettings.session_max_age_hours, 1, 24 * 365),
     session_remember_me_days: toNumber(values.session_remember_me_days, defaultSecuritySettings.session_remember_me_days, 1, 365),
     session_cookie_samesite: sameSite && sameSite in sameSiteLabels ? sameSite : defaultSecuritySettings.session_cookie_samesite,
+    rate_limit_enabled: toSwitch(values.rate_limit_enabled, defaultSecuritySettings.rate_limit_enabled),
     rate_limit_window_minutes: toNumber(values.rate_limit_window_minutes, defaultSecuritySettings.rate_limit_window_minutes, 1, 1440),
     rate_limit_auth_max: toNumber(values.rate_limit_auth_max, defaultSecuritySettings.rate_limit_auth_max, 0, 100_000),
     rate_limit_api_max: toNumber(values.rate_limit_api_max, defaultSecuritySettings.rate_limit_api_max, 0, 1_000_000),
@@ -189,6 +206,17 @@ export const saveAntiBotSecret = async (key: string): Promise<SecretStatus> => {
 
 // --- The server -----------------------------------------------------------------------------------
 
+/**
+ * One address the anti-bot traps have paused. The fingerprint is a shortened, per-process salted
+ * hash: it tells two rows apart on this screen and nothing else, so an address can be shown without
+ * the admin screen — or a screenshot of it — leaking who was blocked.
+ */
+export interface FlaggedAddress {
+  fingerprint: string;
+  retry_after_seconds: number;
+  expires_at: string;
+}
+
 export interface ServerSecurityStatus {
   settings: SecuritySettings & { site_title: string; home_page_id: string };
   anti_bot_secret_configured: boolean;
@@ -205,8 +233,17 @@ export interface ServerSecurityStatus {
     /** Built assets (JS/CSS/SVG bundles) compressed once and reused — separate from the page cache. */
     cached_assets: number;
   };
-  rate_limits: { keys: number; swept_at: string };
-  anti_bot: { flagged_addresses: number };
+  rate_limits: {
+    keys: number;
+    swept_at: string;
+    /** Optional so the panel still works against a server older than the option itself. */
+    enabled?: boolean;
+  };
+  anti_bot: {
+    flagged_addresses: number;
+    /** The list behind that count, soonest expiry first. Absent on an older server. */
+    addresses?: FlaggedAddress[];
+  };
   /** False when the server has no database credentials, so "sign out everywhere" would fail. */
   database_connection: boolean;
 }
@@ -274,6 +311,30 @@ export const purgePageCacheQuietly = async (paths?: string[]): Promise<void> => 
     // Deliberate: the TTL is the backstop.
   }
 };
+
+/**
+ * Forgets every live rate-limit counter — the "Reset live counters" button. `cleared` is how many
+ * were dropped, so the panel can say so.
+ *
+ * This empties the memory of the process that answers the request. Behind several Node processes
+ * each holds its own share of the counters, and reloading the button on another one resets that
+ * one; nothing here touches the option rows, so it cannot raise a limit by itself.
+ */
+export const resetRateLimitCounters = () =>
+  request<{ success: boolean; cleared: number; rate_limits: { keys: number; swept_at: string; enabled: boolean } }>(
+    '/api/security/rate-limits/reset',
+    { method: 'POST' },
+  );
+
+/**
+ * Forgets every anti-bot flag, so an address the honeypot paused is let back in now rather than
+ * when its flag expires. Same process-local caveat as resetRateLimitCounters.
+ */
+export const clearFlaggedAddresses = () =>
+  request<{ success: boolean; cleared: number; anti_bot: { flagged_addresses: number; addresses: FlaggedAddress[] } }>(
+    '/api/security/anti-bot/flags/clear',
+    { method: 'POST' },
+  );
 
 export interface RevokeResult {
   success: boolean;

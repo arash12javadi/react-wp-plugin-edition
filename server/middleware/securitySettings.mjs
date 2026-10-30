@@ -22,7 +22,7 @@ const REFRESH_MS = 30_000;
 /** Every option row this engine reads. Kept in one place so the PostgREST filter cannot drift. */
 export const securityOptionNames = [
   'session_max_age_hours', 'session_remember_me_days', 'session_cookie_samesite',
-  'rate_limit_window_minutes', 'rate_limit_auth_max', 'rate_limit_api_max',
+  'rate_limit_enabled', 'rate_limit_window_minutes', 'rate_limit_auth_max', 'rate_limit_api_max',
   'anti_bot_provider', 'anti_bot_site_key', 'anti_bot_honeypot', 'anti_bot_forms', 'anti_bot_flag_minutes',
   'cache_enabled', 'cache_ttl_seconds', 'cache_stale_while_revalidate_seconds', 'cache_static_max_age_seconds',
   'cache_auto_purge_on_save', 'cache_enable_compression',
@@ -35,6 +35,9 @@ export const defaultSecuritySettings = {
   session_max_age_hours: 24,
   session_remember_me_days: 30,
   session_cookie_samesite: 'Lax',
+  // The administrator's switch. On by default: a site that installs before this row exists, or one
+  // whose options table cannot be read, keeps the limiter enforcing the thresholds below.
+  rate_limit_enabled: true,
   rate_limit_window_minutes: 15,
   rate_limit_auth_max: 5,
   rate_limit_api_max: 100,
@@ -75,6 +78,19 @@ const toBoolean = (value, fallback) => {
   return value === 'true' || value === '1';
 };
 
+/**
+ * A switch that fails *on*: only a value that clearly says no turns it off.
+ *
+ * `toBoolean` answers `false` for anything it does not recognise, which is right for an opt-in
+ * feature and wrong for the rate limiter — a typo in the options table must not be the reason a
+ * site stops limiting. src/lib/security.ts applies the same rule, so the checkbox on the settings
+ * screen and the server never disagree about what is in force.
+ */
+const toSwitch = (value, fallback) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  return !/^(false|0|off|no)$/i.test(String(value).trim());
+};
+
 /** Turns the option rows into the typed snapshot. Every value is clamped: these drive limits. */
 export function normalizeSecuritySettings(values = {}) {
   // Capitalised the way Set-Cookie wants it, whatever case was saved: "strict" and "Strict" are
@@ -90,6 +106,7 @@ export function normalizeSecuritySettings(values = {}) {
     session_max_age_hours: toNumber(values.session_max_age_hours, defaultSecuritySettings.session_max_age_hours, { min: 1, max: 24 * 365 }),
     session_remember_me_days: toNumber(values.session_remember_me_days, defaultSecuritySettings.session_remember_me_days, { min: 1, max: 365 }),
     session_cookie_samesite: sameSiteValues.has(sameSite) ? sameSite : defaultSecuritySettings.session_cookie_samesite,
+    rate_limit_enabled: toSwitch(values.rate_limit_enabled, defaultSecuritySettings.rate_limit_enabled),
     rate_limit_window_minutes: toNumber(values.rate_limit_window_minutes, defaultSecuritySettings.rate_limit_window_minutes, { min: 1, max: 1440 }),
     // 0 is a legitimate value here and means "refuse everything", so the floor is 0, not 1.
     rate_limit_auth_max: toNumber(values.rate_limit_auth_max, defaultSecuritySettings.rate_limit_auth_max, { min: 0, max: 100_000 }),

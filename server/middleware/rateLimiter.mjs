@@ -5,8 +5,9 @@
  * guess is worth retrying — sign-in verification, the CAPTCHA endpoint, the admin endpoints that
  * run DDL or delete folders — and is deliberately tight. The `api` tier covers ordinary plugin and
  * media traffic and is loose enough that a busy page full of widgets is never throttled. Both
- * ceilings and the shared window come from the options table (Settings → Security → Rate limiting)
- * through securitySettings.mjs, so changing them needs no restart.
+ * ceilings and the shared window come from the options table (Settings → Security → Rate limiting &
+ * Speed) through securitySettings.mjs, so changing them needs no restart. The same snapshot carries
+ * `rate_limit_enabled`, so the whole limiter can be switched off from the admin without one either.
  *
  * Counted per address AND per account, and the stricter of the two decides. Address alone lets one
  * signed-in account burn a shared office NAT's budget; account alone lets a bot that never signs in
@@ -90,13 +91,26 @@ const hit = (key, windowMs, now) => {
  * Returns { allowed, limit, remaining, resetAt, retryAfter, scope }. The caller writes the headers
  * so that an allowed request is still told its budget — a client that can see it is at 95/100 can
  * back off before it is refused, which is the whole point of the X-RateLimit headers.
+ *
+ * `rate_limit_enabled` is the administrator's switch in Settings → Security. While it is off
+ * nothing is counted at all — rather than counted and then ignored, which would mean flipping the
+ * switch back on immediately refuses everyone who browsed in the meantime. The decision then says
+ * `disabled: true`, and the caller skips the X-RateLimit headers: a "0 of 0" budget reads as
+ * "refused" to every client that logs them.
  */
 export function consumeRateLimit(request, tier, settings) {
-  const windowMs = settings.rate_limit_window_minutes * 60_000;
-  const limit = tier === 'auth' ? settings.rate_limit_auth_max : settings.rate_limit_api_max;
   const now = Date.now();
 
+  // The sweep runs even when the limiter is off: counters left over from before the switch was
+  // flipped must not sit in memory for the life of the process.
   if (now - lastSweep > SWEEP_MS || buckets.size > MAX_KEYS) sweep(now);
+
+  if (settings?.rate_limit_enabled === false) {
+    return { allowed: true, disabled: true, tier, scope: 'disabled', limit: 0, remaining: 0, resetAt: now, retryAfter: 0 };
+  }
+
+  const windowMs = settings.rate_limit_window_minutes * 60_000;
+  const limit = tier === 'auth' ? settings.rate_limit_auth_max : settings.rate_limit_api_max;
 
   const address = hashKey(clientAddress(request));
   const subject = bearerSubject(request);
@@ -157,6 +171,10 @@ export function rateLimitTier(pathname, method) {
   // editing — several pages saved within one window — must not exhaust the strict tier's budget.
   // It is still manage_options-gated, so the strict tier's job (stopping a stranger) is not needed.
   if (pathname === '/api/security/cache/purge') return 'api';
+  // The two maintenance buttons on that same screen — reset the live counters, clear the flagged
+  // addresses. A deliberate, manage_options-gated click, and the one an administrator reaches for
+  // precisely when the strict budget is already spent, so refusing it would be perverse.
+  if (pathname === '/api/security/rate-limits/reset' || pathname === '/api/security/anti-bot/flags/clear') return 'api';
   // verify (CAPTCHA/honeypot checks) and sessions/revoke stay strict: the former is exactly what
   // brute-force protection means here, and the latter is a deliberately rare, high-impact action.
   if (pathname.startsWith('/api/security/')) return 'auth';
@@ -174,7 +192,7 @@ export function rateLimitMessage(decision) {
   const who = decision.scope === 'account' ? 'account' : 'address';
   const budget = `The limit is ${decision.limit} per window`;
   return decision.tier === 'auth'
-    ? `Too many attempts from this ${who}. ${budget}; try again in ${wait}. An administrator can change it under Settings → Security → Rate limiting.`
+    ? `Too many attempts from this ${who}. ${budget}; try again in ${wait}. An administrator can change it under Settings → Security → Rate limiting & Speed.`
     : `Too many requests from this ${who}. ${budget}; try again in ${wait}.`;
 }
 
@@ -184,4 +202,8 @@ export function resetRateLimits() {
   lastSweep = Date.now();
 }
 
-export const rateLimitStats = () => ({ keys: buckets.size, swept_at: new Date(lastSweep).toISOString() });
+/** What the settings screen's "Live counters" box shows, and what a reset reports back. */
+export const rateLimitStats = () => ({
+  keys: buckets.size,
+  swept_at: new Date(lastSweep).toISOString(),
+});

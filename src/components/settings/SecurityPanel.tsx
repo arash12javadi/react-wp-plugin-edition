@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  antiBotProviderLabels, defaultSecuritySettings, fetchServerSecurityStatus, loadSecretStatus,
-  loadSecuritySettings, purgePageCache, refreshServerSecurity, revokeUserSessions, sameSiteLabels,
+  antiBotProviderLabels, clearFlaggedAddresses, defaultSecuritySettings, fetchServerSecurityStatus, loadSecretStatus,
+  loadSecuritySettings, purgePageCache, refreshServerSecurity, resetRateLimitCounters, revokeUserSessions, sameSiteLabels,
   saveAntiBotSecret, saveSecuritySettings, securityMigration,
-  type SameSitePolicy, type SecuritySettings, type SecretStatus, type ServerSecurityStatus,
+  type FlaggedAddress, type SameSitePolicy, type SecuritySettings, type SecretStatus, type ServerSecurityStatus,
 } from '../../lib/security';
 import { antiBotFormLabels, antiBotForms, forgetAntiBotConfig, type AntiBotForm, type AntiBotProvider } from '../../lib/antiBot';
 import { isEndpointUnavailable } from '../../lib/pluginSchema';
@@ -60,6 +60,15 @@ function Toggle({ checked, onChange, children }: { checked: boolean; onChange: (
   );
 }
 
+/** "4 minutes" rather than "252", next to a fingerprint nobody is going to subtract from a clock. */
+function describeWait(seconds: number) {
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
 /** What the server is actually running on, next to what the form says. */
 function ServerState({ status, error, unavailable, onRefresh, busy }: {
   status: ServerSecurityStatus | null; error: string; unavailable: boolean; onRefresh: () => void; busy: boolean;
@@ -95,7 +104,8 @@ function ServerState({ status, error, unavailable, onRefresh, busy }: {
         {status.stale && <> Its last attempt failed: <code>{status.error || 'unknown error'}</code>, so it is still applying the previous values.</>}
       </p>
       <p>
-        Rate limiter: <code>{status.rate_limits?.keys ?? 0}</code> live counters.{' '}
+        Rate limiter: <code>{status.rate_limits?.enabled === false || status.settings?.rate_limit_enabled === false ? 'off' : 'on'}</code>,{' '}
+        <code>{status.rate_limits?.keys ?? 0}</code> live counters.{' '}
         Page cache: <code>{status.cache?.entries ?? 0}</code> pages, <code>{formatBytes(status.cache?.bytes ?? null)}</code>,{' '}
         <code>{status.cache?.hits ?? 0}</code> hits / <code>{status.cache?.misses ?? 0}</code> misses.{' '}
         Flagged addresses: <code>{status.anti_bot?.flagged_addresses ?? 0}</code>.
@@ -236,6 +246,7 @@ export default function SecurityPanel({ tab }: { tab: SecurityTab }) {
   };
 
   const chosenPerson = useMemo(() => people.find((person) => person.id === revokeId), [people, revokeId]);
+  const flagged: FlaggedAddress[] = status?.anti_bot?.addresses ?? [];
 
   if (loading) return <div className={styles.loading} role="status">Loading the security settings…</div>;
 
@@ -397,17 +408,89 @@ export default function SecurityPanel({ tab }: { tab: SecurityTab }) {
           <>
             <fieldset className={styles.fieldset}>
               <legend>Rate limiting</legend>
+              <Toggle checked={form.rate_limit_enabled} onChange={(value) => field('rate_limit_enabled', value)}>
+                Enforce these limits on every <code>/api</code> request
+              </Toggle>
               <p className={styles.help}>
                 Applied to every <code>/api</code> request this server handles, counted per address and per account —
-                whichever is closer to its ceiling decides. Page views and static files are not counted.
+                whichever is closer to its ceiling decides. Page views and static files are not counted. A ceiling of{' '}
+                <code>0</code> refuses every request in that tier.
+                {' '}While this switch is off nothing is counted at all: the numbers below are kept, so switching it back
+                on restores them exactly, and nothing that happened in the meantime counts against anyone.
               </p>
               <NumberField label="Window" value={form.rate_limit_window_minutes} unit="minutes" min={1} max={1440}
-                onChange={(value) => field('rate_limit_window_minutes', value)} />
-              <NumberField label="Authentication and admin endpoints" value={form.rate_limit_auth_max} unit="requests per window"
-                min={0} max={100000} onChange={(value) => field('rate_limit_auth_max', value)}
+                onChange={(value) => field('rate_limit_window_minutes', value)}
+                help={form.rate_limit_enabled
+                  ? undefined
+                  : 'Saved but not enforced while the switch above is off.'} />
+              <NumberField label="Maximum attempts on authentication and admin endpoints" value={form.rate_limit_auth_max}
+                unit="requests per window" min={0} max={100000} onChange={(value) => field('rate_limit_auth_max', value)}
                 help="Sign-in verification, CAPTCHA checks, plugin installs, uploads authorisation, the site reset." />
-              <NumberField label="Everything else under /api" value={form.rate_limit_api_max} unit="requests per window"
-                min={0} max={1000000} onChange={(value) => field('rate_limit_api_max', value)} />
+              <NumberField label="Maximum requests on everything else under /api" value={form.rate_limit_api_max}
+                unit="requests per window" min={0} max={1000000} onChange={(value) => field('rate_limit_api_max', value)}
+                help="Loading an admin screen makes several of these, so this ceiling should stay well above the first one." />
+            </fieldset>
+
+            <fieldset className={styles.fieldset}>
+              <legend>Live counters</legend>
+              <p className={styles.help}>
+                What the limiter is holding right now, in the memory of the process that answered this request. Each
+                counter expires by itself at the end of its window; the two buttons below are for when waiting is not an
+                option — an address locked out by a mistyped password, or a flag left behind by a test. Neither changes
+                the settings above.
+              </p>
+              {status ? (
+                <>
+                  <p className={styles.cardText}>
+                    <code>{status.rate_limits?.keys ?? 0}</code> live counter(s), last swept{' '}
+                    <code>{status.rate_limits?.swept_at ? new Date(status.rate_limits.swept_at).toLocaleTimeString() : 'never'}</code>.{' '}
+                    <code>{status.anti_bot?.flagged_addresses ?? 0}</code> flagged address(es).
+                  </p>
+                  <div className={styles.actions}>
+                    <button type="button" className={styles.secondaryButton} disabled={busy === 'reset-counters'}
+                      onClick={() => void run('reset-counters', async () => {
+                        const result = await resetRateLimitCounters();
+                        return result.cleared
+                          ? `Counters reset: ${result.cleared} counter(s) forgotten, so every address and account has its full budget again.`
+                          : 'There was nothing to reset — the limiter was not holding any counters.';
+                      })}>
+                      {busy === 'reset-counters' ? 'Resetting…' : 'Reset the live counters'}
+                    </button>
+                    <button type="button" className={styles.secondaryButton} disabled={busy === 'clear-flags'}
+                      onClick={() => void run('clear-flags', async () => {
+                        const result = await clearFlaggedAddresses();
+                        return result.cleared
+                          ? `${result.cleared} flagged address(es) cleared, so they are let back in on their next request.`
+                          : 'There were no flagged addresses to clear.';
+                      })}>
+                      {busy === 'clear-flags' ? 'Clearing…' : 'Clear the flagged addresses'}
+                    </button>
+                  </div>
+                  {flagged.length > 0 && (
+                    <>
+                      <p className={styles.help}>
+                        Fingerprints, not addresses: each is a shortened hash salted once per process, so it tells two
+                        rows apart on this screen and nothing else. Soonest to expire first.
+                      </p>
+                      <ul className={styles.tableCounts}>
+                        {flagged.slice(0, 25).map((address) => (
+                          <li key={address.fingerprint}>
+                            <code>{address.fingerprint}</code> — paused for another {describeWait(address.retry_after_seconds)}
+                          </li>
+                        ))}
+                      </ul>
+                      {flagged.length > 25 && (
+                        <p className={styles.help}>…and {flagged.length - 25} more, not listed. Clearing removes all of them.</p>
+                      )}
+                    </>
+                  )}
+                </>
+              ) : (
+                <p className={styles.help}>
+                  The server has not answered, so there is nothing to show or reset. Every counter and flag lives in the
+                  Node server's memory; a static host has none.
+                </p>
+              )}
             </fieldset>
 
             <fieldset className={styles.fieldset}>

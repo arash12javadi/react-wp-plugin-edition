@@ -136,13 +136,28 @@ export const canManageUsers = (role: UserRole) => hasCapability(role, 'list_user
 export const canManageShop = (role: UserRole) => hasCapability(role, 'manage_shop');
 
 /**
- * Whether this role owns the installation — the platform owner, `super_admin`.
+ * The roles that own an installation — the platform owner.
+ *
+ * `administrator` is the site's own owner: it is what the Setup Wizard gives the first account, and the
+ * only role a site's owner holds unless something provisioned a `super_admin` for them (the SaaS
+ * installer's SQL, or `state/promote-platform-owner.mjs`). `super_admin` is kept because a provisioned
+ * installation has one and it means the same thing here — so both are listed, and the check below asks
+ * this list rather than one role.
+ *
+ * Spelled three times because the three layers cannot import each other: here for the browser,
+ * `PLATFORM_OWNER_ROLES` (`server/integrationSettings.mjs`) for the routes, and the policy in
+ * `supabase/schema.sql` / `server/schemaPrivileges.mjs` for the database. Change one, change all three.
+ */
+export const platformOwnerRoles: readonly UserRole[] = ['administrator', 'super_admin'];
+
+/**
+ * Whether this role owns the installation — the platform owner ({@link platformOwnerRoles}).
  *
  * Deliberately a *role* check and not a capability one. The rows the platform owner keeps are not
  * settings an administrator holds on the site's behalf: this site's GitHub token and the repository it
  * commits plugins to, the deploy hook that rebuilds it, and the template every new customer site is
- * provisioned from. Those decide what this installation *is*, so they belong to the one account that
- * runs the installation rather than to whoever was granted `manage_options`.
+ * provisioned from. Those decide what this installation *is*, so they belong to the role that runs the
+ * installation rather than to another role that was granted `manage_options` under Settings → Roles.
  *
  * It also cannot be a capability, because `public.user_has_cap` answers `true` for `administrator` for
  * *any* name it is asked about — a `manage_platform` capability would therefore read as granted in the
@@ -151,7 +166,8 @@ export const canManageShop = (role: UserRole) => hasCapability(role, 'manage_sho
  * `authorizePlatformOwner` (`server/integrationSettings.mjs`, through `public.current_user_role()`)
  * for a plugin's routes.
  */
-export const isPlatformOwner = (role: UserRole | null | undefined): boolean => role === 'super_admin';
+export const isPlatformOwner = (role: UserRole | null | undefined): boolean =>
+  !!role && platformOwnerRoles.includes(role);
 
 /** Legacy fallback only. Roles are authoritative in public.profiles; user_metadata is user-writable. */
 export const getUserRole = (user: { app_metadata?: Record<string, unknown>; user_metadata?: Record<string, unknown> }): UserRole => {

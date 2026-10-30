@@ -555,8 +555,12 @@ const server = http.createServer(async (request, response) => {
         json(request, response, 429, { error: rateLimitMessage(decision) }, rateLimitHeaders(decision));
         return;
       }
-      response.setHeader('X-RateLimit-Limit', String(decision.limit));
-      response.setHeader('X-RateLimit-Remaining', String(decision.remaining));
+      // When the limiter is switched off in Settings → Security there is no budget to report, so
+      // the headers would be a lie either way ("0 of 0"). Omitted rather than faked.
+      if (!decision.disabled) {
+        response.setHeader('X-RateLimit-Limit', String(decision.limit));
+        response.setHeader('X-RateLimit-Remaining', String(decision.remaining));
+      }
     }
 
     // The security engine's own endpoints. Returns null for anything it does not own.
@@ -1085,7 +1089,9 @@ server.listen(port, () => {
   const settings = securitySettings();
   console.log(`React-WP server listening on port ${port}`);
   console.log(
-    `Security: rate limit ${settings.rate_limit_auth_max}/${settings.rate_limit_api_max} per ${settings.rate_limit_window_minutes} min`
+    `Security: rate limit ${settings.rate_limit_enabled
+      ? `${settings.rate_limit_auth_max}/${settings.rate_limit_api_max} per ${settings.rate_limit_window_minutes} min`
+      : 'off'}`
     + `, anti-bot ${settings.anti_bot_provider}${settings.anti_bot_honeypot ? ' + honeypot' : ''}`
     + `, page cache ${settings.cache_enabled ? `on (${settings.cache_ttl_seconds}s)` : 'off'}`,
   );

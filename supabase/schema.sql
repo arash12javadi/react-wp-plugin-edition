@@ -2942,6 +2942,9 @@ insert into public.options (option_name, option_value) values
   ('session_max_age_hours', '24'),
   ('session_remember_me_days', '30'),
   ('session_cookie_samesite', 'Lax'),
+  -- Added later; a site that installed before this row existed reads the same default (on) from
+  -- securitySettings.mjs, and saving the settings screen writes the row.
+  ('rate_limit_enabled', 'true'),
   ('rate_limit_window_minutes', '15'),
   ('rate_limit_auth_max', '5'),
   ('rate_limit_api_max', '100'),
@@ -3086,13 +3089,17 @@ revoke insert, update, delete on table public.rwp_translations from anon;
 
 -- Three `system_settings` rows are not this site's settings but the installation's: the GitHub
 -- credential it publishes with, the deploy hook that rebuilds it, and the template it provisions new
--- sites from. They are the platform owner's, and only the platform owner's: holding manage_options
--- must not mean holding the credential this installation commits with.
+-- sites from. They belong to the platform owner: holding manage_options must not mean holding the
+-- credential this installation commits with.
 --
 -- A *restrictive* policy is the right shape, because "Settings managers read/write system settings"
--- above are permissive and OR together — this one ANDs with them, so a site administrator keeps every
--- other row and loses exactly these three. The role is compared rather than a capability because
--- public.user_has_cap answers true for 'administrator' whatever it is asked about.
+-- above are permissive and OR together — this one ANDs with them, so a role that was granted
+-- manage_options keeps every other row and loses exactly these three. The role is compared rather than a
+-- capability because public.user_has_cap answers true for 'administrator' whatever it is asked about.
+--
+-- The two roles named are the ones that own an installation: the site's own administrator (what the
+-- Setup Wizard gives the first account) and the super_admin a provisioned site has — in step with
+-- platformOwnerRoles (src/lib/roles.ts) and PLATFORM_OWNER_ROLES (server/integrationSettings.mjs).
 --
 -- It lives in this block rather than in the RLS section above for the reason the block exists at all:
 -- server/schemaPrivileges.mjs runs it after *whatever* schema an install applied, so a site built from a
@@ -3107,7 +3114,7 @@ grant execute on function public.rwp_platform_setting(text) to anon, authenticat
 drop policy if exists "Platform settings belong to the platform owner" on public.system_settings;
 create policy "Platform settings belong to the platform owner"
   on public.system_settings as restrictive for all to authenticated
-  using (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin')
-  with check (not public.rwp_platform_setting(setting_key) or public.current_user_role() = 'super_admin');
+  using (not public.rwp_platform_setting(setting_key) or public.current_user_role() in ('administrator', 'super_admin'))
+  with check (not public.rwp_platform_setting(setting_key) or public.current_user_role() in ('administrator', 'super_admin'));
 
 notify pgrst, 'reload schema';

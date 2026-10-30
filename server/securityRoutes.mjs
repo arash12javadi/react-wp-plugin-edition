@@ -12,6 +12,12 @@
  *   GET  /api/security/status          settings, cache and limiter statistics, secret set / not set
  *   POST /api/security/refresh         re-read the options now instead of on the next timer tick
  *   POST /api/security/cache/purge     { paths?: string[], reason?: 'auto' | 'manual' }
+ *   POST /api/security/rate-limits/reset      forget every live rate-limit counter
+ *   POST /api/security/anti-bot/flags/clear    forget every flagged address
+ *
+ * The last two are the maintenance buttons on Settings → Security → Rate limiting & Speed. Both
+ * reset this process's memory only — behind several Node processes each one limits its own share,
+ * and the process that answered the request is the one that is reset.
  *
  * Administrator or Super Admin (profiles.role, not a capability):
  *   POST /api/security/sessions/revoke { user_id }
@@ -26,12 +32,12 @@ import {
   antiBotSecret, refreshSecuritySettings, securitySettings, securityStatus,
 } from './middleware/securitySettings.mjs';
 import {
-  antiBotStats, checkHoneypot, flagAddress, honeypotField, issueClearance,
+  antiBotStats, checkHoneypot, clearFlags, flagAddress, flaggedAddresses, honeypotField, issueClearance,
   minimumFormSeconds, timestampField, verifyCaptcha, addressFlagged,
 } from './middleware/antiBot.mjs';
 import { pageCachePurge, pageCacheStats } from './middleware/pageCache.mjs';
 import { compressionAssetCacheStats } from './middleware/compression.mjs';
-import { rateLimitStats } from './middleware/rateLimiter.mjs';
+import { rateLimitStats, resetRateLimits } from './middleware/rateLimiter.mjs';
 import { purgeSitemap } from './sitemap.mjs';
 
 export class SecurityError extends Error {
@@ -358,8 +364,10 @@ export async function handleSecurityRequest({ method, pathname, headers, body, c
         body: {
           ...securityStatus(),
           cache: { ...pageCacheStats(), ...compressionAssetCacheStats() },
-          rate_limits: rateLimitStats(),
-          anti_bot: antiBotStats(),
+          // `enabled` is repeated here rather than left to `settings` so the panel can read the
+          // limiter's live state from the same object as its counters.
+          rate_limits: { ...rateLimitStats(), enabled: securitySettings().rate_limit_enabled },
+          anti_bot: { ...antiBotStats(), addresses: flaggedAddresses() },
           // So the panel can say whether the revoke button will work before someone presses it.
           database_connection: resolveConnectionString({}, config).ok,
         },
@@ -374,6 +382,30 @@ export async function handleSecurityRequest({ method, pathname, headers, body, c
     if (pathname === '/api/security/cache/purge') {
       if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
       return await purgeCache(config, headers, body);
+    }
+    // Settings → Security → Rate limiting & Speed, "Live counters". The body says how many were
+    // forgotten so the panel can report it without a second read.
+    if (pathname === '/api/security/rate-limits/reset') {
+      if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
+      await requireCapability(config, headers, 'manage_options');
+      const cleared = rateLimitStats().keys;
+      resetRateLimits();
+      return {
+        status: 200,
+        headers: { 'Cache-Control': 'no-store' },
+        body: { success: true, cleared, rate_limits: { ...rateLimitStats(), enabled: securitySettings().rate_limit_enabled } },
+      };
+    }
+    if (pathname === '/api/security/anti-bot/flags/clear') {
+      if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
+      await requireCapability(config, headers, 'manage_options');
+      const cleared = antiBotStats().flagged_addresses;
+      clearFlags();
+      return {
+        status: 200,
+        headers: { 'Cache-Control': 'no-store' },
+        body: { success: true, cleared, anti_bot: { ...antiBotStats(), addresses: flaggedAddresses() } },
+      };
     }
     if (pathname === '/api/security/sessions/revoke') {
       if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };

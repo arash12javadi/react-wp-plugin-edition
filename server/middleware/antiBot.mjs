@@ -68,6 +68,27 @@ export const antiBotStats = () => ({ flagged_addresses: flags.size });
 export const clearFlags = () => flags.clear();
 
 /**
+ * The flagged addresses themselves, for Settings → Security's "Live counters" box, which is the
+ * one place an administrator can see and clear them.
+ *
+ * Fingerprints, not the stored hash and never an address: the salt is generated at startup, so
+ * neither this process's hashes nor anything derived from them can be turned back into a visitor,
+ * and twelve hex characters are enough to tell two rows apart. Soonest expiry first, because the
+ * reason to look at this list is usually "who is about to be let back in".
+ */
+export function flaggedAddresses() {
+  const now = Date.now();
+  sweepFlags(now);
+  return [...flags.entries()]
+    .map(([key, until]) => ({
+      fingerprint: key.slice(0, 12),
+      retry_after_seconds: Math.max(1, Math.ceil((until - now) / 1000)),
+      expires_at: new Date(until).toISOString(),
+    }))
+    .sort((a, b) => a.retry_after_seconds - b.retry_after_seconds);
+}
+
+/**
  * The honeypot half of the check, done before any upstream call: it costs nothing and it catches
  * the majority. Returns { ok } or { ok: false, reason }.
  *

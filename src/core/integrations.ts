@@ -36,12 +36,13 @@ export interface RwpIntegrationCard {
   /** Hides the card from, and blocks it for, roles without this capability. Defaults to `manage_options`. */
   capability?: string;
   /**
-   * Hides the card from everyone but the platform owner (`super_admin`), whatever capabilities they hold.
+   * Hides the card from everyone but the platform owner — the roles that own this installation,
+   * `administrator` and `super_admin` (`platformOwnerRoles`) — whatever capabilities another role holds.
    *
    * A card that configures the installation itself rather than a service on it — this site's GitHub
-   * token, the repository it publishes to, the hook that rebuilds it — is granted to no role: a
-   * capability can be handed to an administrator under Settings → Roles, and these rows decide what the
-   * installation *is*. Checked here as a role, not a capability, for the reason `isPlatformOwner`
+   * token, the repository it publishes to, the hook that rebuilds it — is not something a capability can
+   * buy: `manage_options` can be granted to any role under Settings → Roles, and these rows decide what
+   * the installation *is*. Checked here as a role, not a capability, for the reason `isPlatformOwner`
    * (`src/lib/roles.ts`) gives.
    */
   platformOwnerOnly?: boolean;

@@ -1,14 +1,18 @@
 /**
  * Makes an account the platform owner (`public.profiles.role = 'super_admin'`), or puts it back.
  *
- * The hub hides GitHub, Deployments and RWP SaaS Installer from every other role (`platformOwnerOnly`),
- * and `system_settings` refuses those same rows to anyone who is not `super_admin` — so an installation
- * whose owner is `administrator` has a saved GitHub token and no screen that can show or replace it.
- * No screen can fix that either, and this is the usual reason it is needed: `profiles_guard_role`
- * (`supabase/schema.sql`) raises `You cannot change your own role.` for any `profiles` write made by
- * the account whose role is being changed, so the first platform owner cannot grant the role to
- * themselves from Settings → Users. It lets `auth.uid()` through as null for the installer, a
- * service-role client and a direct connection, which is the door this script uses.
+ * The platform owner is a role list, not one role. The hub shows GitHub, Deployments and RWP SaaS
+ * Installer only to `platformOwnerOnly` cards, and `system_settings` refuses those rows to every other
+ * role — and both answers accept `administrator`, the role the Setup Wizard gives a site's first
+ * account, as well as `super_admin`. So this script is not the only way to reach those cards any more;
+ * it is how an account is made a `super_admin` *on purpose* — before its `administrator` role is taken
+ * away, or on an installation whose owner holds some other role.
+ *
+ * No screen can hand out `super_admin` either: `profiles_guard_role` (`supabase/schema.sql`) raises
+ * `You cannot change your own role.` for any `profiles` write made by the account whose role is being
+ * changed, so the first super admin cannot grant the role to themselves from Settings → Users. It lets
+ * `auth.uid()` through as null for the installer, a service-role client and a direct connection, which
+ * is the door this script uses.
  *
  * Usage: node state/promote-platform-owner.mjs <email> [role]
  *   role defaults to super_admin; pass `administrator` to undo it.

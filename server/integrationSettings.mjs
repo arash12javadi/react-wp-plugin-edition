@@ -341,8 +341,15 @@ export async function authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, ac
 export const authorizeSettingsManager = (supabaseUrl, supabaseKey, accessToken) =>
   authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, accessToken, 'manage_options');
 
-/** The role that owns the platform, spelled once for the check below and its sentences. */
-const PLATFORM_OWNER_ROLE = 'super_admin';
+/**
+ * The roles that own an installation, spelled once for the check below and its sentences.
+ *
+ * `administrator` is the site's own owner — the role the Setup Wizard gives the first account — and
+ * `super_admin` is the one a provisioned installation has. `src/lib/roles.ts` (`platformOwnerRoles`) is
+ * the browser's copy and the restrictive `system_settings` policy in `supabase/schema.sql` (and
+ * `server/schemaPrivileges.mjs`) spells the same two names in SQL: change one, change all three.
+ */
+export const PLATFORM_OWNER_ROLES = ['administrator', 'super_admin'];
 
 /** The sentences a platform-owner refusal carries. */
 const PLATFORM_OWNER_MESSAGES = {
@@ -352,14 +359,15 @@ const PLATFORM_OWNER_MESSAGES = {
   roleFailure: (role) =>
     `Your role cannot change what this installation publishes through: `
     + (role
-      ? `${role} is not the platform owner (${PLATFORM_OWNER_ROLE}).`
-      : `this account has no role on this site, and only the platform owner (${PLATFORM_OWNER_ROLE}) can.`),
+      ? `${role} is not the platform owner (${PLATFORM_OWNER_ROLES.join(' or ')}).`
+      : `this account has no role on this site, and only the platform owner (${PLATFORM_OWNER_ROLES.join(' or ')}) can.`),
   unreachable: (detail) => `The site could not be reached to check your permission: ${detail}`,
 };
 
 /**
- * Confirms the caller is the *platform owner* — the single `super_admin` account — rather than an
- * administrator of this site.
+ * Confirms the caller is the *platform owner* — an account holding one of {@link PLATFORM_OWNER_ROLES},
+ * which is the site's own `administrator` or the `super_admin` a provisioned site has — rather than a
+ * role that was only *granted* `manage_options`.
  *
  * `authorizeSettingsManager` above is deliberately not reused here: it asks `user_has_cap`, and
  * `public.user_has_cap` answers `true` for `administrator` for *every* capability name, so a
@@ -370,8 +378,9 @@ const PLATFORM_OWNER_MESSAGES = {
  *
  * This is the check the platform-owner cards use: the GitHub credential this installation commits with
  * (`github_config`), the deploy hook that spends a build (`deploy_config`) and the SaaS installer's
- * template bookkeeping describe what the installation *is*, not how this site is configured, so a
- * tenant administrator is not the right person to hold them. `messages` overrides any sentence, so a
+ * template bookkeeping describe what the installation *is*, not how this site is configured, so a role
+ * that merely holds `manage_options` — granted to it under Settings → Roles — is not the right holder.
+ * `messages` overrides any sentence, so a
  * route's refusal names that route; every field is optional and a function value is called with the
  * role the caller turned out to hold (`''` when they hold none).
  *
@@ -403,7 +412,7 @@ export async function authorizePlatformOwner(supabaseUrl, supabaseKey, accessTok
     // A scalar function answers as a JSON string (or null when the caller has no profile row).
     const answer = await roleResponse.json();
     const role = typeof answer === 'string' ? answer.trim() : '';
-    if (role !== PLATFORM_OWNER_ROLE) {
+    if (!PLATFORM_OWNER_ROLES.includes(role)) {
       return { ok: false, status: 403, error: text.roleFailure(role) };
     }
     return { ok: true, role };
