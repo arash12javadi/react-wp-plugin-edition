@@ -12,11 +12,17 @@
  *   POST /api/admin/system/update           apply one: call the deploy hook, or start a self-update run
  *   GET  /api/admin/system/update-status    how a self-update run is going, plus the recent ones
  *
+ * The owner (`administrator`) sees those four sources and the three ways to apply a release. A *managed*
+ * site — every other signed-in account — sees one source and one way: the check is answered by
+ * `react-wp.com`, and Update now installs the package it publishes. No route here can put an end user on
+ * the GitHub feed, a deploy hook or a git checkout, and none of them is offered a sentence that names one.
+ *
  * Nothing here takes the update token from the browser. The configuration lives in
- * `system_settings.updates_config` and is read server-side through `readIntegrationRows`, so the token
- * reaches `react-wp.com` and nothing else. The browser is told only `has_token` — see
- * `describeUpdateConfig` — and it never calls GitHub at all, which is what makes a private repository
- * private. The GitHub credential a direct check uses never leaves the server either.
+ * `system_settings.updates_config` (or `RWP_UPDATE_TOKEN`, for a host that was handed the connection
+ * through its environment) and is read server-side through `readIntegrationRows`, so the token reaches
+ * `react-wp.com` and nothing else. The browser is told only `has_token` — see `describeUpdateConfig` — and
+ * it never calls GitHub at all, which is what makes a private repository private. The GitHub credential a
+ * direct check uses never leaves the server either.
  *
  * `handleUpdateRequest` returns `null` for a path that is not one of the four, the same contract
  * `handleAdminRequest` has, so `server.mjs` chains the two.
@@ -35,12 +41,14 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  managedUpdateSupport,
   readUpdatesConfig,
   resolveInstalledVersion,
   updatePlan,
 } from './updateCenter.mjs';
 import {
   listSelfUpdateRuns,
+  packageUpdateSupport,
   readSelfUpdateLog,
   readSelfUpdateRun,
   selfUpdateSupport,
@@ -121,16 +129,23 @@ const pluginList = (value) => installedPluginsFrom(value);
 /** GET /api/admin/updates — everything the screen needs before it offers a button. */
 async function overview({ readOptions, owner = true }) {
   const stored = await readUpdatesConfig(readOptions);
-  const support = await selfUpdateSupport();
+  // An end user's site installs a package and nothing else: the probe behind `selfUpdateSupport` (a git
+  // checkout, a deploy hook) describes ways of updating that are not theirs to choose, so the two branches
+  // answer with the one that is. `managedUpdateSupport` also replaces the host's technical refusal with the
+  // sentence a customer can act on.
+  const support = owner ? await selfUpdateSupport() : managedUpdateSupport(await packageUpdateSupport());
   const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
   return {
     installed,
     config: describeUpdateConfig(stored.config, owner),
     /** The repository a direct read uses, and whether a credential came with it. End users never see this. */
     github: describeGithubSource(stored.github, owner),
-    /** False when this server cannot read `system_settings` at all: the token is stored, not missing. */
+    /**
+     * False when this server cannot read `system_settings` at all: the token is stored, not missing. The
+     * sentence that goes with it names the table and the environment, so it is the owner's alone.
+     */
     readable: stored.readable,
-    error: stored.error,
+    error: owner ? stored.error : '',
     support,
     /** Where a plugin catalogue would be asked for, so the screen can say where installs come from. */
     plugin_directory: PLUGIN_DIRECTORY_PATH,
@@ -204,6 +219,11 @@ async function applyUpdate(body, config, readOptions, readDeployHook, owner = tr
         },
       };
     }
+    // Asked before the run starts, because `startSelfUpdate` refuses with the probe's own sentence and that
+    // sentence is about a filesystem this reader cannot do anything about. A host that cannot install a
+    // package answers `managedUpdateSupport`'s reason: contact support, who apply it for them.
+    const support = managedUpdateSupport(await packageUpdateSupport());
+    if (!support.supported) throw new UpdateError(support.reason, 409);
     const run = await startSelfUpdate({
       to: answer.app.latest,
       from: installed,
@@ -260,13 +280,15 @@ async function applyUpdate(body, config, readOptions, readDeployHook, owner = tr
 }
 
 /** GET /api/admin/system/update-status?id=<run> — one run with its log, or the recent ones. */
-async function updateStatus(query) {
+async function updateStatus(query, owner = true) {
   if (query.id) {
     const run = await readSelfUpdateRun(query.id);
     if (!run) throw new UpdateError('That update run does not exist on this server, or it was cleaned up.', 404);
     return { run, log: await readSelfUpdateLog(run.id) };
   }
-  return { runs: await listSelfUpdateRuns(), support: await selfUpdateSupport() };
+  // Same support answer as `overview`: a managed site is only ever told about the package it can install.
+  const support = owner ? await selfUpdateSupport() : managedUpdateSupport(await packageUpdateSupport());
+  return { runs: await listSelfUpdateRuns(), support };
 }
 
 /**
@@ -299,7 +321,7 @@ export async function handleUpdateRequest({
     }
     if (pathname === '/api/admin/system/update-status') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
-      return { status: 200, body: await updateStatus(query) };
+      return { status: 200, body: await updateStatus(query, owner) };
     }
     if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
     if (pathname === '/api/admin/updates/check') {

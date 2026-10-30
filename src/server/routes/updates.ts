@@ -25,6 +25,12 @@
  *     itself (`server/selfUpdate.mjs`: fetch, install, build, restart). A serverless deployment cannot —
  *     its disk does not survive the request — so it is updated through its deploy hook, and the plan says
  *     so instead of starting work that would fail halfway through.
+ *
+ * A *managed* site — every signed-in account that is not the update owner — is not given a choice of any of
+ * that. Its check is answered by `react-wp.com` and by nothing else (`checkForUpdates`, `owner: false`), it
+ * installs the package the platform publishes (`startSelfUpdate`, `source: 'package'`), and both support
+ * answers it is ever shown come from `managedUpdateSupport`. No response on these paths names a repository,
+ * a deploy hook, a git checkout or a token to a customer, and no refusal asks them to configure one.
  */
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -51,12 +57,14 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  managedUpdateSupport,
   readUpdatesConfig,
   resolveInstalledVersion,
   updatePlan,
 } from '../../../server/updateCenter.mjs';
 import {
   listSelfUpdateRuns,
+  packageUpdateSupport,
   readSelfUpdateLog,
   readSelfUpdateRun,
   selfUpdateSupport,
@@ -144,6 +152,19 @@ async function selfSupport() {
 }
 
 /**
+ * The support answer a managed site gets: can this host install the package `react-wp.com` publishes?
+ *
+ * Asked of `packageUpdateSupport` rather than `selfSupport`, because the two are about different things —
+ * a git checkout and a deploy hook are ways of updating that a customer does not choose and cannot see.
+ * `managedUpdateSupport` also swaps a probe's technical reason ("this folder is not a checkout") for the
+ * sentence that tells them what to do, which is contact support.
+ */
+const managedSupport = async () => managedUpdateSupport(await packageUpdateSupport());
+
+/** The support answer for whoever is asking — the owner's host probe, or the one way a managed site updates. */
+const supportFor = async (owner: boolean) => (owner ? selfSupport() : managedSupport());
+
+/**
  * `GET /api/admin/updates` — everything the screen needs before it offers a button.
  *
  * `readable: false` is the interesting field: this deployment stores a token but cannot see
@@ -161,8 +182,9 @@ async function overview(c: Context): Promise<Response> {
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
-      error: stored.error,
-      support: await selfSupport(),
+      // The sentence behind `readable: false` names the table and the environment, so it is the owner's.
+      error: owner ? stored.error : '',
+      support: await supportFor(owner),
       plugin_directory: PLUGIN_DIRECTORY_PATH,
       channels: UPDATE_CHANNELS,
       auto_check: AUTO_CHECK_KEYS,
@@ -245,6 +267,11 @@ async function applyUpdate(c: Context): Promise<Response> {
           check: reported,
         });
       }
+      // Asked before the run starts, because `startSelfUpdate` refuses with the probe's own sentence — a
+      // statement about a filesystem this reader cannot do anything about. `managedSupport` swaps it for the
+      // customer's version: contact support, who apply the release for them.
+      const support = await managedSupport();
+      if (!support.supported) throw new HttpError(409, support.reason);
       const run = await startSelfUpdate({
         to: answer.app.latest,
         from: installed,
@@ -309,9 +336,12 @@ async function applyUpdate(c: Context): Promise<Response> {
 /** `GET /api/admin/system/update-status?id=<run>` — one run with its log, or the recent ones. */
 async function updateStatus(c: Context): Promise<Response> {
   try {
-    await prepare(c);
+    const config = await prepare(c);
     const id = c.req.query('id') || '';
-    if (!id) return c.json({ runs: await listSelfUpdateRuns(), support: await selfSupport() });
+    if (!id) {
+      const owner = await viewerOwner(config, c);
+      return c.json({ runs: await listSelfUpdateRuns(), support: await supportFor(owner) });
+    }
     const run = await readSelfUpdateRun(id);
     if (!run) throw new HttpError(404, 'That update run does not exist on this server, or it was cleaned up.');
     return c.json({ run, log: await readSelfUpdateLog(id) });

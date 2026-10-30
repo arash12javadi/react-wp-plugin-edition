@@ -72,6 +72,19 @@ const timeAgo = (iso: string) => {
   return `${amount} ${unit}${amount === 1 ? '' : 's'} ago`;
 };
 
+/**
+ * What a managed site is told when its update landed but the running process still serves the old build.
+ *
+ * A customer cannot restart anything: the machine that runs their site is the platform's, so `npm start` and
+ * `pm2 restart` are instructions they cannot follow and a detail about the host they should not have to
+ * know. Naming support is the only sentence that is both true and actionable for them, and it matches the
+ * wording the server uses for the same reason (`MANAGED_MESSAGES` in `server/updateCenter.mjs`).
+ */
+const managedRestartNote = 'The new files are in place, and this site switches to them the next time its platform restarts it. If it still reports the old version after a few minutes, contact React-WP support and they will finish it.';
+
+/** The same sentence for a run that is still working, where nothing is in place yet. */
+const managedRestartPendingNote = 'When it finishes, this site switches to the new files the next time its platform restarts it — contact React-WP support if it keeps reporting the old version.';
+
 /** What each step of a self-update means, in the words the screen shows. */
 const stepLabels: Record<string, string> = {
   starting: 'Starting',
@@ -271,8 +284,15 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   /** Records how a run ended. Only a finished (`done`) run moves the installed version forward. */
   const finishRun = useCallback(async (record: SelfUpdateRun) => {
     const succeeded = record.status === 'done' || record.status === 'completed';
+    // A restart the customer cannot perform is not an instruction to give them: an owner is told the command,
+    // a managed site is told that the platform restarts it and support finishes anything that stalls.
+    const restartNote = record.restart_required
+      ? (isOwner
+        ? ` Restart the site to run it: pm2 restart ${record.app_name || '<name>'} (or npm start).`
+        : ` ${managedRestartNote}`)
+      : '';
     setFeedback(succeeded
-      ? `🎉 Update successful to ${asTag(record.to)}!${record.restart_required ? ` Restart the site to run it: pm2 restart ${record.app_name || '<name>'} (or npm start).` : ''}`
+      ? `🎉 Update successful to ${asTag(record.to)}!${restartNote}`
       : `The update did not finish: ${record.error || stepLabels[record.step] || record.step}.`);
     await remember({
       at: record.finished_at || new Date().toISOString(),
@@ -283,7 +303,7 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
       ...(succeeded ? {} : { error: record.error || record.step }),
     });
     if (succeeded) await load();
-  }, [load, remember]);
+  }, [isOwner, load, remember]);
 
   // The poll: one timer at a time, re-armed by the run it is watching, so a finished run stops it.
   useEffect(() => {
@@ -364,20 +384,6 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
         setFeedback(`Deploying update… The deploy hook was called for ${asTag(outcome.check.app.latest)}. The platform is rebuilding this site now.`);
         return;
       }
-      if (outcome.kind === 'managed') {
-        await remember({
-          at: new Date().toISOString(),
-          from: outcome.check.app.installed,
-          to: outcome.check.app.latest,
-          mode: 'managed',
-          status: outcome.queued ? 'triggered' : 'failed',
-          ...(outcome.queued ? {} : { error: outcome.message || 'React-WP.com refused the update.' }),
-        });
-        setFeedback(outcome.queued
-          ? `Update sent to React-WP.com — it is deploying ${asTag(outcome.version || outcome.check.app.latest)} to this site now.`
-          : outcome.message);
-        return;
-      }
       stopDeployTimer();
       setDeployStage('');
       setDeployStartedAt(0);
@@ -386,7 +392,9 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
       setLog('');
       setRecent((current) => [outcome.run, ...current].slice(0, 10));
       setFeedback(outcome.run.restart_required
-        ? 'The update is running in the background. When it finishes, restart the site with npm start (or pm2 restart).'
+        ? (isOwner
+          ? 'The update is running in the background. When it finishes, restart the site with npm start (or pm2 restart).'
+          : `The update is running in the background. ${managedRestartPendingNote}`)
         : 'The update is running in the background. This page follows it until it finishes.');
       await remember({
         at: new Date().toISOString(),
@@ -519,9 +527,12 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
         </div>
 
         {support && !support.supported && (
-          <div className={styles.warning} role="status"><strong>This host updates from its repository.</strong> {support.reason}</div>
+          <div className={styles.warning} role="status">
+            {isOwner && <><strong>This host updates from its repository.</strong> </>}
+            {support.reason}
+          </div>
         )}
-        {overview?.error && <div className={styles.warning} role="status">{overview.error}</div>}
+        {isOwner && overview?.error && <div className={styles.warning} role="status">{overview.error}</div>}
         {check?.error && <div className={styles.warning} role="status">{check.error}</div>}
 
         {deployStage && (
@@ -613,8 +624,10 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
             </p>
             {log ? <pre className={styles.log}>{log}</pre> : <p className={styles.muted}>Waiting for the first line of output…</p>}
             <p className={styles.help}>
-              Run <code>{run.id}</code> · log at <code>{run.log_path}</code>
-              {run.restart_required ? ' · restart the site when it finishes (npm start, or pm2 restart)' : ''}
+              Run <code>{run.id}</code>{isOwner && <> · log at <code>{run.log_path}</code></>}
+              {run.restart_required ? (isOwner
+                ? ' · restart the site when it finishes (npm start, or pm2 restart)'
+                : ' · React-WP support finishes the restart this site needs') : ''}
             </p>
             {run.error && <div className={styles.error} role="alert">{run.error}</div>}
           </div>
@@ -652,9 +665,9 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
                 </>
               ) : (
                 <>
-                  Updates for this site are provided by <strong>React-WP.com</strong>. It checks the releases and
-                  deploys them for you, so there is nothing to configure here except how often the dashboard checks
-                  and whether new releases appear in the sidebar.
+                  Updates for this site are provided by <strong>React-WP.com</strong>. It publishes the releases
+                  and this dashboard installs them for you, so there is nothing to configure here except how often
+                  the dashboard checks and whether new releases appear in the sidebar.
                 </>
               )}
             </p>

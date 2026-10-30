@@ -163,9 +163,16 @@ export interface UpdatesOverview {
   auto_check: string[];
 }
 
-/** How an update would be applied. `up_to_date` is a `manual` plan whose reason says so. */
+/**
+ * How an update would be applied. `up_to_date` is a `manual` plan whose reason says so.
+ *
+ * There are three modes and no more: `manual` when this host has nowhere to send an update, `deploy-hook`
+ * when its platform rebuilds it, and `self` when a server runs the update itself — which is also how a
+ * *managed* site installs the package `react-wp.com` publishes. A customer's update is never applied over
+ * the API on their behalf, so there is no fourth mode to classify.
+ */
 export interface UpdatePlan {
-  mode: 'manual' | 'deploy-hook' | 'self' | 'central';
+  mode: 'manual' | 'deploy-hook' | 'self';
   up_to_date?: boolean;
   reason: string;
   /** The steps the screen can show while the work runs. */
@@ -201,11 +208,14 @@ export interface SelfUpdateRun {
 }
 
 /**
- * What `applyUpdate` produced, in the four shapes the route can answer with.
+ * What `applyUpdate` produced, in the three shapes the route can answer with.
  *
  * `manual` is not an error: it is the route saying "this host cannot do this", and `plan.reason` carries
  * the sentence that names what to configure. That is why the client classifies the response instead of
  * throwing on a 409.
+ *
+ * A managed site is `self` too: `react-wp.com` publishes the package and this server downloads and applies
+ * it, so there is no "the platform deployed it" answer to read.
  */
 export type UpdateOutcome =
   | { kind: 'up_to_date'; plan: UpdatePlan; check: UpdateCheckAnswer }
@@ -218,16 +228,7 @@ export type UpdateOutcome =
     plan: UpdatePlan;
     check: UpdateCheckAnswer;
   }
-  | { kind: 'self'; run: SelfUpdateRun; plan: UpdatePlan; check: UpdateCheckAnswer }
-  | {
-    /** A managed (end-user) site: the platform deployed it. `queued` mirrors the deploy-hook outcome. */
-    kind: 'managed';
-    queued: boolean;
-    message: string;
-    version: string;
-    plan: UpdatePlan;
-    check: UpdateCheckAnswer;
-  };
+  | { kind: 'self'; run: SelfUpdateRun; plan: UpdatePlan; check: UpdateCheckAnswer };
 
 /**
  * The signed-in administrator's token. Every route in this file decides what may be done from it —
@@ -307,16 +308,6 @@ export const applyUpdate = async (options: { site?: string; ref?: string } = {})
   if (plan.mode === 'manual') {
     // 409: a refusal that carries its sentence in `plan.reason`. Anything else under `manual` is that same answer.
     return { kind: 'manual', plan, check };
-  }
-  if (plan.mode === 'central' || body.mode === 'central') {
-    return {
-      kind: 'managed',
-      queued: body.queued === true,
-      message: String(body.message || ''),
-      version: String(body.version || ''),
-      plan,
-      check,
-    };
   }
   if (plan.mode === 'deploy-hook' || status === 502) {
     return {
@@ -399,7 +390,12 @@ export interface VersionStateEntry {
   at: string;
   from: string;
   to: string;
-  mode: 'deploy-hook' | 'self' | 'manual' | 'managed';
+  /**
+   * How the release arrived. `manual` is a plan this host could not carry out, recorded so the screen can
+   * say so later; the other two are a called deploy hook and a run this server performed itself, which is
+   * also how a managed site installs the package `react-wp.com` publishes.
+   */
+  mode: 'deploy-hook' | 'self' | 'manual';
   status: 'started' | 'triggered' | 'completed' | 'failed';
   error?: string;
 }

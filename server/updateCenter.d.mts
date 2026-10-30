@@ -24,6 +24,22 @@ export const PLUGIN_DIRECTORY_PATH: string;
 export const UPDATE_CHANNELS: readonly string[];
 export const AUTO_CHECK_KEYS: readonly string[];
 
+/**
+ * The sentences a managed (customer) site is told when its one source — `react-wp.com` — does not answer.
+ *
+ * They name no token, no repository, no deploy hook and no git: none of those are things the reader of
+ * that screen can act on. `unavailable` takes the status the platform answered with.
+ */
+export const MANAGED_MESSAGES: {
+  not_connected: string;
+  refused: string;
+  unreachable: string;
+  unavailable(status: number): string;
+  no_api: string;
+  no_release: string;
+  cannot_apply: string;
+};
+
 /** A refusal that carries the status code to answer with. */
 export class UpdateError extends Error {
   constructor(message: string, status?: number);
@@ -193,6 +209,17 @@ export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
   error: string;
 }>;
 
+/**
+ * A managed site's support answer, from `packageUpdateSupport()`. `repo` is always false and the refusal
+ * is the customer-facing sentence, never the host's own (`MANAGED_MESSAGES.cannot_apply`).
+ */
+export function managedUpdateSupport(support: {
+  supported: boolean;
+  reason: string;
+  restart?: 'pm2' | 'manual';
+  app_name?: string;
+}): { available: boolean; repo: boolean; supported: boolean; reason: string; restart: 'pm2' | 'manual'; app_name: string };
+
 export function versionStateFrom(value: unknown, current: { installed: string }): VersionStateView;
 export function versionStateAfter(
   previous: unknown,
@@ -209,6 +236,8 @@ export function fetchCentralCheck(options: {
   current: CurrentVersion;
   plugins: InstalledPluginVersion[];
   fetchImpl?: typeof fetch;
+  /** True for a managed site: every refusal is `MANAGED_MESSAGES`, never the owner's configuration advice. */
+  managed?: boolean;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
 export function fetchGithubCheck(options: {
@@ -237,7 +266,10 @@ export function checkForUpdates(options: {
   /** The repository this deployment may read directly; defaults to `githubUpdateSourceFrom()`. */
   github?: GithubUpdateSource | null;
   fetchImpl?: typeof fetch;
-  /** False for an end user, whose check is always answered by the central server. */
+  /**
+   * False for an end user, whose check is answered by the central server and by nothing else: `github` is
+   * ignored, and every refusal is a `MANAGED_MESSAGES` sentence rather than configuration advice.
+   */
   owner?: boolean;
 }): Promise<UpdateCheck>;
 

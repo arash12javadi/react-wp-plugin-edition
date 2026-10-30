@@ -35,11 +35,13 @@ import {
   handleCentralUpdateRequest,
 } from '../server/centralUpdates.mjs';
 import {
+  MANAGED_MESSAGES,
   centralReleasesFrom,
   checkAnswerFrom,
   checkForUpdates,
   fetchCentralCheck,
   githubUpdateSourceFrom,
+  managedUpdateSupport,
   publicRelease,
   releaseFrom,
 } from '../server/updateCenter.mjs';
@@ -569,6 +571,89 @@ test('a tag is kept even when a source hands over only a version', () => {
   assert.equal(releaseFrom({ version: '2.4.1' }).tag, 'v2.4.1');
   assert.equal(releaseFrom({ tag: 'v2.4.1', notes: ['a'] }).version, '2.4.1');
   assert.equal(releaseFrom({ version: 'nightly' }), null);
+});
+
+/* -- 8. A managed site ------------------------------------------------------------------------------ */
+
+test('a managed site is answered by the platform, and nothing else is ever asked', async () => {
+  // Everything the owner's check would use is present — a token, a named repository, a GitHub credential —
+  // and none of it may be read for an end user: their site has one release channel, react-wp.com.
+  const fetchImpl = stubRoutes([['/updates/check', { latestVersion: 'v2.4.1', releaseNotes: '- x' }]]);
+  const answer = await checkForUpdates({
+    config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable', repository: 'acme/private' },
+    current: { app: '1.3.1' },
+    plugins: [{ id: 'seo', name: 'SEO', version: '1.0.0' }],
+    github: { repo: 'acme/private', token: 'ghp_stored', explicit: true },
+    fetchImpl,
+    owner: false,
+  });
+
+  assert.equal(answer.source, 'central');
+  assert.equal(answer.app.latest, '2.4.1');
+  assert.deepEqual(answer.plugins, {}, 'an end user is told about the core, never about plugin releases');
+  assert.deepEqual(answer.updates.map((entry) => entry.kind), ['app'], 'one update, one button');
+  assert.equal(answer.error, '');
+  assert.equal(fetchImpl.calls.length, 1, 'the platform is the only source asked');
+  assert.match(fetchImpl.calls[0].url, /^https:\/\/react-wp\.com\/api\/v1\/updates\/check$/);
+  assert.ok(fetchImpl.calls.every((call) => !call.url.includes('github.com')), 'no GitHub read, not even as a fallback');
+});
+
+test('a managed site is never answered by GitHub, even when the platform refuses', async () => {
+  // The stub would happily answer a GitHub read: the point is that a managed check never makes one.
+  const fetchImpl = stubRoutes([
+    ['/updates/check', { error: 'down' }, 503],
+    ['/releases', [githubRow('v9.9.9')]],
+  ]);
+  await assert.rejects(
+    checkForUpdates({
+      config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable' },
+      current: { app: '1.3.1' },
+      plugins: [],
+      github: { repo: 'acme/react-wp', token: 'ghp_stored' },
+      fetchImpl,
+      owner: false,
+    }),
+    (error) => {
+      assert.equal(error.message, MANAGED_MESSAGES.unavailable(503), 'the customer is told what happened, in their words');
+      assert.equal(error.status, 502);
+      assert.ok(fetchImpl.calls.every((call) => !call.url.includes('github.com')), 'the release tags are not a fallback for a managed site');
+      assert.doesNotMatch(error.message, /token|repository|deploy hook|git/i, 'nothing here asks a customer to configure a source');
+      return true;
+    },
+  );
+});
+
+test('a managed site with no platform connection is pointed at support, not at a settings screen', async () => {
+  await assert.rejects(
+    checkForUpdates({
+      config: { channel: 'stable' },
+      current: { app: '1.3.1' },
+      plugins: [],
+      github: { repo: 'acme/react-wp', token: 'ghp_stored' },
+      fetchImpl: async () => new Response('{}', { status: 200 }),
+      owner: false,
+    }),
+    (error) => {
+      assert.equal(error.message, MANAGED_MESSAGES.not_connected);
+      assert.equal(error.status, 502, 'the site cannot check, which is not the customer asking something wrong');
+      assert.doesNotMatch(error.message, /token|repository|GitHub|Settings →/);
+      return true;
+    },
+  );
+});
+
+test('a managed site support answer is the package it installs, with no repository and no host detail', () => {
+  assert.deepEqual(
+    managedUpdateSupport({ supported: true, reason: '', restart: 'pm2', app_name: 'react-wp' }),
+    { available: true, repo: false, supported: true, reason: '', restart: 'pm2', app_name: 'react-wp' },
+  );
+  const refused = managedUpdateSupport({ supported: false, reason: 'This folder has no package.json.', restart: 'pm2', app_name: 'x' });
+  assert.equal(refused.supported, false);
+  assert.equal(refused.repo, false, 'a customer has no repository to name');
+  assert.equal(refused.available, false);
+  assert.equal(refused.reason, MANAGED_MESSAGES.cannot_apply, 'the host probe\'s sentence is replaced, never shown');
+  assert.equal(refused.restart, 'manual');
+  assert.equal(refused.app_name, '');
 });
 
 /* -- Runner ----------------------------------------------------------------------------------------- */

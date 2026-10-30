@@ -19,6 +19,14 @@
  *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
  *      Which one is chosen, and why, is `updatePlan`.
  *
+ * A **managed site** — a customer's instance, whose signed-in account is not the update owner — is not
+ * allowed to reach any of the owner paths. Its check is asked of `react-wp.com` and of nothing else: no
+ * GitHub read, no deploy hook, no git checkout, and no sentence about a token or a repository, because
+ * none of those are things a customer can act on. `checkForUpdates` forces the single source,
+ * `managedUpdateSupport` reports the only way such a site installs a release (the package the platform
+ * built), and every refusal it can meet is written in `MANAGED_MESSAGES` for the person who reads it
+ * rather than for the administrator who runs the platform.
+ *
  * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
  * never the `version` field of a `package.json`. The tag travels with the release (`tag`), reaches this
  * file through `releaseFrom`, and is what the screen shows and the check compares; the platform's half of
@@ -69,6 +77,34 @@ export const UPDATE_CHANNELS = ['stable', 'beta'];
 
 /** The keys `auto_check` accepts, in step with `autoCheckIntervals` in `src/lib/updates.ts`. */
 export const AUTO_CHECK_KEYS = ['off', 'admin', 'daily', 'weekly', 'monthly'];
+
+/**
+ * Everything a *managed* site is told when the one source it has does not answer.
+ *
+ * A customer's site has exactly one update channel — `react-wp.com` — so a failure there is not a
+ * configuration problem it can fix: there is no token to re-enter, no repository to name and no deploy
+ * hook to save. The owner-facing sentences this module already had ("paste a token on Settings →
+ * Updates", "leave empty to use react-wp.com", "a public repository needs no token") are therefore wrong
+ * on that screen, and would send someone looking for a switch that is not there. So the managed wording
+ * lives here, in one place, and every managed refusal in this file uses it: `fetchCentralCheck` when the
+ * platform refuses or is unreachable, `checkForUpdates` when no connection is stored at all.
+ */
+export const MANAGED_MESSAGES = {
+  /** No token is stored (or the row cannot be read), so there is no connection to ask through. */
+  not_connected: 'React-WP.com could not confirm this site’s platform connection, so the release list is not available just now. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
+  /** The platform answered 401/403: the token it was given is not one it accepts. */
+  refused: 'React-WP.com did not accept this site’s platform connection. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
+  /** Nothing answered at all: DNS, TLS, timeout, a firewall. */
+  unreachable: 'React-WP.com could not be reached from this server just now, so the release list is not available. Check again in a minute; if it keeps happening, contact React-WP support.',
+  /** The platform answered, but not with a release list. */
+  unavailable: (status) => `React-WP.com answered HTTP ${status} instead of this site’s release list. Check again in a minute; if it keeps happening, contact React-WP support.`,
+  /** The address this site asks has no update API behind it. */
+  no_api: 'React-WP.com has no update API at the address this site uses, so no release list could be read. Contact React-WP support and they will point it at the right one.',
+  /** The platform answered, but with nothing that names a release. */
+  no_release: 'React-WP.com answered without naming a release, so there is nothing to compare this site against just now. Contact React-WP support and they will check what it publishes for this site.',
+  /** The one way a managed site installs a release cannot work on this host. */
+  cannot_apply: 'React-WP.com publishes this site’s releases, but this server cannot install one by itself just now. Contact React-WP support and they will apply the update for you.',
+};
 
 /** A refusal that carries the status code to answer with, the same way `InstallError` does. */
 export class UpdateError extends Error {
@@ -272,11 +308,20 @@ export const describeGithubSource = (source, owner = true) => (owner
  * Supabase deployment whose server has neither `DATABASE_URL` nor `SUPABASE_SECRET_KEY` the token is
  * stored and simply invisible here, and telling the administrator to paste it again would be a lie.
  *
+ * `RWP_UPDATE_TOKEN` answers when the row holds no token, or when this server cannot read the row at all.
+ * That is the escape hatch that keeps a *managed* site updating through `react-wp.com` on a host whose
+ * database it can only reach through a key it was not given: the platform owns the environment of the
+ * site it provisioned, so it can put the token there, and the site still asks the one place it is
+ * supposed to ask. It never turns a configured site into a different one — an environment token only
+ * fills a hole.
+ *
  * @param {import('./integrationSettings.mjs').IntegrationReadOptions} options
  */
 export async function readUpdatesConfig(options) {
   const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY], options);
-  const config = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
+  const stored = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
+  const environmentToken = trimmed(environmentOf(options?.env).RWP_UPDATE_TOKEN);
+  const config = stored.token || !environmentToken ? stored : { ...stored, token: environmentToken };
   return {
     config,
     github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository),
@@ -478,16 +523,26 @@ export const installedPluginsFrom = (value) => {
  * site has rather than for the whole catalogue. The token is required: without it central cannot tell a
  * licensed site from a stranger, and the caller reads its own GitHub release tags instead.
  *
+ * `managed` changes only what a failure *says*. A customer cannot save a token, name a repository or
+ * publish a release, so every refusal is one of `MANAGED_MESSAGES`; the owner keeps the sentences that
+ * name the screen where the missing half is configured. The request itself is identical either way —
+ * this is not a second code path, just the same one told to a different reader.
+ *
  * The answer is read in either of the two shapes the platform may speak — the release list below, and the
  * four-field contract (`installedVersion`, `latestVersion`, `updateAvailable`, `releaseNotes`,
  * `releaseUrl`). Both are accepted so that upgrading the platform never strands a site that has not
  * upgraded yet, and the other way round.
  *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, version: string }>, fetchImpl?: typeof fetch }} options
+ * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, version: string }>, fetchImpl?: typeof fetch, managed?: boolean }} options
  */
-export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch }) {
+export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch, managed = false }) {
   if (!config.token) {
-    throw new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; this deployment\'s own GitHub release tags answer until then.', 400);
+    // The refusal an owner can act on is the one a customer cannot: say the right thing to each. A managed
+    // site has no token field to fill in and no repository to fall back on, so it is told what is true —
+    // the platform connection could not be confirmed — and pointed at support.
+    throw managed
+      ? new UpdateError(MANAGED_MESSAGES.not_connected, 502)
+      : new UpdateError('No update token is saved, so the central server cannot be asked. Settings → Updates takes one; this deployment\'s own GitHub release tags answer until then.', 400);
   }
   const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
   const request = {
@@ -513,7 +568,7 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
     try {
       response = await fetchImpl(url, request);
     } catch (error) {
-      throw new UpdateError(networkMessage(error, url), 502);
+      throw new UpdateError(managed ? MANAGED_MESSAGES.unreachable : networkMessage(error, url), 502);
     }
     if (response.status === 404) {
       // Not this path. A platform that publishes only one of the two answers 404 for the other, so this
@@ -522,15 +577,25 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
       continue;
     }
     if (response.status === 401 || response.status === 403) {
-      throw new UpdateError('The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
+      // A managed site's token is the platform's own connection, issued and revoked by it: asking a
+      // customer to re-enter it is asking them for a value they were never given.
+      throw new UpdateError(managed
+        ? MANAGED_MESSAGES.refused
+        : 'The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
     }
-    if (!response.ok) throw new UpdateError(`The central server answered HTTP ${response.status} at ${url}.`, 502);
+    if (!response.ok) {
+      throw new UpdateError(managed
+        ? MANAGED_MESSAGES.unavailable(response.status)
+        : `The central server answered HTTP ${response.status} at ${url}.`, 502);
+    }
     const body = await response.json().catch(() => {
-      throw new UpdateError(`${url} did not return valid JSON.`, 502);
+      throw new UpdateError(managed ? MANAGED_MESSAGES.unavailable(response.status) : `${url} did not return valid JSON.`, 502);
     });
-    return centralReleasesFrom(body);
+    return centralReleasesFrom(body, managed);
   }
-  throw new UpdateError(`The central server has no update API at ${missing}. A platform deployment answers ${CENTRAL_CHECK_PATHS.join(' or ')}.`, 404);
+  throw new UpdateError(managed
+    ? MANAGED_MESSAGES.no_api
+    : `The central server has no update API at ${missing}. A platform deployment answers ${CENTRAL_CHECK_PATHS.join(' or ')}.`, 404);
 }
 
 /**
@@ -546,11 +611,13 @@ export const centralApplyUrl = (config) =>
  *
  * Reading both costs one `||`: a site whose platform has been upgraded, and a site that has not, both keep
  * working. A body with no release at all is refused with the sentence an administrator can act on rather
- * than a half-filled screen.
+ * than a half-filled screen — or, for a managed site, one sentence that does not quote the JSON contract
+ * back at a customer.
  *
  * @param {any} body
+ * @param {boolean} [managed=false]
  */
-export const centralReleasesFrom = (body) => {
+export const centralReleasesFrom = (body, managed = false) => {
   const app = releaseFrom(body?.app) || releaseFrom({
     version: body?.latestVersion ?? body?.latest_version,
     tag: body?.latestVersion ?? body?.latest_version ?? body?.release?.tag,
@@ -560,7 +627,9 @@ export const centralReleasesFrom = (body) => {
     critical: body?.release?.critical,
   });
   if (!app) {
-    throw new UpdateError('The central server\'s answer has no release with a version. Expected {"format":"rwp-update-center","version":1,"app":{"version":"1.2.3"}}, or {"latestVersion":"v1.2.3","releaseNotes":"…","releaseUrl":"…"}.', 502);
+    throw new UpdateError(managed
+      ? MANAGED_MESSAGES.no_release
+      : 'The central server\'s answer has no release with a version. Expected {"format":"rwp-update-center","version":1,"app":{"version":"1.2.3"}}, or {"latestVersion":"v1.2.3","releaseNotes":"…","releaseUrl":"…"}.', 502);
   }
   return { app, plugins: pluginReleasesFrom(body?.plugins) };
 };
@@ -676,6 +745,12 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
  *     sells; its own tags answer when that fails.
  *   - A site with no token has nothing to ask but GitHub.
  *
+ * A **managed site** (`owner: false`) has none of that order: it asks `react-wp.com` and nothing else.
+ * `github` is not merely tried last there, it is never read at all — a customer's site is built from the
+ * platform's template, so its release tags are not a release channel and a check must not be answered from
+ * them even when a repository would have answered. There is no second source to fall back to, so a failure
+ * is the `MANAGED_MESSAGES` sentence for it rather than a list of things to configure.
+ *
  * Every attempt that failed is kept as a sentence on the answer (`error`), so an administrator can see
  * why the source they configured was not the one that replied. Both paths end in `checkAnswerFrom`, so
  * the screen cannot tell them apart except by the `source` it is told.
@@ -692,7 +767,9 @@ export async function checkForUpdates({ config, current, plugins, github = null,
   const source = owner ? (github || githubUpdateSourceFrom(undefined)) : null;
   if (!source && !config.token) {
     if (!owner) {
-      throw new UpdateError('Updates for this site are provided by react-wp.com. If the update token cannot be read, ask the site owner to restore the platform connection.', 400);
+      // The one thing that can be missing on a managed site is the platform connection itself, and no
+      // screen this reader can open holds it: `not_connected` says so without naming a token at all.
+      throw new UpdateError(MANAGED_MESSAGES.not_connected, 502);
     }
     throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
   }
@@ -708,7 +785,7 @@ export async function checkForUpdates({ config, current, plugins, github = null,
     try {
       const releases = attempt === 'github'
         ? await fetchGithubCheck({ source, channel: config.channel, fetchImpl })
-        : await fetchCentralCheck({ config, current, plugins, fetchImpl });
+        : await fetchCentralCheck({ config, current, plugins, fetchImpl, managed: !owner });
       return checkAnswerFrom({
         source: attempt,
         ...releases,
@@ -727,10 +804,33 @@ export async function checkForUpdates({ config, current, plugins, github = null,
   }
   // Nothing answered. The last sentence is the most specific, so it is the one the status is taken from.
   const message = failures.map((failure) => failure.message).filter(Boolean).join(' ');
-  throw new UpdateError(message || 'No update source answered.', failures[failures.length - 1]?.status || 502);
+  throw new UpdateError(message || (owner ? 'No update source answered.' : MANAGED_MESSAGES.unreachable), failures[failures.length - 1]?.status || 502);
 }
 
 /* -- Applying an update -------------------------------------------------------------------------- */
+
+/**
+ * What a managed site can do about a release, from `packageUpdateSupport()` — the capability its host
+ * actually has, and nothing about a repository.
+ *
+ * A customer's site never pulls its own checkout and never calls a deploy hook: the release reaches it as
+ * a package `react-wp.com` built, which `server/selfUpdate.mjs` downloads and applies (source `package`).
+ * So the caller passes the package check in and this shapes it for the screen — `available` and `repo`
+ * are kept because every support answer has them, and `repo` is always false: an end user has no
+ * repository to name.
+ *
+ * A host that cannot install a package at all (`packageUpdateSupport` says so with a sentence about
+ * `package.json` and running the site from its own folder) is given `MANAGED_MESSAGES.cannot_apply`
+ * instead. The technical reason names things this reader has no access to, and the support route is what
+ * actually resolves it.
+ *
+ * Pure on purpose: the probe needs `node:fs`, and this module is bundled for runtimes that have neither.
+ *
+ * @param {{ supported: boolean, reason: string, restart?: 'pm2' | 'manual', app_name?: string }} support
+ */
+export const managedUpdateSupport = (support) => (support.supported
+  ? { available: true, repo: false, supported: true, reason: '', restart: support.restart, app_name: support.app_name }
+  : { available: false, repo: false, supported: false, reason: MANAGED_MESSAGES.cannot_apply, restart: 'manual', app_name: '' });
 
 /**
  * Calls a deploy hook — Vercel's, Netlify's, or any host's "build this branch now" URL.
