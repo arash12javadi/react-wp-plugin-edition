@@ -217,12 +217,8 @@ export function fetchGithubCheck(options: {
   fetchImpl?: typeof fetch;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
-export function applyCentralUpdate(options: {
-  config: UpdateConfig;
-  current: CurrentVersion;
-  to: string;
-  fetchImpl?: typeof fetch;
-}): Promise<{ queued: boolean; message: string; version: string; mode: 'central' }>;
+/** The central endpoint a managed site downloads its release package from. */
+export function centralApplyUrl(config: UpdateConfig): string;
 
 export function checkAnswerFrom(input: {
   source: 'central' | 'github';

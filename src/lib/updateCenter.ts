@@ -181,9 +181,17 @@ export interface SelfUpdateRun {
   finished_at: string;
   from: string;
   to: string;
+  /** `git` (fetch + merge) or `package` (download the release ZIP from the central server). */
+  source?: 'git' | 'package';
   ref: string;
   previous: string;
   target: string;
+  /** The central package endpoint and bearer token, when `source === 'package'`. */
+  package_url?: string;
+  package_token?: string;
+  site?: string;
+  /** Where the runner backed up the files a package update replaced. */
+  backup?: string;
   restart: 'pm2' | 'manual';
   app_name: string;
   /** True when nobody restarted the site for the administrator — the screen says what to run. */

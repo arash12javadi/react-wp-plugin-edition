@@ -76,6 +76,10 @@ const timeAgo = (iso: string) => {
 const stepLabels: Record<string, string> = {
   starting: 'Starting',
   fetching: 'Fetching the new version',
+  downloading: 'Downloading the release from React-WP.com',
+  extracting: 'Reading the release package',
+  applying: 'Applying the core files',
+  'preserving-plugins': 'Keeping your plugins untouched',
   'installing-packages': 'Installing packages',
   building: 'Building',
   restarting: 'Restarting the site',
@@ -264,9 +268,9 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
 
   useEffect(() => { void load(); }, [load]);
 
-  /** Records how a run ended. Only a `done` run moves the installed version forward. */
+  /** Records how a run ended. Only a finished (`done`) run moves the installed version forward. */
   const finishRun = useCallback(async (record: SelfUpdateRun) => {
-    const succeeded = record.status === 'done';
+    const succeeded = record.status === 'done' || record.status === 'completed';
     setFeedback(succeeded
       ? `🎉 Update successful to ${asTag(record.to)}!${record.restart_required ? ` Restart the site to run it: pm2 restart ${record.app_name || '<name>'} (or npm start).` : ''}`
       : `The update did not finish: ${record.error || stepLabels[record.step] || record.step}.`);
@@ -603,7 +607,7 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
         {run && (
           <div className={styles.progress}>
             <p className={styles.muted}>
-              <strong>{isRunInFlight(run) ? (stepLabels[run.step] || run.step) : (run.status === 'done' ? 'Finished' : 'Stopped')}</strong>
+              <strong>{isRunInFlight(run) ? (stepLabels[run.step] || run.step) : (run.status === 'done' || run.status === 'completed' ? 'Finished' : 'Stopped')}</strong>
               {' '}— <code>{run.from}</code> → <code>{run.to}</code>
               {run.finished_at ? ` · ${timeAgo(run.finished_at)}` : ''}
             </p>

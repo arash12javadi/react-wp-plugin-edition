@@ -534,47 +534,12 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
 }
 
 /**
- * `POST {central}/api/v1/updates/apply` — a managed site's one-click update. The platform's
- * `rwp-saas-installer` deploys the release to the site's own project; this file never sees a Vercel token
- * or a GitHub repository, only the update token and the version the site wants.
- *
- * @param {{ config: any, current: { app: string, site?: string }, to: string, fetchImpl?: typeof fetch }} options
+ * The endpoint a managed (end-user) site downloads its release package from. The package itself is
+ * applied by `scripts/selfUpdateRun.mjs` in a detached run — nothing here downloads a ZIP in a request,
+ * because the request that starts the download is the request the build would replace.
  */
-export async function applyCentralUpdate({ config, current, to, fetchImpl = fetch }) {
-  if (!config.token) {
-    throw new UpdateError('This site is managed by react-wp.com, but its update token could not be read. Ask the site owner to restore the platform connection.', 400);
-  }
-  const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
-  const url = `${base}${CENTRAL_APPLY_PATH}`;
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: 'POST',
-      headers: centralHeaders(config, current.app),
-      body: JSON.stringify({ site: trimmed(current.site), to, from: current.app, channel: config.channel }),
-      signal: AbortSignal.timeout(20_000),
-      cache: 'no-store',
-    });
-  } catch (error) {
-    throw new UpdateError(networkMessage(error, url), 502);
-  }
-  if (response.status === 404) {
-    throw new UpdateError(`react-wp.com does not offer one-click updates at ${url} yet. Ask the site owner to enable managed updates on the platform.`, 404);
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new UpdateError('react-wp.com refused this site\'s update token. The update cannot be applied until the platform re-issues it.', 401);
-  }
-  if (!response.ok) throw new UpdateError(`react-wp.com answered HTTP ${response.status} for the update.`, 502);
-  const body = await response.json().catch(() => {
-    throw new UpdateError(`${url} did not return valid JSON.`, 502);
-  });
-  return {
-    queued: body.queued !== false,
-    message: String(body.message || ''),
-    version: String(body.version || ''),
-    mode: 'central',
-  };
-}
+export const centralApplyUrl = (config) =>
+  `${trimmed(config.central_url) || DEFAULT_CENTRAL_URL}${CENTRAL_APPLY_PATH}`;
 
 /**
  * The releases inside a central answer, in either shape the platform may answer with.

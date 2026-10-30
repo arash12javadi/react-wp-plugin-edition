@@ -46,6 +46,10 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
       body,
       env: process.env,
     });
+    // A managed update answers with the release package's bytes; every other answer is JSON.
+    if (result?.headers && result.body instanceof Uint8Array) {
+      return c.body(new Uint8Array(result.body), (result.status ?? 200) as ContentfulStatusCode, result.headers);
+    }
     return c.json(result?.body ?? { error: 'Not found' }, (result?.status ?? 404) as ContentfulStatusCode);
   };
 

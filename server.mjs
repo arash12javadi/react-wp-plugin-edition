@@ -783,6 +783,12 @@ const server = http.createServer(async (request, response) => {
           env: process.env,
         });
         if (central) {
+          // A managed update answers with the release package's bytes; every other answer is JSON.
+          if (central.headers && central.body instanceof Uint8Array) {
+            response.writeHead(central.status, central.headers);
+            response.end(central.body);
+            return;
+          }
           json(request, response, central.status, central.body);
           return;
         }

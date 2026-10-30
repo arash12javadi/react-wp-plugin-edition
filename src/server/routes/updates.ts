@@ -45,8 +45,8 @@ import {
   AUTO_CHECK_KEYS,
   PLUGIN_DIRECTORY_PATH,
   UPDATE_CHANNELS,
-  applyCentralUpdate,
   applyDeployHookUpdate,
+  centralApplyUrl,
   checkForUpdates,
   describeGithubSource,
   describeUpdateConfig,
@@ -233,26 +233,38 @@ async function applyUpdate(c: Context): Promise<Response> {
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
     };
-    // A managed site's update is applied by the platform (react-wp.com), never by this host. Core-only by
-    // construction: `to` is the core release (`answer.app.latest`) and nothing about a plugin travels here.
+    // A managed site's update is applied natively by this server, from a package the central server built.
+    // Core-only by construction: the package carries the core release with `plugins/` stripped, and nothing
+    // about a plugin travels in either direction. No Vercel token, no deploy hook, no GitHub name.
     if (!owner) {
       if (!answer.app.update_available) {
         return c.json({
-          mode: 'central',
+          mode: 'self',
           up_to_date: true,
-          reason: `This site already runs ${installed}, the latest release react-wp.com publishes.`,
+          plan: { mode: 'self', up_to_date: true, reason: `This site already runs ${installed}, the latest release react-wp.com publishes.`, steps: [] },
           check: reported,
         });
       }
-      const result = await applyCentralUpdate({
-        config: stored.config,
-        current: { app: installed, site: String(body.site || '').trim() },
+      const run = await startSelfUpdate({
         to: answer.app.latest,
+        from: installed,
+        source: 'package',
+        package: {
+          url: centralApplyUrl(stored.config),
+          token: stored.config.token,
+          site: String(body.site || '').trim(),
+        },
       });
-      return c.json(
-        { ...result, plan: { mode: 'central', reason: result.message }, check: reported },
-        (result.queued ? 200 : 502) as ContentfulStatusCode,
-      );
+      return c.json({
+        mode: 'self',
+        run,
+        plan: {
+          mode: 'self',
+          reason: `React-WP.com is sending the ${answer.app.latest} release package; this server downloads and applies it.`,
+          steps: ['downloading', 'extracting', 'applying', 'installing-packages', 'building', 'restarting'],
+        },
+        check: reported,
+      }, 202 as ContentfulStatusCode);
     }
     // Asked only now: the hook is a database read, and most calls to this route end at `up_to_date`.
     const deployHook = await deployHookUrl(config).catch(() => '');
