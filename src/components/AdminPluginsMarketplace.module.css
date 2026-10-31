@@ -86,6 +86,17 @@
   color: #2271b1;
 }
 
+/* A storefront listing, not a bundle this site installs in place: said before the price, so the
+   difference between "install here" and "buy there" is visible while scanning the grid. */
+.listing {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #475569;
+  background: #f1f5f9;
+}
+
 /* A button, not a heading: it opens the details dialog, so it must be reachable by keyboard. */
 .name {
   align-self: flex-start;
@@ -143,6 +154,19 @@
   color: #475569;
 }
 
+/* The card is an index row, not the product page: a long description clamps instead of stretching the
+   grid, and the details dialog still shows the whole text. */
+.excerpt {
+  margin: 0;
+  flex: 1;
+  font-size: 0.82rem;
+  color: #475569;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .cardFooter {
   display: flex;
   align-items: center;
@@ -163,12 +187,15 @@
 
 .primary,
 .secondary {
+  display: inline-block;
   border: 0;
   border-radius: 8px;
   padding: 8px 12px;
   font: inherit;
   font-size: 0.84rem;
   font-weight: 600;
+  text-align: center;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -493,6 +520,18 @@
   margin: 0;
   padding-inline-start: 20px;
   color: #475569;
+}
+
+/* The one thing a visitor needs to know about a listing before pressing its button: nothing here is
+   charged to, or installed against, this site's licence. */
+.listingNote {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
 }
 
 .dialogFacts {

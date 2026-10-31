@@ -55,6 +55,41 @@ const remoteLicenseBaseUrl = () => {
 const remoteRoute = (suffix) =>
   `${remoteLicenseBaseUrl()}/api/plugins/rwp-saas-installer/remote/${suffix}`;
 
+/**
+ * Where the public marketplace lives when this build names no licensing server of its own. The same
+ * host `defaultCentralUrl` (`src/lib/updateCenter.ts`) points updates at — spelled with `www` here
+ * because that is the canonical host the deployment answers on: the apex 308-redirects every path to
+ * it, and a catalogue read should not pay that round-trip.
+ *
+ * The marketplace is public — browsing it is exactly what `Plugins → Marketplace` is for — so a
+ * customer build that never set `VITE_RWP_REMOTE_LICENSE_URL` still lists every published plugin, and
+ * a first read that renders nothing is retried here (see `fetchRemoteCatalog`).
+ * Installing, buying and the boot-time licence check keep using `remoteLicenseBaseUrl()` and stay off
+ * until an operator points them at a server, so a licence key is never sent anywhere unasked.
+ */
+export const PUBLIC_MARKETPLACE_ORIGIN = 'https://www.react-wp.com';
+
+/** The origin a catalogue read goes to; deliberately wider than `remoteLicenseBaseUrl()`. */
+const catalogBaseUrl = () => remoteLicenseBaseUrl() || PUBLIC_MARKETPLACE_ORIGIN;
+
+/** The origin catalogue reads are addressed to — also the fallback host for a listing with no product URL. */
+export const marketplaceOrigin = () => catalogBaseUrl();
+
+/** What one catalogue row is: a bundle this site installs in place, or a storefront listing. */
+export const isMarketplaceListing = (item) => String(item?.source || '') === 'marketplace';
+
+/**
+ * A listing's product page made absolute against the origin that answered. The catalogue is read from
+ * whichever origin replied — this build's own server, or the public marketplace when that one had
+ * nothing to show — and that origin is where the listing is actually sold, so a relative path a server
+ * sent must not be resolved against the admin's own domain.
+ */
+const absoluteStoreUrl = (item, base) => {
+  const sent = String(item.storeUrl || '').trim();
+  if (/^https?:\/\//i.test(sent)) return sent;
+  return `${base}${sent || `/plugins/${encodeURIComponent(item.pluginId)}`}`;
+};
+
 /** Reads the stored site identity, or empty values when the free core has not been activated. */
 export const readSiteIdentity = () => {
   try {
@@ -229,6 +264,9 @@ const stringList = (value) => (Array.isArray(value) ? value.map((entry) => Strin
  */
 const catalogItem = (item) => ({
   pluginId: String(item?.pluginId || item?.plugin_id || '').trim(),
+  // `marketplace` rows are storefront listings: browsed here, bought and installed from `storeUrl`.
+  source: isMarketplaceListing(item) ? 'marketplace' : 'remote',
+  storeUrl: String(item?.storeUrl || item?.store_url || '').trim(),
   name: String(item?.name || '').trim(),
   version: String(item?.version || '').trim(),
   plan: String(item?.plan || '').trim(),
@@ -269,13 +307,20 @@ const catalogMatches = (item, search, category) => {
  * The central marketplace catalogue (metadata only). Never throws, so the admin tab can render a
  * friendly "the licensing server is unreachable" state instead of crashing the screen.
  *
+ * Every row is either a remote bundle this site may install in place (`source: 'remote'`) or a
+ * storefront listing to buy on its product page (`source: 'marketplace'` + `storeUrl`), and reading
+ * either one needs no licence — only installing or buying does.
+ *
+ * The read takes two steps: the server this build names, then — when that renders nothing — the public
+ * marketplace. Browsing therefore works before activation, in a build with no licensing server, and on
+ * a deployment whose own catalogue is still empty.
+ *
  * `{ search, category, orderby, page, perPage }` is the same query the public `[rwp_marketplace]`
  * block sends. A central server that predates the query contract ignores it and answers with the
  * whole catalogue, which is why the filtering, sorting and paging is repeated here: the tab then
  * behaves identically against either server.
  */
 export const fetchRemoteCatalog = async (query = {}) => {
-  const base = remoteLicenseBaseUrl();
   const page = Math.max(numberOr(query.page, 1), 1);
   const perPage = Math.min(Math.max(numberOr(query.perPage, CATALOG_PAGE_SIZE), 1), 60);
   const search = String(query.search || '').trim();
@@ -283,44 +328,66 @@ export const fetchRemoteCatalog = async (query = {}) => {
   const orderby = catalogSort(query.orderby);
   const empty = { items: [], total: 0, page, perPage, categories: [], orderby };
 
-  if (!base) return { ok: false, reason: 'not_configured', ...empty };
+  /** One read against one origin. Never throws: every failure is a reason the tab can phrase. */
+  const read = async (base) => {
+    try {
+      const params = new URLSearchParams({ orderby, page: String(page), per_page: String(perPage) });
+      if (search) params.set('search', search);
+      if (category) params.set('category', category);
+      const response = await fetch(`${base}/api/plugins/rwp-saas-installer/remote/catalog?${params.toString()}`, { cache: 'no-store' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.ok) {
+        return { ok: false, reason: payload?.reason || 'http_error', error: String(payload?.error || ''), ...empty };
+      }
 
-  try {
-    const params = new URLSearchParams({ orderby, page: String(page), per_page: String(perPage) });
-    if (search) params.set('search', search);
-    if (category) params.set('category', category);
-    const response = await fetch(`${remoteRoute('catalog')}?${params.toString()}`, { cache: 'no-store' });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) {
-      return { ok: false, reason: payload?.reason || 'http_error', error: String(payload?.error || ''), ...empty };
+      const rows = (Array.isArray(payload.items) ? payload.items : [])
+        .map(catalogItem)
+        .filter((item) => item.pluginId)
+        // Verified against the origin that answered, before the page is paged: a link that outlives the
+        // request must not depend on where this admin happens to be hosted.
+        .map((item) => (item.source === 'marketplace' ? { ...item, storeUrl: absoluteStoreUrl(item, base) } : item));
+      let items = rows;
+      let total = Number(payload.total);
+      if (!Number.isFinite(total)) {
+        const matched = rows
+          .filter((item) => catalogMatches(item, search, category))
+          .sort(CATALOG_COMPARATORS[orderby] || CATALOG_COMPARATORS.popular);
+        total = matched.length;
+        items = matched.slice((page - 1) * perPage, page * perPage);
+      }
+      const categories = Array.isArray(payload.categories) && payload.categories.length
+        ? payload.categories.map((entry) => String(entry).trim()).filter(Boolean)
+        : [...new Set(rows.map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+
+      return {
+        ok: true,
+        items,
+        total,
+        page: numberOr(payload.page, page),
+        perPage: numberOr(payload.per_page, perPage),
+        categories,
+        orderby,
+      };
+    } catch {
+      return { ok: false, reason: 'network_error', ...empty };
     }
+  };
 
-    const rows = (Array.isArray(payload.items) ? payload.items : []).map(catalogItem).filter((item) => item.pluginId);
-    let items = rows;
-    let total = Number(payload.total);
-    if (!Number.isFinite(total)) {
-      const matched = rows
-        .filter((item) => catalogMatches(item, search, category))
-        .sort(CATALOG_COMPARATORS[orderby] || CATALOG_COMPARATORS.popular);
-      total = matched.length;
-      items = matched.slice((page - 1) * perPage, page * perPage);
-    }
-    const categories = Array.isArray(payload.categories) && payload.categories.length
-      ? payload.categories.map((entry) => String(entry).trim()).filter(Boolean)
-      : [...new Set(rows.map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+  const base = catalogBaseUrl();
+  const first = await read(base);
+  if (base === PUBLIC_MARKETPLACE_ORIGIN) return first;
 
-    return {
-      ok: true,
-      items,
-      total,
-      page: numberOr(payload.page, page),
-      perPage: numberOr(payload.per_page, perPage),
-      categories,
-      orderby,
-    };
-  } catch {
-    return { ok: false, reason: 'network_error', ...empty };
-  }
+  // The catalogue is public, so a first read that renders nothing is worth a second opinion from the
+  // public marketplace: a customer build whose licensing server predates this catalogue contract, the
+  // development edition running locally (`remoteLicenseBaseUrl()` answers with its own origin), or a
+  // host whose licensing database is empty all end up here. Installing and buying still go to the
+  // server this build names — only browsing borrows the public catalogue.
+  if (first.ok && first.items.length) return first;
+  const published = await read(PUBLIC_MARKETPLACE_ORIGIN);
+  // A server that could not be configured has nothing to report, so its verdict is dropped in favour of
+  // the public one — that is the catalogue the administrator is being shown either way.
+  if (first.reason === 'not_configured') return published;
+  return published.ok ? published : first;
 };
 
 /**

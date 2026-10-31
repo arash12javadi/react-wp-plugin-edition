@@ -3,6 +3,8 @@ import {
   activateRemoteLicense,
   CATALOG_PAGE_SIZE,
   fetchRemoteCatalog,
+  isMarketplaceListing,
+  marketplaceOrigin,
   readSiteIdentity,
   startRemoteCheckout,
   syncRemotePlugins,
@@ -25,6 +27,10 @@ interface SiteIdentity {
 /** The storefront shape the central server's `remote/catalog` returns (metadata only). */
 interface RemoteCatalogItem {
   pluginId: string;
+  /** `remote` = a bundle this site installs in place; `marketplace` = a storefront listing. */
+  source: 'remote' | 'marketplace';
+  /** Where a listing is bought and downloaded; empty for a remote bundle. */
+  storeUrl: string;
   name: string;
   version: string;
   plan: string;
@@ -120,10 +126,35 @@ const money = (item: RemoteCatalogItem) => {
 
 const reasonText = (reason: string) => LICENCE_REASONS[reason] || reason.replace(/_/g, ' ') || 'unknown reason';
 
+/**
+ * A listing's product page: absolute as the server sent it, else built on the origin the catalogue was
+ * read from, so a server that only knows the path still produces a link that works.
+ */
+const storeUrlOf = (item: RemoteCatalogItem) => {
+  const sent = String(item.storeUrl || '').trim();
+  if (/^https?:\/\//i.test(sent)) return sent;
+  return `${marketplaceOrigin()}${sent || `/plugins/${encodeURIComponent(item.pluginId)}`}`;
+};
+
+/**
+ * What the card's primary action says. The two halves of the catalogue differ in where the plugin comes
+ * from — a listing is bought and downloaded on its product page, a remote bundle is installed here —
+ * so the button never promises something this screen cannot do.
+ */
+const actionLabel = (item: RemoteCatalogItem) => {
+  if (isMarketplaceListing(item)) return item.priceUsd <= 0 ? 'Get it free' : 'Buy';
+  return item.priceUsd <= 0 ? 'Install free' : 'Buy now';
+};
+
+/** Why a remote plugin cannot be installed yet; browsing never asks for a licence. */
+const NOT_ACTIVATED_HINT = 'Browsing is free — activate this site with a licence key to install it here.';
+
 /** Why the catalogue is empty, in words an administrator can act on. */
 const catalogProblem = (reason?: string) => {
   if (reason === 'not_configured') {
-    return 'The marketplace server is not configured for this build. Set VITE_RWP_REMOTE_LICENSE_URL to the central licensing server, then reload.';
+    // The tab always asks *somewhere* — react-wp.com when this build names no licensing server — so this
+    // is the host that answered, not a variable this administrator could have set.
+    return 'The marketplace host answering the catalogue is not configured: its licensing database is missing. Try again later, or contact whoever provides the marketplace.';
   }
   if (reason === 'network_error') {
     return 'The marketplace server could not be reached. Check this site\'s connection, then press Check again.';
@@ -175,11 +206,12 @@ const checkoutProblem = (result: { reason?: string; status?: string } | null, pl
 /**
  * The admin "Plugins → Marketplace" tab.
  *
- * Browse the central premium-plugin catalogue, install a free plugin or buy a paid one — and the
- * site's own token travels with the request, so the licence is bound to this domain without anybody
- * copying a key. What is installed then comes from the licensing server's verdict: a plugin the site
- * is entitled to is injected by the remote loader, which is why a free install can say "active" a
- * second later instead of asking for a reload.
+ * Browse the central premium-plugin catalogue, install a free plugin or buy a paid one. Browsing is
+ * public: the grid renders every published plugin whether or not this site holds a licence, and only
+ * installing or buying asks for one. Checkout binds the licence to this domain, so the site's token
+ * travels with the request instead of anybody copying a key. What is installed then comes from the
+ * licensing server's verdict: a plugin the site is entitled to is injected by the remote loader, which
+ * is why a free install can say "active" a second later instead of asking for a reload.
  */
 export default function AdminPluginsMarketplace({ navigate }: Props) {
   const [identity, setIdentity] = useState<SiteIdentity>(() => readSiteIdentity() as SiteIdentity);
@@ -320,6 +352,12 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
   /** One button for both cases: a free plugin is granted on the spot, a paid one leaves for checkout. */
   const install = async (plugin: RemoteCatalogItem) => {
     if (busy) return;
+    // A storefront listing is bought and downloaded on its product page — never here, and never
+    // against this site's licence. The card renders a link; this guard keeps the two honest.
+    if (isMarketplaceListing(plugin)) {
+      window.open(storeUrlOf(plugin), '_blank', 'noopener');
+      return;
+    }
     setBusy(plugin.pluginId);
     setError('');
     setNotice('');
@@ -378,8 +416,8 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
         <div>
           <h2 className={styles.title}>Plugins Marketplace</h2>
           <p className={styles.subtitle}>
-            Browse the React-WP catalogue, install a free plugin or buy a premium one. There is nothing
-            to copy: this site's token travels with the request, and the licence is bound to{' '}
+            Every plugin in the React-WP marketplace, free to browse — no activation needed. A licence
+            is only asked for when you install or buy one here, and it binds to{' '}
             <strong>{identity.siteUrl || 'this domain'}</strong>.
           </p>
         </div>
@@ -409,7 +447,7 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
           <form className={styles.activateForm} onSubmit={activate}>
             <label className={styles.activateLabel} htmlFor="rwp-marketplace-license">
               {licence.reason === 'not_activated'
-                ? 'Activate this site with your licence key: free plugins install straight away, paid ones checkout in USDT (TRC20).'
+                ? `Browsing needs no licence. To install a remote plugin on ${identity.siteUrl || 'this site'}, paste the key you were sent — free plugins install straight away, paid ones check out in USDT (TRC20).`
                 : `This site's licence cannot be used (${reasonText(licence.reason)}). Enter a valid key to bind it to ${identity.siteUrl || 'this domain'}.`}
             </label>
             <div className={styles.activateRow}>
@@ -479,13 +517,14 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
               <li key={plugin.pluginId} className={styles.card}>
                 <div className={styles.cardTop}>
                   <span className={styles.category}>{label(plugin.category)}</span>
+                  {isMarketplaceListing(plugin) ? <span className={styles.listing}>Marketplace</span> : null}
                   {plugin.version ? <em className={styles.version}>v{plugin.version}</em> : null}
                 </div>
                 <button type="button" className={styles.name} onClick={() => setDetails(plugin)}>
                   {plugin.name || plugin.pluginId}
                 </button>
                 {plugin.author ? <span className={styles.author}>by {plugin.author}</span> : null}
-                <p className={styles.description}>
+                <p className={styles.excerpt}>
                   {plugin.description || 'The publisher has not described this plugin yet.'}
                 </p>
                 {plugin.tags.length > 0 && (
@@ -497,15 +536,19 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
                   <strong className={styles.price}>{money(plugin)}</strong>
                   {owned ? (
                     <span className={styles.owned} title="Already licensed to this site">✓ Installed</span>
+                  ) : isMarketplaceListing(plugin) ? (
+                    <a className={styles.primary} href={storeUrlOf(plugin)} target="_blank" rel="noreferrer">
+                      {actionLabel(plugin)}
+                    </a>
                   ) : (
                     <button
                       type="button"
                       className={styles.primary}
                       disabled={Boolean(busy) || !activated}
-                      title={activated ? undefined : 'Activate this site first'}
+                      title={activated ? undefined : NOT_ACTIVATED_HINT}
                       onClick={() => void install(plugin)}
                     >
-                      {working ? (plugin.priceUsd <= 0 ? 'Installing…' : 'Opening…') : plugin.priceUsd <= 0 ? 'Install free' : 'Buy now'}
+                      {working ? (plugin.priceUsd <= 0 ? 'Installing…' : 'Opening…') : actionLabel(plugin)}
                     </button>
                   )}
                 </div>
@@ -563,10 +606,12 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
       )}
 
       <p className={styles.footerNote}>
-        Paid plugins are billed in Tether (USDT, TRC20) through NOWPayments and confirmed by the
-        licensing server, which binds the entitlement to this site's token — there is no key to copy,
-        and a second domain cannot use it. A free plugin is granted the moment you press Install, and
-        the loader switches it on without a reload.
+        Remote plugins install here against this site's licence. A marketplace listing links to its
+        product page instead: the package is bought or downloaded there and installed from Plugins →
+        Upload Plugin, so it works with or without a licence. Paid plugins are billed in Tether (USDT,
+        TRC20) through NOWPayments and confirmed by the licensing server, which binds the entitlement to
+        this domain — a second site cannot use it. A free remote plugin is granted the moment you press
+        Install, and the loader switches it on without a reload.
       </p>
 
       {details ? (
@@ -637,6 +682,13 @@ function PluginDialog({ plugin, owned, activated, busy, onClose, onInstall }: {
           <p className={styles.description}>
             {plugin.description || 'The publisher has not described this plugin yet.'}
           </p>
+          {isMarketplaceListing(plugin) ? (
+            <p className={styles.listingNote}>
+              A marketplace listing — reading about it is free on any site. You buy or download it on its
+              product page, then install the package from Plugins → Upload Plugin, so this site's licence
+              is never involved.
+            </p>
+          ) : null}
           {plugin.features.length > 0 && (
             <ul className={styles.features}>
               {plugin.features.map((feature) => <li key={feature}>{feature}</li>)}
@@ -666,15 +718,19 @@ function PluginDialog({ plugin, owned, activated, busy, onClose, onInstall }: {
         <div className={styles.dialogFooter}>
           {owned ? (
             <span className={styles.owned}>✓ Licensed to this site</span>
+          ) : isMarketplaceListing(plugin) ? (
+            <a className={styles.primary} href={storeUrlOf(plugin)} target="_blank" rel="noreferrer">
+              {actionLabel(plugin)}
+            </a>
           ) : (
             <button
               type="button"
               className={styles.primary}
               disabled={Boolean(busy) || !activated}
-              title={activated ? undefined : 'Activate this site first'}
+              title={activated ? undefined : NOT_ACTIVATED_HINT}
               onClick={() => onInstall(plugin)}
             >
-              {busy === plugin.pluginId ? 'Working…' : plugin.priceUsd <= 0 ? 'Install free' : 'Buy now'}
+              {busy === plugin.pluginId ? 'Working…' : actionLabel(plugin)}
             </button>
           )}
           <button type="button" className={styles.secondary} onClick={onClose}>Close</button>
