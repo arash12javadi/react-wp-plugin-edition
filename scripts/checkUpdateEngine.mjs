@@ -331,6 +331,59 @@ test('a check is public, and a token that is sent is still verified', async () =
   assert.equal(read.status, 405);
 });
 
+test('the platform answers its own dashboard with the dashboard check, not as one of its sites', async () => {
+  clearCentralReleaseCache();
+  const fetchImpl = stubFetch([githubRow('v2.4.1')]);
+  // Exactly what `checkForUpdates` in `src/lib/updateCenter.ts` posts: the plugin list and the licence id,
+  // and *no* installed version — the server reads the running build itself. On a platform this path is
+  // both the alias a site may ask and the path its own Updates screen posts to, and answering the screen
+  // as a site is what put `This update token is not valid for the central server.` on the owner's card.
+  const dashboard = await handleCentralUpdateRequest({
+    pathname: '/api/admin/updates/check',
+    method: 'POST',
+    headers: { authorization: 'Bearer an-administrator-session' },
+    body: { plugins: [{ id: 'rwp-forms', name: 'Forms', version: '1.0.0' }], site: '' },
+    env: platformEnv,
+    fetchImpl,
+  });
+  assert.equal(dashboard, null, 'null hands the screen to its own route, which knows who is asking');
+  assert.equal(fetchImpl.calls.length, 0, 'and nothing is asked of GitHub to answer it');
+
+  // A site on the same alias is still a site: it names the version it runs, so its token is verified.
+  const revoked = await handleCentralUpdateRequest({
+    pathname: '/api/admin/updates/check',
+    method: 'POST',
+    headers: { authorization: 'Bearer a-revoked-site-token' },
+    body: { installedVersion: 'v1.3.1', plugins: [] },
+    env: platformEnv,
+    fetchImpl,
+  });
+  assert.equal(revoked.status, 403, 'a revoked site is still told so, on either path');
+
+  // And the documented path belongs to the platform alone: a body with no version is not a dashboard there.
+  const platform = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/check',
+    method: 'POST',
+    body: { plugins: [] },
+    env: platformEnv,
+    fetchImpl,
+  });
+  assert.equal(platform.status, 200, '/api/v1/updates/check answers a version-less check as it always did');
+
+  // `format` is what a site stamps on the request, so a site whose version could not be resolved is still
+  // a site: it must be answered or refused here, never handed to this deployment's dashboard route.
+  const contract = await handleCentralUpdateRequest({
+    pathname: '/api/admin/updates/check',
+    method: 'POST',
+    headers: { authorization: 'Bearer site-token' },
+    body: { format: 'rwp-update-center', version: 1, plugins: [] },
+    env: platformEnv,
+    fetchImpl,
+  });
+  assert.equal(contract.status, 200, 'a caller speaking the site contract is answered, version or no version');
+});
+
+
 test('a half-configured platform names what is missing instead of answering 404', async () => {
   const noRepo = await handleCentralUpdateRequest({
     pathname: '/api/v1/updates/apply',

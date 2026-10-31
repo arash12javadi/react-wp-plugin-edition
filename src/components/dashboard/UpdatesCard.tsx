@@ -111,6 +111,11 @@ const message = (value: unknown, fallback: string) => (value instanceof Error ? 
  * Kept apart from the form so the "Forget" button can live inside the field's hint without turning the
  * form into a nest of handlers — and so the emptiness rule is written down once: an empty input means
  * *leave the stored token alone*.
+ *
+ * It is a `type="password"` input with `autoComplete="off"` and no spellcheck, because the value is a
+ * credential: the server is the only thing that ever reads it back, and the browser is never sent it (the
+ * screen is given `has_token`). The placeholder is what tells an administrator "nothing saved" from
+ * "saved, and this box is where a replacement goes" without the field ever holding the stored value.
  */
 function TokenField({ hasToken, value, disabled, onChange, onForget }: {
   hasToken: boolean;
@@ -126,11 +131,14 @@ function TokenField({ hasToken, value, disabled, onChange, onForget }: {
         type="password"
         value={value}
         autoComplete="off"
-        placeholder={hasToken ? 'A token is stored. Type a new one to replace it.' : 'Paste the token from your React-WP account'}
+        spellCheck={false}
+        placeholder={hasToken ? 'A token is already saved. Type a new one to replace it.' : 'Paste the update token this site was issued'}
         onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
       />
       <span className={styles.help}>
-        Sent as a header to the update server, never to GitHub.{' '}
+        The token this site sends to the central update server, as <code>Authorization: Bearer …</code> — never
+        to GitHub, and never back to this screen.{' '}
         {hasToken ? 'A token is stored.' : 'Without one, checks read this deployment’s own GitHub release tags.'}
         {hasToken && (
           <>

@@ -13,6 +13,12 @@
  * `/api/admin/updates/check` (its dashboard's own check, below in `index.ts`), and a platform route that
  * quietly answered 401 there would break it.
  *
+ * The alias is the one path two callers share, so it is the one path that can be handed on: a platform's
+ * own Updates screen posts to it too, and its request names no installed version — a site's does. The
+ * handler answers `null` for the screen (`isDashboardAliasCheck` in `server/centralUpdates.mjs`) and
+ * `reply` below calls `next()` with it, which is what lets the tenant route in `index.ts` answer its own
+ * dashboard. Answering 404 there instead is a sentence about a path that exists.
+ *
  * The verbs are registered separately on purpose. `POST` is the only method that does anything, and every
  * other verb on those paths is answered by the same handler — with its own 405 sentence — so a browser GET
  * cannot be mistaken for "this platform has no update API" (see the loop at the bottom of
@@ -26,7 +32,7 @@
  * The caller's `Authorization` header is passed through as a plain object rather than the whole request,
  * so nothing else a caller sends can reach the token comparison.
  */
-import type { Context, Hono } from 'hono';
+import type { Context, Hono, Next } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
   CENTRAL_APPLY_PATH,
@@ -60,14 +66,15 @@ async function platformConfig() {
  * platform: `centralPlatformConfig` can find the release repository in this deployment's own rows, and a
  * platform configured through its installer card must not need an environment variable before it can
  * answer the sites it handed out. The `/api/admin` alias is mounted only when the environment declares it,
- * because on a customer's site that path is the tenant's own dashboard check.
+ * because on a customer's site that path is the tenant's own dashboard check — and on a platform it is
+ * *also* the platform's own dashboard check, which `reply` passes on to that same tenant route.
  *
  * @param app the Hono app the `/api` routes live on
  */
 export function registerCentralUpdateRoutes(app: Hono): boolean {
   const declared = centralConfigFrom(process.env).enabled;
 
-  const reply = async (c: Context) => {
+  const reply = async (c: Context, next: Next) => {
     // The pathname comes from the URL rather than `c.req.path`, so the two hosts agree on which route was
     // called even when one of them is mounted under a prefix.
     const pathname = new URL(c.req.url).pathname;
@@ -80,11 +87,20 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
       env: process.env,
       config: await platformConfig(),
     });
+    if (!result) {
+      // `null` at the alias is this platform's own Updates screen asking, not one of its sites: the screen
+      // names no installed version, because the server reads the running build itself
+      // (`isDashboardAliasCheck` in `server/centralUpdates.mjs`). `next()` is how the tenant's own
+      // `/api/admin/updates/check` answers it — the route registered below in `index.ts`. Answering 404
+      // here instead was the sentence an owner saw for a path that does exist.
+      if (pathname === CENTRAL_CHECK_ALIAS) return next();
+      return c.json({ error: 'Not found' }, 404 as ContentfulStatusCode);
+    }
     // A managed update answers with the release package's bytes; every other answer is JSON.
-    if (result?.headers && result.body instanceof Uint8Array) {
+    if (result.headers && result.body instanceof Uint8Array) {
       return c.body(new Uint8Array(result.body), (result.status ?? 200) as ContentfulStatusCode, result.headers);
     }
-    return c.json(result?.body ?? { error: 'Not found' }, (result?.status ?? 404) as ContentfulStatusCode);
+    return c.json(result.body, (result.status ?? 404) as ContentfulStatusCode);
   };
 
   app.post(CENTRAL_CHECK_PATH, reply);

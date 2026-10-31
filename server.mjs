@@ -777,15 +777,22 @@ const server = http.createServer(async (request, response) => {
     // deployment the platform, because on a customer's site that path is its own dashboard's check — and
     // the body is read after the decision for the same reason: consuming it here would leave that route
     // with an empty body.
+    //
+    // On a platform that path is *both* things: the alias one of its sites may ask, and the path its own
+    // Updates screen posts to. `handleCentralUpdateRequest` hands the screen's request back as `null`
+    // (`isDashboardAliasCheck`, because it names no installed version), so the body it already parsed is
+    // kept and given to `handleUpdateRequest` below — a request body can only be read once.
+    let centralBody = null;
     if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check' || url.pathname === '/api/v1/updates/apply') {
       const centralAlias = url.pathname === '/api/admin/updates/check';
       if (!centralAlias || centralConfigFrom(process.env).enabled) {
         const centralFile = await readConfig();
+        if (request.method === 'POST') centralBody = await readBody(request).catch(() => ({}));
         const central = await handleCentralUpdateRequest({
           method: request.method,
           pathname: url.pathname,
           headers: request.headers,
-          body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
+          body: centralBody ?? {},
           env: process.env,
           config: await centralPlatformConfig({
             env: process.env,
@@ -820,7 +827,7 @@ const server = http.createServer(async (request, response) => {
         query: Object.fromEntries(url.searchParams),
         headers: request.headers,
         body: request.method === 'POST' && url.pathname !== '/api/admin/plugins/upload'
-          ? await readBody(request).catch(() => ({}))
+          ? (centralBody ?? await readBody(request).catch(() => ({})))
           : {},
         config: publicConfig(file),
       };

@@ -189,6 +189,40 @@ export const authorizationFrom = (headers) => {
   return trimmed(String(raw ?? '')).replace(/^Bearer\s+/i, '');
 };
 
+/**
+ * Whether a request is the dashboard of *this* deployment rather than one of its sites.
+ *
+ * `/api/admin/updates/check` is two things at once on a platform: the alias a customer's site may ask, and
+ * the path the platform's own Updates screen posts to. Until this answered `null` for the second, the
+ * owner's own check — a signed-in administrator who never had a token to send — was read as a site with a
+ * bad credential and refused with `This update token is not valid for the central server.`, which is a
+ * sentence about a field that owner had every right to leave empty. The screen showed it under
+ * `check.error`, so the platform's own Updates card could not check itself.
+ *
+ * The two callers are told apart by what a caller knows and the server does not: a site states the version
+ * it runs — the contract in the header of this file starts with `installedVersion` — while this
+ * deployment's own screen cannot, because the server reads the running build itself
+ * (`resolveInstalledVersion` in `server/updateCenter.mjs`) and the browser has never been told where
+ * updates come from. So an alias request that names no installed version belongs to the dashboard, and
+ * `null` hands it to the site's own route, exactly as it is handed over on a deployment that is not the
+ * platform. A request that *does* name a version is a site, and a token it sends is still verified: a
+ * revoked site is still told so, and `/api/v1/updates/check` is never treated this way, because that path
+ * belongs to the platform alone.
+ *
+ * `format` is the third fact, and it is only ever read as a safety net: `fetchCentralCheck` stamps every
+ * request it makes with `format: 'rwp-update-center'`, so a caller speaking the site contract stays a site
+ * even if the version it reports is blank — a site whose installed version could not be resolved must get a
+ * refusal it can read, not this deployment's own dashboard route.
+ *
+ * @param {string} path the normalised pathname this request asked for
+ * @param {any} body the parsed body, or `{}` for a request that had none
+ */
+export const isDashboardAliasCheck = (path, body) =>
+  path === CENTRAL_CHECK_ALIAS
+  && !trimmed(body?.installedVersion)
+  && !trimmed(body?.app?.version)
+  && !trimmed(body?.format);
+
 /** Equal secrets in the time the length allows, so a token cannot be guessed a character at a time. */
 const sameSecret = (given, expected) => {
   if (!given || given.length !== expected.length) return false;
@@ -338,6 +372,10 @@ const centralRefusalFor = (config, kind) => {
  * changing the answer an ordinary site gives: a customer's `/api/admin/updates/check` is still its own
  * dashboard's check, and `/api/v1/updates/check` is still an unknown path.
  *
+ * It also returns null for the alias when the caller is this deployment's own dashboard rather than one of
+ * its sites (`isDashboardAliasCheck`): a platform's Updates screen posts to the same path, and answering it
+ * as a site refused the owner's own check with a sentence about a token they never had.
+ *
  * A **check** is answered without a token — the release list is not the product, and a site that was never
  * handed a token still has to be able to read a version number — while a token that *is* sent is still
  * verified, so a revoked site is told so. An **apply** is always token-gated: it hands out the package.
@@ -362,6 +400,10 @@ export async function handleCentralUpdateRequest({
   if (String(method).toUpperCase() !== 'POST') {
     return { status: 405, body: { error: 'Method not allowed. A check or an update is a POST, because it carries the site\'s token and version.' } };
   }
+  // This deployment's own Updates screen asks its own route, not this one: it names no installed version
+  // because the server reads the running build itself. Answering it here is what surfaced the token
+  // sentence on the platform's own card, so it is handed back before any credential is looked at.
+  if (isDashboardAliasCheck(path, body)) return null;
   try {
     const withheld = centralRefusalFor(config, isApply ? 'apply' : 'check');
     if (withheld) return withheld;
