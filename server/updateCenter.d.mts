@@ -179,17 +179,42 @@ export function isVersion(value: unknown): boolean;
 export function updateConfigFrom(value: unknown): UpdateConfig;
 export function describeUpdateConfig(config: UpdateConfig, owner?: boolean): UpdateConfigView;
 export function saasInstalledVersionFrom(value: unknown): string;
-export function resolveInstalledVersion(input: { pinned?: string; saas?: string; fallback?: string }): string;
+
+/**
+ * The version this host reports, in one order shared by both hosts: the deploy's pin, the installer's
+ * record, the newest release this deployment publishes, then the `package.json` the build compiled.
+ */
+export function resolveInstalledVersion(input: {
+  pinned?: string;
+  saas?: string;
+  release?: string;
+  fallback?: string;
+}): string;
+
+/** Drops the remembered release, so the next `latestPublishedVersion` reads GitHub again. */
+export function clearPublishedVersion(): void;
+
+/**
+ * The newest release tag of the repository this deployment publishes, as a plain version — or `''` when
+ * there is nothing to read or the read failed. Cached for a minute; never throws.
+ */
+export function latestPublishedVersion(options?: {
+  source?: { repo?: string; token?: string } | null;
+  channel?: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}): Promise<string>;
 
 /**
  * The repository a check may read directly: `updates_config.repository` when Settings → Updates names one,
  * else `RWP_RELEASE_REPO`/`GITHUB_REPO` and `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN` from the environment, else
- * the stored `github_config` row.
+ * the stored `github_config` row, else the SaaS installer card's template repository.
  */
 export function githubUpdateSourceFrom(
   env?: Record<string, string | undefined>,
   stored?: unknown,
   configured?: unknown,
+  fallbackRepo?: unknown,
 ): GithubUpdateSource | null;
 
 /** Which repository a direct release-tag read uses, and whether a credential came with it. */
@@ -200,6 +225,10 @@ export function describeGithubSource(source?: GithubUpdateSource | null, owner?:
 };
 
 export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
+  /**
+   * The configuration a check answers with. `repository` is filled from the resolved GitHub source when the
+   * screen names none — the installer card's template is the repository a platform publishes from.
+   */
   config: UpdateConfig;
   /** The GitHub repository this deployment may read release tags from, or null. */
   github: GithubUpdateSource | null;

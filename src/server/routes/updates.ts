@@ -57,6 +57,7 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  latestPublishedVersion,
   managedUpdateSupport,
   readUpdatesConfig,
   resolveInstalledVersion,
@@ -81,16 +82,37 @@ export const updatesRouter = new Hono();
  * cannot lag behind the code actually running. Otherwise `package.json`, which the same workflow writes
  * immediately before pushing the tag, is the answer. Read on the server, never sent by the browser.
  *
- * A provisioned site's `package.json` is the *template's* version, so a third source outranks it: the tag
- * the SaaS installer recorded in `saas_installer_config.installed_version`, which `readUpdatesConfig`
- * returns and `installedFor` folds into the same order both hosts share.
+ * A provisioned site's `package.json` is the *template's* version, so two more sources outrank it: the tag
+ * the SaaS installer recorded in `saas_installer_config.installed_version`, and — for the deployment that
+ * owns the release repository — the newest release tag it publishes. `installedFor` applies that order,
+ * which is `resolveInstalledVersion`'s and is shared with the classic host.
  */
 const pinnedAppVersion = String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
 const packageAppVersion = String(packageVersion || '').trim();
 
-/** The installed version, resolving the SaaS installer's recorded tag ahead of the static manifest. */
-const installedFor = (stored: { installed: string }) =>
-  resolveInstalledVersion({ pinned: pinnedAppVersion, saas: stored.installed, fallback: packageAppVersion });
+/** What `readUpdatesConfig` answers, as far as the version question is concerned. */
+interface StoredUpdateConfig {
+  installed: string;
+  config: { channel: string };
+  github: { repo: string; token: string } | null;
+}
+
+/**
+ * The installed version: the pin, the installer's record, the release this platform publishes, else the
+ * static manifest.
+ *
+ * The third step is what a platform built from a branch needs, and it belongs to the owner alone: a
+ * managed site never reads GitHub, and its own record (`RWP_APP_VERSION`, written by the installer that
+ * deployed it) is the answer to what it runs. `latestPublishedVersion` costs one cached row read a minute
+ * and answers `''` when it cannot read — which leaves `package.json`, exactly as before.
+ */
+const installedFor = async (stored: StoredUpdateConfig, owner: boolean): Promise<string> =>
+  resolveInstalledVersion({
+    pinned: pinnedAppVersion,
+    saas: stored.installed,
+    release: owner ? await latestPublishedVersion({ source: stored.github, channel: stored.config.channel }) : '',
+    fallback: packageAppVersion,
+  });
 
 /**
  * Everything that can be refused with a status before any work starts: whether this site is installed,
@@ -178,7 +200,7 @@ async function overview(c: Context): Promise<Response> {
     const owner = await viewerOwner(config, c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     return c.json({
-      installed: installedFor(stored),
+      installed: await installedFor(stored, owner),
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
@@ -209,7 +231,7 @@ async function check(c: Context): Promise<Response> {
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     const answer = await checkForUpdates({
       config: stored.config,
-      current: { app: installedFor(stored), site: String(body.site || '').trim() },
+      current: { app: await installedFor(stored, owner), site: String(body.site || '').trim() },
       plugins: installedPluginsFrom(body.plugins),
       github: stored.github,
       owner,
@@ -241,7 +263,7 @@ async function applyUpdate(c: Context): Promise<Response> {
     const owner = await viewerOwner(config, c);
     const body = await readJson(c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
-    const installed = installedFor(stored);
+    const installed = await installedFor(stored, owner);
     const answer = await checkForUpdates({
       config: stored.config,
       current: { app: installed, site: String(body.site || '').trim() },

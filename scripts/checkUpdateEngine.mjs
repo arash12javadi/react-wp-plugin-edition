@@ -43,11 +43,16 @@ import {
   centralReleasesFrom,
   checkAnswerFrom,
   checkForUpdates,
+  clearPublishedVersion,
+  describeUpdateConfig,
   fetchCentralCheck,
   githubUpdateSourceFrom,
+  latestPublishedVersion,
   managedUpdateSupport,
   publicRelease,
+  readUpdatesConfig,
   releaseFrom,
+  resolveInstalledVersion,
 } from '../server/updateCenter.mjs';
 
 const suites = [];
@@ -775,6 +780,84 @@ test('a managed site support answer is the package it installs, with no reposito
   assert.equal(refused.reason, MANAGED_MESSAGES.cannot_apply, 'the host probe\'s sentence is replaced, never shown');
   assert.equal(refused.restart, 'manual');
   assert.equal(refused.app_name, '');
+});
+
+/* -- 6. Which version is installed ------------------------------------------------------------------ */
+
+test('a platform reports the release it publishes when nothing pins or records one', async () => {
+  // The order, because each step was a screen that disagreed with another: the deploy's pin cannot lag, the
+  // installer's record names the exact tag it deployed, the release this deployment publishes is the only
+  // answer a platform built from a branch has, and `package.json` is the last resort — the number that made
+  // a platform whose releases were at 2.5.4 answer 1.3.1.
+  assert.equal(resolveInstalledVersion({ pinned: 'v3.0.0', saas: '2.9.0', release: '2.5.4', fallback: '1.3.1' }), '3.0.0');
+  assert.equal(resolveInstalledVersion({ saas: '2.9.0', release: '2.5.4', fallback: '1.3.1' }), '2.9.0');
+  assert.equal(resolveInstalledVersion({ release: 'v2.5.4', fallback: '1.3.1' }), '2.5.4');
+  assert.equal(resolveInstalledVersion({ fallback: '1.3.1' }), '1.3.1');
+
+  clearPublishedVersion();
+  const source = { repo: 'acme/react-wp', token: 'ghp_stored' };
+  const fetchImpl = stubRoutes([['/releases', [githubRow('v2.5.3'), githubRow('v2.5.4')]]]);
+  assert.equal(await latestPublishedVersion({ source, fetchImpl }), '2.5.4', 'the tag is the version, without the v');
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(await latestPublishedVersion({ source, fetchImpl }), '2.5.4');
+  assert.equal(fetchImpl.calls.length, 1, 'the overview and the check cost one GitHub read a minute, not one each');
+
+  // A read that fails answers nothing, which leaves the caller on its previous version rather than on an
+  // error screen — a rate limit must not blank an Updates card.
+  clearPublishedVersion();
+  const refused = async () => new Response(JSON.stringify({ message: 'rate limit' }), { status: 403 });
+  assert.equal(await latestPublishedVersion({ source, fetchImpl: refused }), '');
+  assert.equal(await latestPublishedVersion({ source: null }), '', 'no repository is no read at all');
+  clearPublishedVersion();
+});
+
+test('a platform with no repository named reads the one its installer card copies', async () => {
+  // The owner's own screen: Settings → Updates names no repository, but the installer card knows the
+  // template every site is built from — and on a platform that template *is* the release repository.
+  assert.deepEqual(
+    githubUpdateSourceFrom({}, { token: 'ghp_stored' }, '', 'acme/react-wp'),
+    { repo: 'acme/react-wp', token: 'ghp_stored', explicit: false },
+  );
+  // A branch is not a repository, and the screen still wins over the installer card.
+  assert.equal(githubUpdateSourceFrom({}, {}, '', 'main'), null);
+  assert.equal(githubUpdateSourceFrom({}, {}, 'acme/settings', 'acme/react-wp').repo, 'acme/settings');
+
+  // Through the reader the routes use: the installer row fills the repository, so the owner's check reads
+  // GitHub instead of asking this platform for its own version, and the screen names the same source.
+  const rows = {
+    saas_installer_config: JSON.stringify({ template_repo: 'acme/react-wp', installed_version: '' }),
+    github_config: JSON.stringify({ token: 'ghp_stored' }),
+  };
+  const readOptions = { env: {}, readSetting: async (name) => rows[name] || '' };
+  const stored = await readUpdatesConfig(readOptions);
+  assert.equal(stored.config.repository, 'acme/react-wp');
+  assert.equal(stored.github.repo, 'acme/react-wp');
+  assert.equal(stored.github.token, 'ghp_stored');
+  assert.equal(stored.installed, '', 'a platform was never deployed by its own installer, so there is no record');
+  assert.equal(describeUpdateConfig(stored.config, true).source, 'github', 'the mounted card says which source answers');
+
+  // A site that names its own repository keeps it, and one with no installer row is unchanged.
+  const owned = await readUpdatesConfig({
+    env: {},
+    readSetting: async (name) => (name === 'updates_config' ? JSON.stringify({ repository: 'acme/mine' }) : rows[name] || ''),
+  });
+  assert.equal(owned.config.repository, 'acme/mine');
+  const bare = await readUpdatesConfig({ env: {}, readSetting: async () => '' });
+  assert.equal(bare.github, null);
+  assert.equal(bare.config.repository, '');
+});
+
+test('a browser GET on the platform paths names the verb, not a missing endpoint', async () => {
+  // What `https://www.react-wp.com/api/v1/updates/apply` answers when it is opened in a browser: the app
+  // used to say `No API endpoint at /api/v1/updates/apply.` for a GET, which is the one sentence an owner
+  // cannot tell from "my platform publishes nothing".
+  const config = centralConfigFrom({ RWP_CENTRAL_TOKENS: 'site-token' }, { repo: 'acme/react-wp' });
+  const answer = await handleCentralUpdateRequest({ method: 'GET', pathname: '/api/v1/updates/apply', env: {}, config });
+  assert.equal(answer.status, 405);
+  assert.match(answer.body.error, /POST/, 'the sentence names the verb to use');
+  // A deployment that is not the platform still answers nothing at all, so its own routes stay its own.
+  const plain = await handleCentralUpdateRequest({ method: 'GET', pathname: '/api/v1/updates/apply', env: {} });
+  assert.equal(plain, null);
 });
 
 /* -- Runner ----------------------------------------------------------------------------------------- */

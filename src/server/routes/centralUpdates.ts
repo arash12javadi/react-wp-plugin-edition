@@ -13,6 +13,11 @@
  * `/api/admin/updates/check` (its dashboard's own check, below in `index.ts`), and a platform route that
  * quietly answered 401 there would break it.
  *
+ * The verbs are registered separately on purpose. `POST` is the only method that does anything, and every
+ * other verb on those paths is answered by the same handler — with its own 405 sentence — so a browser GET
+ * cannot be mistaken for "this platform has no update API" (see the loop at the bottom of
+ * `registerCentralUpdateRoutes`).
+ *
  * Which repository that platform publishes from is resolved per request (`centralPlatformConfig`): the
  * environment first, then the repository saved on its own installer/GitHub cards. Resolving it per request
  * rather than at import is what lets an operator who has just named a repository start answering without a
@@ -85,5 +90,12 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
   app.post(CENTRAL_CHECK_PATH, reply);
   app.post(CENTRAL_APPLY_PATH, reply);
   if (declared) app.post(CENTRAL_CHECK_ALIAS, reply);
+  // Every other verb on the same paths. A browser's address bar sends a GET, and until now that answered
+  // the app's own not-found sentence — `No API endpoint at /api/v1/updates/apply.` — which reads as "this
+  // platform publishes no update API" to the very person who configured it. `handleCentralUpdateRequest`
+  // already has the sentence that explains the verb, so it is asked for it here instead.
+  for (const path of [CENTRAL_CHECK_PATH, CENTRAL_APPLY_PATH, ...(declared ? [CENTRAL_CHECK_ALIAS] : [])]) {
+    app.all(path, reply);
+  }
   return declared;
 }

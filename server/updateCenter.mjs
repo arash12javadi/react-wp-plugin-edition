@@ -148,12 +148,23 @@ export const saasInstalledVersionFrom = (value) => {
  *
  *   1. the deploy's own pin (`RWP_APP_VERSION`) — the tag the running code was built from, which cannot lag;
  *   2. the tag the SaaS installer recorded (`saas_installer_config.installed_version`);
- *   3. the `package.json` the build was compiled from.
+ *   3. `release` — the newest release tag of the repository *this* deployment publishes, which is the only
+ *      answer left for a platform that deploys itself from a branch (`latestPublishedVersion`);
+ *   4. the `package.json` the build was compiled from.
+ *
+ * Step 3 exists because a template's manifest is not its release: a platform built from `main` carries
+ * whatever number `package.json` happened to hold when the branch was last edited, and its own Updates
+ * card then names a version the repository never tagged. It is a *guess* about which release is running,
+ * so it sits below both records that actually name one — once the installer has deployed this site, or the
+ * deploy pins the tag, that exact answer wins again and a real update is visible again.
  *
  * Each answer is normalised to a plain version (no `v`), the shape every comparison in this file expects.
  */
-export const resolveInstalledVersion = ({ pinned = '', saas = '', fallback = '' }) =>
-  trimmed(pinned).replace(/^v/i, '') || trimmed(saas).replace(/^v/i, '') || trimmed(fallback).replace(/^v/i, '');
+export const resolveInstalledVersion = ({ pinned = '', saas = '', release = '', fallback = '' }) =>
+  trimmed(pinned).replace(/^v/i, '')
+  || trimmed(saas).replace(/^v/i, '')
+  || trimmed(release).replace(/^v/i, '')
+  || trimmed(fallback).replace(/^v/i, '');
 
 /* -- Versions ------------------------------------------------------------------------------------ */
 
@@ -259,6 +270,11 @@ export const describeUpdateConfig = (config, owner = true) => ({
  *   - `GITHUB_REPO` — the name the GitHub card writes.
  *   - the stored `github_config.repository`.
  *
+ *   - `fallbackRepo` — the repository the SaaS installer copies (`saas_installer_config.template_repo`),
+ *     which on a platform is the release repository itself. It is last because it is the one value that is
+ *     always present on a platform and never a choice: the installer card names the template *every* site
+ *     is built from, and its releases are what that card already lists as "Latest".
+ *
  * The token is `RWP_RELEASE_TOKEN`, else `GITHUB_TOKEN`, else the token the GitHub integration stored; a
  * public repository needs none, which is why an empty token is a supported state rather than an error.
  *
@@ -268,17 +284,20 @@ export const describeUpdateConfig = (config, owner = true) => ({
  * @param {Record<string, string | undefined>} [env]
  * @param {unknown} [stored] the `github_config` row
  * @param {unknown} [configured] `updates_config.repository`, as typed on Settings → Updates
+ * @param {unknown} [fallbackRepo] the installer card's template repository, used when nothing else names one
  * @returns {{ repo: string, token: string, explicit: boolean } | null}
  */
-export const githubUpdateSourceFrom = (env, stored, configured) => {
+export const githubUpdateSourceFrom = (env, stored, configured, fallbackRepo = '') => {
   const environment = environmentOf(env);
   const row = stored && typeof stored === 'object' ? stored : {};
   const named = trimmed(configured);
   const explicit = Boolean(repoFrom(named));
+  const installerTemplate = trimmed(fallbackRepo);
   const repo = (explicit ? named : '')
     || trimmed(environment.RWP_RELEASE_REPO)
     || trimmed(environment.GITHUB_REPO)
-    || trimmed(row.repository);
+    || trimmed(row.repository)
+    || (repoFrom(installerTemplate) ? installerTemplate : '');
   const token = trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN) || githubTokenFrom(row);
   return repoFrom(repo) ? { repo, token, explicit } : null;
 };
@@ -338,9 +357,18 @@ export async function readUpdatesConfig(options) {
     ...(stored.token || !environmentToken ? {} : { token: environmentToken }),
     ...(trimmed(row.central_url) || !/^https?:\/\//i.test(environmentCentral) ? {} : { central_url: environmentCentral }),
   };
+  const installer = saasInstallerConfigFrom(rows.settings[SAAS_INSTALLER_CONFIG_KEY]);
+  // The installer card names the template every site is built from, and on a platform that *is* the release
+  // repository. Reading it here is what makes the owner's own screen agree with Settings → Integrations →
+  // SaaS Installer, which has been listing those tags all along: without it a platform with an update token
+  // stored and no repository named asked *itself* for a version, and reported its `package.json` as the
+  // answer.
+  const github = githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository, installer.template_repo);
   return {
-    config,
-    github: githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository),
+    // `repository` is filled from the resolved source so the screen shows the repository a check will read
+    // and `checkForUpdates` prefers it over the central server. A site that names one keeps its own answer.
+    config: { ...config, ...(config.repository || !github ? {} : { repository: github.repo }) },
+    github,
     /** The release tag the SaaS installer recorded, as a plain version — or '' when it recorded none. */
     installed: saasInstalledVersionFrom(rows.settings[SAAS_INSTALLER_CONFIG_KEY]),
     readable: rows.readable,
@@ -650,6 +678,52 @@ export const centralReleasesFrom = (body, managed = false) => {
 };
 
 
+
+/** How long "the newest release of this repository" is reused when it answers which version is installed. */
+const PUBLISHED_VERSION_CACHE_MS = 60_000;
+
+/** The last answer `latestPublishedVersion` gave, keyed by repository and channel. */
+let publishedVersion = { at: 0, key: '', value: '' };
+
+/** Drops the remembered release. Exported for the self-check, and for a screen that just changed the repository. */
+export const clearPublishedVersion = () => {
+  publishedVersion = { at: 0, key: '', value: '' };
+};
+
+/**
+ * The newest release tag of the repository this deployment publishes, as a plain version — or `''` when
+ * there is no repository to read, or the read did not answer.
+ *
+ * This is the `release` input of `resolveInstalledVersion`, and it exists for one deployment: a platform
+ * that deploys *itself* from a branch. It has no `RWP_APP_VERSION` pin and no installer record, so the only
+ * statement about which release it runs is the release it publishes — which is what Settings → Integrations
+ * → SaaS Installer already shows as "Latest". Reading it here makes the two screens name one version.
+ *
+ * Never throws, and caches for a minute: this is one input to a version string, not a check of its own, so
+ * a rate limit or a private repository with no credential must leave the caller on its previous answer
+ * (`package.json`) rather than on an error screen.
+ *
+ * @param {{ source?: { repo?: string, token?: string } | null, channel?: string, fetchImpl?: typeof fetch, now?: number }} [input]
+ * @returns {Promise<string>} `2.5.4`, or `''`
+ */
+export async function latestPublishedVersion({ source, channel = 'stable', fetchImpl = fetch, now = Date.now() } = {}) {
+  const repo = trimmed(source?.repo);
+  if (!repo) return '';
+  const token = trimmed(source?.token);
+  const key = `${repo}|${channel}|${token ? 'token' : 'anonymous'}`;
+  if (publishedVersion.key === key && now - publishedVersion.at < PUBLISHED_VERSION_CACHE_MS) {
+    return publishedVersion.value;
+  }
+  let version = '';
+  try {
+    const fetched = await fetchGithubReleases({ repo, token, fetchImpl });
+    version = trimmed(latestReleaseFrom(fetched.releases, { channel })?.version).replace(/^v/i, '');
+  } catch {
+    version = '';
+  }
+  publishedVersion = { at: now, key, value: version };
+  return version;
+}
 
 /**
  * Reads the release tags of the repository this site is updated from — the repository Settings → Updates

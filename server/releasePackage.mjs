@@ -28,6 +28,38 @@ const TARBALL_LIMIT_FILES = 20_000;
 
 const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
 
+/**
+ * A release manifest with `version` set to the tag being packaged, or the same bytes when there is nothing
+ * to correct.
+ *
+ * A tag's `package.json` lags the tag often enough to matter: the number is written while the release is
+ * being prepared, and the file committed beside the tag can still name the previous one. The site that
+ * applies this package reports its own manifest when nothing pins it (`resolveInstalledVersion`, step 4), so
+ * packaging it unchanged would leave a site that has just updated to `2.5.4` answering `1.3.1` on the very
+ * next check — and being offered the same update again. The ZIP is an archive of *a release*, so its
+ * manifest carries the release's version; a body that is not JSON, or a `version` that is not a version, is
+ * passed through untouched rather than guessed at.
+ *
+ * `TextDecoder`/`TextEncoder` rather than `Buffer`: this file is bundled into the Vercel function and keeps
+ * its promise of no `node:` imports.
+ *
+ * @param {Uint8Array} bytes the release's own `package.json`
+ * @param {string} version the tag, `v2.5.4` or `2.5.4`
+ * @returns {Uint8Array}
+ */
+function manifestAtVersion(bytes, version) {
+  const plain = trimmed(version).replace(/^v/i, '');
+  if (!/^\d+\.\d+\.\d+/.test(plain)) return bytes;
+  try {
+    const manifest = JSON.parse(new TextDecoder().decode(bytes));
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return bytes;
+    manifest.version = plain;
+    return new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
+  } catch {
+    return bytes;
+  }
+}
+
 /** A refusal that carries the HTTP status the route should answer with. */
 class ReleasePackageError extends Error {
   constructor(message, status = 502) {
@@ -226,6 +258,8 @@ export async function buildCoreReleaseZip({ repo, token, version, fetchImpl = fe
     if (!hasManifest) {
       return { ok: false, status: 502, error: `${target}@${version} has no package.json at its root, so it is not a release of this template.` };
     }
+    // The archive is a release, so its manifest names the release — see `manifestAtVersion`.
+    core['package.json'] = manifestAtVersion(core['package.json'], trimmed(version));
     return {
       ok: true,
       version: trimmed(version),

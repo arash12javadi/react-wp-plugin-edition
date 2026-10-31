@@ -41,6 +41,7 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  latestPublishedVersion,
   managedUpdateSupport,
   readUpdatesConfig,
   resolveInstalledVersion,
@@ -96,6 +97,24 @@ export async function installedVersion() {
   return installedVersionCache;
 }
 
+/**
+ * The version this host reports as installed: the pin, the installer's record, the release this platform
+ * publishes, else the manifest — `resolveInstalledVersion`'s order, and the same one
+ * `src/server/routes/updates.ts` applies, so the two hosts cannot disagree about it.
+ *
+ * The release step is the owner's alone. A managed site is told what it runs by the installer that
+ * deployed it (`RWP_APP_VERSION`), and it must never read GitHub; the platform that *publishes* the
+ * releases has no such record, so its own newest tag is the only honest answer — and it is the number
+ * Settings → Integrations → SaaS Installer already prints as "Latest".
+ */
+const installedFor = async (stored, owner = true) =>
+  resolveInstalledVersion({
+    pinned: pinnedVersion(),
+    saas: stored.installed,
+    release: owner ? await latestPublishedVersion({ source: stored.github, channel: stored.config.channel }) : '',
+    fallback: await packageVersion(),
+  });
+
 /** The caller's permission, or a refusal. Every route below needs an administrator. */
 async function requireManager(config, headers) {
   if (!config?.supabaseUrl || !config?.supabasePublishableKey) {
@@ -134,7 +153,7 @@ async function overview({ readOptions, owner = true }) {
   // answer with the one that is. `managedUpdateSupport` also replaces the host's technical refusal with the
   // sentence a customer can act on.
   const support = owner ? await selfUpdateSupport() : managedUpdateSupport(await packageUpdateSupport());
-  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
+  const installed = await installedFor(stored, owner);
   return {
     installed,
     config: describeUpdateConfig(stored.config, owner),
@@ -158,7 +177,7 @@ async function overview({ readOptions, owner = true }) {
 async function check(body, config, readOptions, owner = true) {
   const stored = await readUpdatesConfig(readOptions);
   const plugins = pluginList(body.plugins);
-  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
+  const installed = await installedFor(stored, owner);
   const answer = await checkForUpdates({
     config: stored.config,
     current: { app: installed, site: String(body.site || '').trim() },
@@ -189,7 +208,7 @@ async function check(body, config, readOptions, owner = true) {
  */
 async function applyUpdate(body, config, readOptions, readDeployHook, owner = true) {
   const stored = await readUpdatesConfig(readOptions);
-  const installed = resolveInstalledVersion({ pinned: pinnedVersion(), saas: stored.installed, fallback: await packageVersion() });
+  const installed = await installedFor(stored, owner);
   const plugins = pluginList(body.plugins);
   const answer = await checkForUpdates({
     config: stored.config,
