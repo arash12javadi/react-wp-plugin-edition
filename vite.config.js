@@ -15,6 +15,31 @@ import { apiPort, devApiServer } from './vite.devApi.mjs'
  */
 const apiOrigin = `http://localhost:${apiPort()}`
 
+/**
+ * Which server `npm run dev` starts on that port.
+ *
+ * `server.mjs` speaks Supabase only — it says so, and tells you to run the universal server instead —
+ * so a site on SQLite/Turso, PostgreSQL or MySQL gets the universal engine's entry
+ * (`src/server/adapters/node.ts`, the same one `npm run start:hono` runs) and `npm run dev` keeps
+ * working. Without this, a local `.env.local` with `VITE_DB_TYPE=libsql` started a server that refused
+ * the very database the SPA next to it was reading, and `/api` answered with that refusal.
+ *
+ * The decision is the *site's*, not this build's: `resolveSiteConfig()` reads `dbType` from
+ * `data/react-wp-config.json` with `.env.local` filling what the file does not carry, exactly as the
+ * server and the injected client config do.
+ */
+const devApiEntry = (config) => (config.dbType && config.dbType !== 'supabase'
+  ? 'src/server/adapters/node.ts'
+  : 'server.mjs')
+
+/**
+ * Resolved once, when this config is loaded — the same moment the API server is started, and the same
+ * module `devApiServer` reads `PORT` from. `resolveSiteConfig()` is async (it reads
+ * `data/react-wp-config.json`), which is exactly why a top-level `await` is used here rather than an
+ * async config factory: the rest of this file is plain data, and the site's answer is not.
+ */
+const siteConfig = await resolveSiteConfig()
+
 export default defineConfig({
   /**
    * CSS Modules render readable, stable class names instead of Vite's hashed ones.
@@ -104,8 +129,9 @@ export default defineConfig({
         )
       },
     },
-    // The API server itself, so `npm run dev` is enough on its own.
-    devApiServer(),
+    // The API server itself, so `npm run dev` is enough on its own. Which one is the site's choice —
+    // see `devApiEntry` above.
+    devApiServer({ entry: devApiEntry(siteConfig) }),
   ],
   server: {
     proxy: {
@@ -131,6 +157,15 @@ export default defineConfig({
           })
         },
       },
+      /**
+       * Uploaded media, when the site stores files on disk (`RWP_STORAGE=local`, the default for a
+       * self-hosted or local SQLite site). `npm run dev` serves the SPA from memory, so `/uploads/…` is
+       * not a file Vite can find: the API server next to it owns that directory
+       * (`src/server/adapters/node.ts`). Proxied rather than left to fall through, because an image that
+       * loads under `npm run start:hono` and 404s under `npm run dev` is the kind of difference that
+       * hides a storage bug until deploy.
+       */
+      '/uploads': { target: apiOrigin },
     },
   },
 })

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -22,6 +23,11 @@ import path from 'node:path';
  * over the port. `RWP_DEV_API=off` restores the old behaviour for anyone who wants to run the API by
  * hand. Edits to `server.mjs` and `server/*.mjs` are not watched (Vite only reloads the browser
  * bundle), so restart `npm run dev` after changing them — the same as with `npm start`.
+ *
+ * `entry` is the caller's choice, because `server.mjs` speaks Supabase only: a site on any other
+ * backend (SQLite/Turso, PostgreSQL, MySQL) is served by the universal engine in
+ * `src/server/adapters/node.ts`, and `vite.config.js` passes that entry instead whenever the resolved
+ * site is not a Supabase one. It is TypeScript, so it is started through `tsx` — see `commandFor`.
  */
 
 /** The port the API server listens on and Vite's `/api` proxy points at. `server.mjs` reads it too. */
@@ -67,6 +73,23 @@ export function devApiServer({ entry = 'server.mjs' } = {}) {
   // Set before every kill we cause, so a shutdown is not reported as a crash.
   let stopping = false;
 
+  /**
+   * How one entry is started, and the file to blame when it cannot be.
+   *
+   * `server.mjs` is plain JavaScript, so a Node binary runs it directly. The universal engine's entry
+   * (`src/server/adapters/node.ts`) is TypeScript, and it is the only server that can answer for a
+   * backend that is not Supabase — `server.mjs` refuses those on purpose — so `vite.config.js` names it
+   * whenever the configured site is not a Supabase one. TypeScript needs the `tsx` loader this project
+   * already depends on (`npm run start:hono` runs through it); `node` on a `.ts` file would only ever
+   * fail with `ERR_UNKNOWN_FILE_EXTENSION`, which reads like a config mistake rather than a missing tool.
+   */
+  const commandFor = (root, file) => {
+    const target = path.resolve(root, file);
+    if (!/\.(?:ts|tsx|mts)$/i.test(file)) return { args: [target], runner: null };
+    const runner = path.resolve(root, 'node_modules/tsx/dist/cli.mjs');
+    return { args: [runner, target], runner };
+  };
+
   const stop = () => {
     stopping = true;
     const running = child;
@@ -97,7 +120,18 @@ export function devApiServer({ entry = 'server.mjs' } = {}) {
         return;
       }
 
-      child = spawn(process.execPath, [path.resolve(config.root, entry)], {
+      const { args, runner } = commandFor(config.root, entry);
+      // Checked here rather than left to the child's exit: `node` on a missing loader prints a bare
+      // MODULE_NOT_FOUND stack, and the run then looks like a crash in this plugin.
+      if (runner && !existsSync(runner)) {
+        logger.error(
+          `[api] ${entry} runs through tsx, which is not installed, so every /api request will fail.`
+          + ' Run "npm install", or start the server yourself with "npm run start:hono".',
+        );
+        return;
+      }
+
+      child = spawn(process.execPath, args, {
         cwd: config.root,
         // Passed rather than defaulted, so the child and the proxy can never disagree about the port.
         env: { ...process.env, PORT: String(port) },
