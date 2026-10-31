@@ -1,15 +1,21 @@
 /**
  * The platform's update API on the universal engine (`/api` → Hono).
  *
- * Three routes, all answered by the module the classic host (`server.mjs` → `server/centralUpdates.mjs`)
+ * Four routes, all answered by the module the classic host (`server.mjs` → `server/centralUpdates.mjs`)
  * calls, so the two hosts cannot disagree about who may ask or what a release is:
  *
  *   POST /api/v1/updates/check            what `react-wp.com` publishes, for a site that reports its version
  *   POST /api/admin/updates/check         the same conversation under the admin API's longer name
  *   POST /api/v1/updates/apply            the release package a managed site installs
+ *   POST /api/v1/updates/install          the release applied *here*, to a site this platform provisioned
+ *
+ * The last one is the only route that changes something outside this deployment. It is handed to
+ * `platformInstallHandler`, which loads the installer plugin and spends this platform's `RWP_VERCEL_TOKEN`:
+ * the site names its own address, the platform resolves the Vercel project it recorded for that address, and
+ * the site's `Update now` button works on a host — Vercel — whose files are read-only.
  *
  * Registered only on a deployment that *is* the platform. `centralConfigFrom` answers `enabled: false`
- * everywhere else, and then none of the three exists — which is the point: a customer's site already owns
+ * everywhere else, and then none of the four exists — which is the point: a customer's site already owns
  * `/api/admin/updates/check` (its dashboard's own check, below in `index.ts`), and a platform route that
  * quietly answered 401 there would break it.
  *
@@ -38,10 +44,12 @@ import {
   CENTRAL_APPLY_PATH,
   CENTRAL_CHECK_ALIAS,
   CENTRAL_CHECK_PATH,
+  CENTRAL_INSTALL_PATH,
   centralConfigFrom,
   centralPlatformConfig,
   handleCentralUpdateRequest,
 } from '../../../server/centralUpdates.mjs';
+import { platformInstallHandler } from '../../../server/platformInstaller.mjs';
 import { getRuntimeConfig } from '../config';
 import { integrationReadOptions } from '../pluginHostAccess';
 
@@ -74,6 +82,21 @@ async function platformConfig() {
 export function registerCentralUpdateRoutes(app: Hono): boolean {
   const declared = centralConfigFrom(process.env).enabled;
 
+  // One handler for the whole process: it resolves the installer plugin once per request (a deleted plugin
+  // folder must not stop the server) and reads this deployment's Supabase location lazily, because that is a
+  // runtime-config answer on the Hono host and an environment answer on the classic one.
+  const install = platformInstallHandler({
+    env: process.env,
+    supabase: async () => {
+      const config = await getRuntimeConfig();
+      return {
+        url: config.supabaseUrl,
+        publishableKey: config.supabasePublishableKey,
+        secretKey: config.supabaseServiceRoleKey,
+      };
+    },
+  });
+
   const reply = async (c: Context, next: Next) => {
     // The pathname comes from the URL rather than `c.req.path`, so the two hosts agree on which route was
     // called even when one of them is mounted under a prefix.
@@ -86,6 +109,7 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
       body,
       env: process.env,
       config: await platformConfig(),
+      install,
     });
     if (!result) {
       // `null` at the alias is this platform's own Updates screen asking, not one of its sites: the screen
@@ -105,12 +129,16 @@ export function registerCentralUpdateRoutes(app: Hono): boolean {
 
   app.post(CENTRAL_CHECK_PATH, reply);
   app.post(CENTRAL_APPLY_PATH, reply);
+  // Mounted on every deployment so a customer's `POST /api/v1/updates/install` is the 404 it always was: the
+  // handler answers `null` there (`config.enabled` is false), and this route is only ever reachable on the
+  // platform whose sites call it.
+  app.post(CENTRAL_INSTALL_PATH, reply);
   if (declared) app.post(CENTRAL_CHECK_ALIAS, reply);
   // Every other verb on the same paths. A browser's address bar sends a GET, and until now that answered
   // the app's own not-found sentence — `No API endpoint at /api/v1/updates/apply.` — which reads as "this
   // platform publishes no update API" to the very person who configured it. `handleCentralUpdateRequest`
   // already has the sentence that explains the verb, so it is asked for it here instead.
-  for (const path of [CENTRAL_CHECK_PATH, CENTRAL_APPLY_PATH, ...(declared ? [CENTRAL_CHECK_ALIAS] : [])]) {
+  for (const path of [CENTRAL_CHECK_PATH, CENTRAL_APPLY_PATH, CENTRAL_INSTALL_PATH, ...(declared ? [CENTRAL_CHECK_ALIAS] : [])]) {
     app.all(path, reply);
   }
   return declared;

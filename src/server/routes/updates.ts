@@ -59,8 +59,12 @@ import {
   installedPluginsFrom,
   latestPublishedVersion,
   managedUpdateSupport,
+  platformRedeployFrom,
+  platformUpdatePlan,
   readUpdatesConfig,
+  requestPlatformInstall,
   resolveInstalledVersion,
+  siteAddressFrom,
   updatePlan,
 } from '../../../server/updateCenter.mjs';
 import {
@@ -93,7 +97,8 @@ const packageAppVersion = String(packageVersion || '').trim();
 /** What `readUpdatesConfig` answers, as far as the version question is concerned. */
 interface StoredUpdateConfig {
   installed: string;
-  config: { channel: string };
+  /** `token` and `central_url` are what `platformRedeployFrom` reads: the platform connection itself. */
+  config: { channel: string; token?: string; central_url?: string };
   github: { repo: string; token: string } | null;
 }
 
@@ -174,17 +179,30 @@ async function selfSupport() {
 }
 
 /**
- * The support answer a managed site gets: can this host install the package `react-wp.com` publishes?
+ * The support answer a managed site gets: can this host install the package `react-wp.com` publishes, and if
+ * it cannot, can the platform redeploy it instead?
  *
  * Asked of `packageUpdateSupport` rather than `selfSupport`, because the two are about different things —
  * a git checkout and a deploy hook are ways of updating that a customer does not choose and cannot see.
  * `managedUpdateSupport` also swaps a probe's technical reason ("this folder is not a checkout") for the
  * sentence that tells them what to do, which is contact support.
+ *
+ * `platformRedeployFrom(stored.config)` is the second answer: a site that holds a token for the platform is
+ * told `mode: 'platform'` and gets a button, because `POST /api/v1/updates/install` exists for exactly the
+ * host that cannot install anything — a prebuilt Vercel deployment whose files are read-only and whose
+ * repository never carries `dist/`.
  */
-const managedSupport = async () => managedUpdateSupport(await packageUpdateSupport());
+const managedSupport = async (stored: StoredUpdateConfig) =>
+  managedUpdateSupport({ ...(await packageUpdateSupport()), platform: platformRedeployFrom(stored.config) });
 
-/** The support answer for whoever is asking — the owner's host probe, or the one way a managed site updates. */
-const supportFor = async (owner: boolean) => (owner ? selfSupport() : managedSupport());
+/**
+ * The support answer for whoever is asking — the owner's host probe, or the way a managed site updates.
+ *
+ * The stored row is passed in rather than read here: every caller has just read it for the version, and a
+ * second read would only be able to disagree with the first.
+ */
+const supportFor = async (owner: boolean, stored: StoredUpdateConfig) =>
+  (owner ? selfSupport() : managedSupport(stored));
 
 /**
  * `GET /api/admin/updates` — everything the screen needs before it offers a button.
@@ -206,7 +224,7 @@ async function overview(c: Context): Promise<Response> {
       readable: stored.readable,
       // The sentence behind `readable: false` names the table and the environment, so it is the owner's.
       error: owner ? stored.error : '',
-      support: await supportFor(owner),
+      support: await supportFor(owner, stored),
       plugin_directory: PLUGIN_DIRECTORY_PATH,
       channels: UPDATE_CHANNELS,
       auto_check: AUTO_CHECK_KEYS,
@@ -292,7 +310,23 @@ async function applyUpdate(c: Context): Promise<Response> {
       // Asked before the run starts, because `startSelfUpdate` refuses with the probe's own sentence — a
       // statement about a filesystem this reader cannot do anything about. `managedSupport` swaps it for the
       // customer's version: contact support, who apply the release for them.
-      const support = await managedSupport();
+      const support = await managedSupport(stored);
+      // …unless the platform is the one that rebuilds it. A prebuilt Vercel deployment has no writable files
+      // and no `dist/` in its repository, so nothing here can install a package; the platform that
+      // provisioned it builds the release and uploads it to this site's own project instead, from the
+      // address the site names. Same button, same route, different machine doing the work.
+      if (support.mode === 'platform') {
+        const plan = platformUpdatePlan({ latestVersion: answer.app.latest, installedVersion: installed });
+        if (plan.up_to_date) return c.json({ ...plan, check: reported });
+        const install = await requestPlatformInstall({
+          config: stored.config,
+          // The body first (a script or a test may name the site it means), else the host that was asked —
+          // which is the address the platform recorded for this project when it provisioned it.
+          site: siteAddressFrom(c.req.raw.headers, { site: String(body.site || '') }),
+          version: answer.app.latest,
+        });
+        return c.json({ ...install, plan, check: reported });
+      }
       if (!support.supported) throw new HttpError(409, support.reason);
       const run = await startSelfUpdate({
         to: answer.app.latest,
@@ -362,7 +396,10 @@ async function updateStatus(c: Context): Promise<Response> {
     const id = c.req.query('id') || '';
     if (!id) {
       const owner = await viewerOwner(config, c);
-      return c.json({ runs: await listSelfUpdateRuns(), support: await supportFor(owner) });
+      // Read for the managed branch alone: `supportFor` needs `token` to tell a host that can install a
+      // package from one the platform has to rebuild. The owner's answer never depends on it.
+      const stored = await readUpdatesConfig(integrationReadOptions(config));
+      return c.json({ runs: await listSelfUpdateRuns(), support: await supportFor(owner, stored) });
     }
     const run = await readSelfUpdateRun(id);
     if (!run) throw new HttpError(404, 'That update run does not exist on this server, or it was cleaned up.');

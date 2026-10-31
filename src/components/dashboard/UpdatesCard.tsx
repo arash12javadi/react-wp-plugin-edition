@@ -19,9 +19,11 @@
  *     version alone, which is what makes that record worth keeping.
  *   - **Always say why a button will not work.** `support.reason` is the server's sentence, shown before
  *     the button rather than after a click that could never have succeeded.
- *   - **Never draw a button this host cannot honour.** A managed site whose host cannot install a package
- *     is one the platform updates for it: the sentence is shown plainly and `Update now` is not rendered at
- *     all, because a button whose only possible answer is 409 is worse than no button.
+ *   - **Never draw a button this host cannot honour.** A managed site is one of three things, and the server
+ *     says which (`support.mode`): a server that installs the package itself, a deployment whose platform
+ *     rebuilds it (`platform` — the button is real, and the click asks `react-wp.com`), or one where neither
+ *     is possible. Only the last hides `Update now` and shows the reason instead, because a button whose only
+ *     possible answer is 409 is worse than no button.
  *   - **Never hold the token.** The field below writes it and then shows `has_token`; there is no read
  *     path back, by design.
  */
@@ -231,17 +233,18 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   }, []);
 
   /**
-   * Closes the loop on a deploy hook.
+   * Closes the loop on an update this screen could not watch.
    *
-   * A deploy hook has no log to follow. The only evidence that the new build is live is the *next* check:
-   * it compares the tag GitHub publishes against the tag the running build reports. So when a check finds
-   * nothing left to do while the recorded outcome still says a deploy for that same version was triggered,
-   * the record becomes `completed` — the "records the new version tag once the site reloads" half of the
-   * feature — and the screen says so once, with the tag.
+   * Neither a deploy hook nor a platform rebuild has a log to follow: the hook is fire-and-forget, and the
+   * platform uploads a release and promotes its own deployment. The only evidence that the new build is live
+   * is the *next* check: it compares the tag the platform publishes against the tag the running build
+   * reports. So when a check finds nothing left to do while the recorded outcome still says one of those was
+   * triggered for that same version, the record becomes `completed` — the "records the new version tag once
+   * the site reloads" half of the feature — and the screen says so once, with the tag.
    */
   const settleDeploy = useCallback(async (answer: UpdateCheckAnswer) => {
     const pending = (versionState.current as { last_update?: VersionStateEntry } | null)?.last_update;
-    if (!pending || pending.mode !== 'deploy-hook' || pending.status !== 'triggered') return;
+    if (!pending || (pending.mode !== 'deploy-hook' && pending.mode !== 'platform') || pending.status !== 'triggered') return;
     if (answer.updateAvailable ?? answer.app.update_available) return;
     const applied = answer.app.latest || '';
     // A build that comes back *older* than the tag that was deployed is not the success this is looking
@@ -256,7 +259,7 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
         at: new Date().toISOString(),
         from: pending.from || answer.app.installed,
         to: applied || pending.to,
-        mode: 'deploy-hook',
+        mode: pending.mode,
         status: 'completed',
       });
     } catch {
@@ -358,6 +361,12 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
     setApplying(true);
     setError('');
     setFeedback('');
+    // A platform rebuild is the one path that can take minutes *inside* the request: the platform builds the
+    // release and uploads it before it answers at all. Said before the wait rather than after it, because a
+    // disabled button with no sentence is just the screen looking stuck.
+    if (!isOwner && overview?.support?.mode === 'platform') {
+      setFeedback('Asking React-WP.com to rebuild this site. It builds the release and uploads it to this site’s own project before it answers, so this can take a few minutes.');
+    }
     try {
       const outcome = await applyUpdate();
       publish(outcome.check);
@@ -369,6 +378,22 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
       if (outcome.kind === 'manual') {
         // Not a failure: this host cannot apply it, and the steps below are the answer.
         setFeedback(outcome.plan.reason);
+        return;
+      }
+      if (outcome.kind === 'platform') {
+        // The platform has already built and uploaded the release, so there is no run to follow and no build
+        // to count from here: what is left is the platform promoting the new deployment over this one, and the
+        // next check is the evidence for that — `settleDeploy` turns it into the success message, exactly as
+        // it does for a deploy hook.
+        await remember({
+          at: new Date().toISOString(),
+          from: outcome.check.app.installed,
+          to: outcome.version || outcome.check.app.latest,
+          mode: 'platform',
+          status: outcome.queued ? 'triggered' : 'failed',
+          ...(outcome.queued ? {} : { error: outcome.message || 'React-WP.com did not rebuild this site.' }),
+        });
+        setFeedback(outcome.message || outcome.plan.reason);
         return;
       }
       if (outcome.kind === 'deploy') {
@@ -415,6 +440,8 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
         status: 'started',
       });
     } catch (applyError) {
+      // The optimistic sentence above describes a request that failed, so it must not outlive it.
+      setFeedback('');
       setError(message(applyError, 'The update could not be started.'));
     } finally {
       setApplying(false);
@@ -481,9 +508,15 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   }
 
   const support = overview?.support;
-  // A managed site's host either installs the package the platform publishes or it does not. When it does
-  // not — a Vercel deployment, whose files are read-only — React-WP applies the release to the project
-  // itself, so there is no button to offer here and nothing this reader could do with one.
+  // How a managed site gets a release is the server's answer, not this screen's guess (`support.mode`, from
+  // `managedUpdateSupport`). Two of the three have no button: `manual` means neither this host nor a platform
+  // can apply anything, and `self` means this server does it. `platform` does have one — the deployment's
+  // files are read-only, so `Update now` asks React-WP.com to rebuild the site's own project, which is the
+  // only way a provisioned Vercel site can move forward.
+  const platformManaged = !isOwner && support?.mode === 'platform';
+  // No platform to ask either: nothing on this screen could succeed, so no button is drawn and the sentence
+  // under it says why. A server build that predates `mode` reports the same `supported: false` for a read-only
+  // host, and it is right to hide the button there too — it had no platform route to honour the click.
   const managedHosted = !isOwner && Boolean(support) && support.supported === false;
   const updates = check?.updates || [];
   const appUpdate = updates.find((entry) => entry.kind === 'app');
@@ -517,7 +550,9 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
             </button>
             {!managedHosted && (
               <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void updateNow()}>
-                {applying ? 'Starting…' : 'Update now'}
+                {applying
+                  ? (platformManaged ? 'Rebuilding…' : 'Starting…')
+                  : 'Update now'}
               </button>
             )}
           </div>
@@ -543,9 +578,10 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
           )}
         </div>
 
-        {managedHosted ? (
-          // Said plainly rather than boxed as a warning: for this reader there is nothing to fix and nothing
-          // to press. The platform publishes the release and applies it to the site.
+        {platformManaged || managedHosted ? (
+          // Said plainly rather than boxed as a warning: for this reader there is nothing to fix. The platform
+          // publishes the release, and either it rebuilds the site (the button above is real) or it installs
+          // the release itself. Both sentences are the server's, written in `MANAGED_MESSAGES`.
           <p className={styles.muted}>{support?.reason}</p>
         ) : support && !support.supported ? (
           <div className={styles.warning} role="status">
@@ -682,6 +718,13 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
                   way the token below is written to <code>system_settings.updates_config</code> and read only by the
                   server: this screen is never sent it back (<code>has_token</code> is all it sees), so nothing in the
                   browser can leak it and a private repository stays private.
+                </>
+              ) : platformManaged ? (
+                <>
+                  Updates for this site are provided by <strong>React-WP.com</strong>. It publishes each release, and
+                  <strong> Update now</strong> asks it to rebuild this site with that release in this site’s own
+                  project — your plugins, uploads and database are not touched. There is nothing to configure here
+                  except how often the dashboard checks and whether new releases appear in the sidebar.
                 </>
               ) : (
                 <>

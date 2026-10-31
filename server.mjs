@@ -20,6 +20,7 @@ import { InstallError, installPlugin, MAX_ZIP_BYTES } from './server/pluginInsta
 import { handleAdminRequest } from './server/adminRoutes.mjs';
 import { handleUpdateRequest } from './server/updateRoutes.mjs';
 import { centralConfigFrom, centralPlatformConfig, handleCentralUpdateRequest } from './server/centralUpdates.mjs';
+import { platformInstallHandler } from './server/platformInstaller.mjs';
 import { handleSecurityRequest } from './server/securityRoutes.mjs';
 import { handleIntegrationsRequest, ownsIntegrationPath } from './server/integrationsRoutes.mjs';
 import { assistAuthMessages, handleAiAssistRequest, ownsAiAssistPath } from './server/aiAssist.mjs';
@@ -768,7 +769,8 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     // The platform's update API: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias
-    // older clients ask for, and `POST /api/v1/updates/apply` for a managed site's one-click update.
+    // older clients ask for, `POST /api/v1/updates/apply` for a managed site's one-click update, and
+    // `POST /api/v1/updates/install`, which redeploys a site this platform provisioned.
     //
     // The `/api/v1` paths are ours to answer on every deployment, because the repository a platform
     // publishes from may live in its own rows rather than in the environment (`centralPlatformConfig`);
@@ -783,7 +785,7 @@ const server = http.createServer(async (request, response) => {
     // (`isDashboardAliasCheck`, because it names no installed version), so the body it already parsed is
     // kept and given to `handleUpdateRequest` below — a request body can only be read once.
     let centralBody = null;
-    if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check' || url.pathname === '/api/v1/updates/apply') {
+    if (url.pathname === '/api/v1/updates/check' || url.pathname === '/api/admin/updates/check' || url.pathname === '/api/v1/updates/apply' || url.pathname === '/api/v1/updates/install') {
       const centralAlias = url.pathname === '/api/admin/updates/check';
       if (!centralAlias || centralConfigFrom(process.env).enabled) {
         const centralFile = await readConfig();
@@ -794,6 +796,16 @@ const server = http.createServer(async (request, response) => {
           headers: request.headers,
           body: centralBody ?? {},
           env: process.env,
+          // Only `install` uses this, and only on a platform: it is the seam to the installer plugin, which
+          // spends `RWP_VERCEL_TOKEN` on the project the tracker recorded for the site that asked.
+          install: platformInstallHandler({
+            env: process.env,
+            supabase: {
+              url: centralFile?.supabaseUrl,
+              publishableKey: centralFile?.supabasePublishableKey,
+              secretKey: centralFile?.supabaseServiceRoleKey || process.env.SUPABASE_SECRET_KEY,
+            },
+          }),
           config: await centralPlatformConfig({
             env: process.env,
             readOptions: {

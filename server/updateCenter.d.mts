@@ -19,6 +19,8 @@ export const CENTRAL_CHECK_PATH: string;
 export const CENTRAL_CHECK_FALLBACK_PATH: string;
 export const CENTRAL_CHECK_PATHS: readonly string[];
 export const CENTRAL_APPLY_PATH: string;
+export const CENTRAL_INSTALL_PATH: string;
+export const CENTRAL_INSTALL_TIMEOUT_MS: number;
 export const PLUGIN_DIRECTORY_PATH: string;
 
 export const UPDATE_CHANNELS: readonly string[];
@@ -38,6 +40,14 @@ export const MANAGED_MESSAGES: {
   no_api: string;
   no_release: string;
   cannot_apply: string;
+  /** `mode: 'platform'`: the platform rebuilds this site when the button is pressed. */
+  platform_applies: string;
+  /** The platform this site uses was built before `/api/v1/updates/install` existed. */
+  no_install_api: string;
+  /** The platform answered with a refusal; the status is the only detail a customer is told. */
+  install_failed(status: number): string;
+  /** The rebuild request never completed, so whether it finished is unknown. */
+  install_unreachable: string;
 };
 
 /** A refusal that carries the status code to answer with. */
@@ -149,7 +159,11 @@ export interface UpdateCheck {
 
 /** The stages a plan runs, in order. The screen names them; there are no by-hand steps to print. */
 export interface UpdatePlan {
-  mode: 'deploy-hook' | 'self' | 'manual';
+  /**
+   * `deploy-hook` and `self` run on this site. `platform` means the platform rebuilds it, so nothing here
+   * builds anything and `requestPlatformInstall` is what the button calls.
+   */
+  mode: 'deploy-hook' | 'self' | 'platform' | 'manual';
   reason: string;
   steps: string[];
   up_to_date?: boolean;
@@ -247,7 +261,54 @@ export function managedUpdateSupport(support: {
   reason: string;
   restart?: 'pm2' | 'manual';
   app_name?: string;
-}): { available: boolean; repo: boolean; supported: boolean; reason: string; restart: 'pm2' | 'manual'; app_name: string };
+  /** True when this site holds a token for the platform that publishes its releases. */
+  platform?: boolean;
+}): {
+  available: boolean;
+  repo: boolean;
+  supported: boolean;
+  /** `self` installs the package here, `platform` asks the platform to rebuild, `manual` is support. */
+  mode: 'self' | 'platform' | 'manual';
+  reason: string;
+  restart: 'pm2' | 'manual';
+  app_name: string;
+};
+
+/**
+ * This site's own public address: what the caller named, else `X-Forwarded-Host`/`Host` from the request
+ * being answered, else `fallback`. Empty when there is nothing to go on.
+ */
+export function siteAddressFrom(
+  headers: unknown,
+  input?: { site?: string; fallback?: string },
+): string;
+
+/** True when the stored configuration holds a platform token, which is what a rebuild needs. */
+export function platformRedeployFrom(config: { token?: string; central_url?: string } | null | undefined): boolean;
+
+/** The plan for a managed site whose host cannot install a package: the platform rebuilds it. */
+export function platformUpdatePlan(input: {
+  latestVersion: string;
+  installedVersion: string;
+}): UpdatePlan;
+
+/** Asks the platform to rebuild this site and upload the release to its project. */
+export function requestPlatformInstall(input: {
+  config: { token?: string; central_url?: string };
+  /** This site's own address; the platform matches its Vercel project on it. */
+  site: string;
+  version?: string;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{
+  mode: 'platform';
+  queued: boolean;
+  project: string;
+  version: string;
+  deployment: { id: string; url: string; ready_state: string } | null;
+  message: string;
+}>;
 
 export function versionStateFrom(value: unknown, current: { installed: string }): VersionStateView;
 export function versionStateAfter(
@@ -277,6 +338,12 @@ export function fetchGithubCheck(options: {
 
 /** The central endpoint a managed site downloads its release package from. */
 export function centralApplyUrl(config: UpdateConfig): string;
+
+/**
+ * The central endpoint a site that cannot install anything asks to be rebuilt. Same host and token as
+ * `centralApplyUrl`: a site that can check for updates can already install them.
+ */
+export function centralInstallUrl(config: UpdateConfig): string;
 
 export function checkAnswerFrom(input: {
   source: 'central' | 'github';

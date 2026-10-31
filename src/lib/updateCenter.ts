@@ -100,6 +100,14 @@ export interface UpdateSupport {
   available: boolean;
   repo: boolean;
   supported: boolean;
+  /**
+   * How a *managed* site gets a release, decided by the server (`managedUpdateSupport` in
+   * `server/updateCenter.mjs`): `self` when this server can download and apply the package itself,
+   * `platform` when the platform that publishes it rebuilds the site instead, and `manual` when neither is
+   * possible. Absent on a deployment that owns its own update channel, and for a site talking to a server
+   * build that predates the field — which is why nothing here is decided by `mode` alone.
+   */
+  mode?: 'self' | 'platform' | 'manual';
   reason: string;
   branch?: string;
   head?: string;
@@ -166,13 +174,19 @@ export interface UpdatesOverview {
 /**
  * How an update would be applied. `up_to_date` is a `manual` plan whose reason says so.
  *
- * There are three modes and no more: `manual` when this host has nowhere to send an update, `deploy-hook`
- * when its platform rebuilds it, and `self` when a server runs the update itself — which is also how a
- * *managed* site installs the package `react-wp.com` publishes. A customer's update is never applied over
- * the API on their behalf, so there is no fourth mode to classify.
+ * Four modes, one per way a release can reach a site:
+ *
+ *   - `manual` — nowhere to send it; `reason` names what to configure (or that it is already current).
+ *   - `self` — a server that owns its checkout runs the update itself, and that includes a *managed* site
+ *     whose files it can write: the package comes from `react-wp.com` and this server applies it.
+ *   - `deploy-hook` — a saved hook URL rebuilds the site on its host.
+ *   - `platform` — a managed site whose host cannot install a package (a prebuilt Vercel deployment: the
+ *     files are read-only and the repository never carries `dist/`). `Update now` asks `react-wp.com` to
+ *     build the release and upload it to the site's own project, so the work, and the steps in this plan,
+ *     are the platform's rather than this server's.
  */
 export interface UpdatePlan {
-  mode: 'manual' | 'deploy-hook' | 'self';
+  mode: 'manual' | 'deploy-hook' | 'self' | 'platform';
   up_to_date?: boolean;
   reason: string;
   /** The steps the screen can show while the work runs. */
@@ -208,14 +222,17 @@ export interface SelfUpdateRun {
 }
 
 /**
- * What `applyUpdate` produced, in the three shapes the route can answer with.
+ * What `applyUpdate` produced, in the four shapes the route can answer with.
  *
  * `manual` is not an error: it is the route saying "this host cannot do this", and `plan.reason` carries
  * the sentence that names what to configure. That is why the client classifies the response instead of
  * throwing on a 409.
  *
- * A managed site is `self` too: `react-wp.com` publishes the package and this server downloads and applies
- * it, so there is no "the platform deployed it" answer to read.
+ * A managed site is either `self` — `react-wp.com` publishes the package and this server downloads and
+ * applies it — or `platform`, where the platform did the work: it built the release and uploaded it to this
+ * site's own deployment, and what is left is the promotion of that deployment, which the next check is the
+ * evidence for. There is no run to poll in the second case, which is why it has its own kind rather than an
+ * empty `run`.
  */
 export type UpdateOutcome =
   | { kind: 'up_to_date'; plan: UpdatePlan; check: UpdateCheckAnswer }
@@ -225,6 +242,18 @@ export type UpdateOutcome =
     queued: boolean;
     message: string;
     deploy: { configured: boolean; triggered: boolean; status?: number; error?: string };
+    plan: UpdatePlan;
+    check: UpdateCheckAnswer;
+  }
+  | {
+    kind: 'platform';
+    queued: boolean;
+    /** The Vercel project the platform rebuilt, as it recorded it. Empty when its answer did not name one. */
+    project: string;
+    /** The release it uploaded, which is what the promotion will serve. */
+    version: string;
+    deployment: { id: string; url: string; ready_state: string } | null;
+    message: string;
     plan: UpdatePlan;
     check: UpdateCheckAnswer;
   }
@@ -271,6 +300,21 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<{ statu
 
 
 /**
+ * This site's own address, as the platform knows it.
+ *
+ * A managed site's `Update now` names the site by its public address — the API has no other way to tell
+ * `react-wp.com` which Vercel project to rebuild — and the dashboard is opened on exactly that address, so
+ * `window.location.origin` is the honest default. Naming one explicitly still wins, for a caller that means
+ * a different deployment. The server falls back to the request's own host when this is empty
+ * (`siteAddressFrom` in `server/updateCenter.mjs`), so an address is never guessed from thin air.
+ */
+const siteAddress = (site?: string): string => {
+  const named = String(site || '').trim();
+  if (named) return named;
+  return typeof window === 'undefined' ? '' : window.location.origin;
+};
+
+/**
  * `POST /api/admin/updates/check` — asks the central server, or reads this deployment's own GitHub release
  * tags when the site has no token for it.
  *
@@ -281,7 +325,7 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<{ statu
 export const checkForUpdates = async (options: { site?: string } = {}): Promise<UpdateCheckAnswer> => {
   const { status, body } = await request<UpdateCheckAnswer & { error?: string }>('/api/admin/updates/check', {
     method: 'POST',
-    body: JSON.stringify({ plugins: installedPlugins(), site: options.site || '' }),
+    body: JSON.stringify({ plugins: installedPlugins(), site: siteAddress(options.site) }),
   });
   if (status !== 200) throw new Error(body.error || `The update check failed (HTTP ${status}).`);
   return body;
@@ -290,14 +334,15 @@ export const checkForUpdates = async (options: { site?: string } = {}): Promise<
 /**
  * `POST /api/admin/system/update` — applies what the check found, however this host can.
  *
- * The route decides between a deploy hook, a self-update run and a by-hand plan; this only names the
- * answer. `ref` chooses what a self-update checks out, and is left empty in normal use so the runner
- * follows the branch the site already runs.
+ * The route decides between a platform rebuild, a deploy hook, a self-update run and a by-hand plan; this
+ * only names the answer. `site` is this site's address, which a `platform` plan needs and a managed site
+ * therefore always sends. `ref` chooses what a self-update checks out, and is left empty in normal use so
+ * the runner follows the branch the site already runs.
  */
 export const applyUpdate = async (options: { site?: string; ref?: string } = {}): Promise<UpdateOutcome> => {
   const { status, body } = await request<Record<string, unknown> & { error?: string }>('/api/admin/system/update', {
     method: 'POST',
-    body: JSON.stringify({ plugins: installedPlugins(), site: options.site || '', ref: options.ref || '' }),
+    body: JSON.stringify({ plugins: installedPlugins(), site: siteAddress(options.site), ref: options.ref || '' }),
   });
   const plan = body.plan as UpdatePlan | undefined;
   const check = body.check as UpdateCheckAnswer | undefined;
@@ -308,6 +353,20 @@ export const applyUpdate = async (options: { site?: string; ref?: string } = {})
   if (plan.mode === 'manual') {
     // 409: a refusal that carries its sentence in `plan.reason`. Anything else under `manual` is that same answer.
     return { kind: 'manual', plan, check };
+  }
+  if (plan.mode === 'platform') {
+    // A managed site the platform rebuilt: the release was built and uploaded before this answered, so
+    // there is no run to follow — `version` is what the promotion will serve.
+    return {
+      kind: 'platform',
+      queued: body.queued === true,
+      project: String(body.project || ''),
+      version: String(body.version || ''),
+      deployment: (body.deployment as { id: string; url: string; ready_state: string } | null) || null,
+      message: String(body.message || ''),
+      plan,
+      check,
+    };
   }
   if (plan.mode === 'deploy-hook' || status === 502) {
     return {
@@ -392,10 +451,12 @@ export interface VersionStateEntry {
   to: string;
   /**
    * How the release arrived. `manual` is a plan this host could not carry out, recorded so the screen can
-   * say so later; the other two are a called deploy hook and a run this server performed itself, which is
-   * also how a managed site installs the package `react-wp.com` publishes.
+   * say so later; `self` is a run this server performed itself, which is also how a managed site installs
+   * the package `react-wp.com` publishes; `deploy-hook` is a hook that was called; and `platform` is the
+   * platform rebuilding the site — the one mode where the new version arrives on a *later* deployment
+   * rather than in something this screen can watch, so it is settled the way a hook is.
    */
-  mode: 'deploy-hook' | 'self' | 'manual';
+  mode: 'deploy-hook' | 'self' | 'manual' | 'platform';
   status: 'started' | 'triggered' | 'completed' | 'failed';
   error?: string;
 }

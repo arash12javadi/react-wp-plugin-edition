@@ -14,7 +14,18 @@
  *   { "installedVersion": "v1.3.1", "latestVersion": "v2.4.1", "updateAvailable": true,
  *     "releaseNotes": "- …", "releaseUrl": "https://github.com/…/releases/tag/v2.4.1", … }
  *
- * Four rules this file keeps:
+ * and two more under the same token:
+ *
+ *   POST /api/v1/updates/apply            the release package, which the site installs itself
+ *   POST /api/v1/updates/install          the same release, applied *by the platform* to the site's own
+ *                                         project — for a host that cannot install anything (a Vercel
+ *                                         deployment, whose files are read-only). The site names itself
+ *                                         (`"site": "https://shop.vercel.app"`), the platform resolves the
+ *                                         Vercel project it provisioned for that address, builds the
+ *                                         release and uploads it, so the site's `Update now` button works
+ *                                         without a Vercel token of its own and without a deploy hook.
+ *
+ * Five rules this file keeps:
  *
  *   - **The tag is the answer.** `latestVersion` is the newest GitHub release tag, chosen by tag order and
  *     filtered by the channel, never a `package.json` version. `server/githubReleases.mjs` does the
@@ -29,8 +40,10 @@
  *   - **The release list is public; the package is not.** A check needs no token, because a site that was
  *     provisioned before this feature existed still has to be able to read a version number — and one that
  *     was never handed a token must not be told its platform connection is broken. `apply` hands out the
- *     product's own source, so it stays token-gated. `RWP_CENTRAL_PUBLIC_CHECKS=off` restores the older
- *     rule that a check needs a token too.
+ *     product's own source, so it stays token-gated; `install` changes a customer's project, so it does
+ *     too, and it needs a platform that can deploy at all (an installer, and the Vercel credential the
+ *     installer spends) — a platform without one answers 501 with the sentence naming it.
+ *     `RWP_CENTRAL_PUBLIC_CHECKS=off` restores the older rule that a check needs a token too.
  *   - **Cheap and forgiving.** Answers are cached for a minute, and a GitHub failure serves the last
  *     cached answer instead of an error — a platform's rate limit must not blank every customer's Updates
  *     screen.
@@ -60,6 +73,14 @@ export const CENTRAL_CHECK_PATHS = [CENTRAL_CHECK_PATH, CENTRAL_CHECK_ALIAS];
  * Same bearer token as the check, so nothing extra is issued for the right to be updated.
  */
 export const CENTRAL_APPLY_PATH = '/api/v1/updates/apply';
+
+/**
+ * The redeploy route: a provisioned site whose host cannot install a package (a Vercel deployment, whose
+ * files are read-only) asks the platform to rebuild the release and upload it to the site's *own* Vercel
+ * project. The site names itself; the platform resolves the project it recorded for that address and
+ * spends its own Vercel token, so the customer needs neither a token nor a deploy hook for this.
+ */
+export const CENTRAL_INSTALL_PATH = '/api/v1/updates/install';
 
 /** How long one GitHub answer is reused. A release is published a few times a week, not a few times a second. */
 export const CENTRAL_CACHE_SECONDS = 60;
@@ -339,7 +360,7 @@ export async function centralCheckAnswer({ body, config, fetchImpl = fetch, now 
  * to `MANAGED_MESSAGES` before it reaches a screen.
  *
  * @param {ReturnType<typeof centralConfigFrom>} config
- * @param {'check'|'apply'} kind
+ * @param {'check'|'apply'|'install'} kind
  */
 const centralRefusalFor = (config, kind) => {
   if (!config.repo) {
@@ -360,12 +381,18 @@ const centralRefusalFor = (config, kind) => {
       body: { error: 'This platform accepts no update tokens, so it cannot hand out release packages. Set RWP_CENTRAL_TOKEN (or RWP_CENTRAL_TOKENS) on this server.' },
     };
   }
+  if (kind === 'install' && config.tokens.length === 0) {
+    return {
+      status: 503,
+      body: { error: 'This platform accepts no update tokens, so it cannot redeploy a site. Set RWP_CENTRAL_TOKEN (or RWP_CENTRAL_TOKENS) on this server.' },
+    };
+  }
   return null;
 };
 
 /**
- * The route both hosts mount: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias, and
- * `POST /api/v1/updates/apply`.
+ * The route both hosts mount: `POST /api/v1/updates/check`, the `/api/admin/updates/check` alias,
+ * `POST /api/v1/updates/apply` and `POST /api/v1/updates/install`.
  *
  * Returns **null** — not 404 — for a path it does not own, or for a deployment that is not the platform.
  * That is what lets `server.mjs` and the Hono app chain this in front of their own admin routes without
@@ -378,9 +405,14 @@ const centralRefusalFor = (config, kind) => {
  *
  * A **check** is answered without a token — the release list is not the product, and a site that was never
  * handed a token still has to be able to read a version number — while a token that *is* sent is still
- * verified, so a revoked site is told so. An **apply** is always token-gated: it hands out the package.
+ * verified, so a revoked site is told so. An **apply** is always token-gated: it hands out the package. An
+ * **install** is token-gated for the same reason (it changes a customer's project) and is delegated to the
+ * `install` function the host passes in, because the build-and-upload pipeline belongs to the installer
+ * plugin (`plugins/rwp-saas-installer/server.mjs`, `platformInstall`) and not to this file: a platform that
+ * never activated an installer answers 501 with the sentence naming it, rather than shipping that code to
+ * every deployment.
  *
- * @param {{ method?: string, pathname?: string, headers?: any, body?: any, env?: Record<string, string | undefined>, config?: any, fetchImpl?: typeof fetch, now?: number }} input
+ * @param {{ method?: string, pathname?: string, headers?: any, body?: any, env?: Record<string, string | undefined>, config?: any, fetchImpl?: typeof fetch, now?: number, install?: ((input: { body: any, config: any }) => Promise<{ status?: number, body?: any }>) | null }} input
  */
 export async function handleCentralUpdateRequest({
   method = 'POST',
@@ -391,10 +423,12 @@ export async function handleCentralUpdateRequest({
   config: resolved = null,
   fetchImpl = fetch,
   now = Date.now(),
+  install = null,
 } = {}) {
   const path = trimmed(String(pathname ?? '')).replace(/\/+$/, '');
   const isApply = path === CENTRAL_APPLY_PATH;
-  if (!CENTRAL_CHECK_PATHS.includes(path) && !isApply) return null;
+  const isInstall = path === CENTRAL_INSTALL_PATH;
+  if (!CENTRAL_CHECK_PATHS.includes(path) && !isApply && !isInstall) return null;
   const config = resolved || centralConfigFrom(env);
   if (!config.enabled) return null;
   if (String(method).toUpperCase() !== 'POST') {
@@ -405,13 +439,26 @@ export async function handleCentralUpdateRequest({
   // sentence on the platform's own card, so it is handed back before any credential is looked at.
   if (isDashboardAliasCheck(path, body)) return null;
   try {
-    const withheld = centralRefusalFor(config, isApply ? 'apply' : 'check');
+    const withheld = centralRefusalFor(config, isInstall ? 'install' : isApply ? 'apply' : 'check');
     if (withheld) return withheld;
     // A token that was sent is always verified, even for a public check: that is how a site learns its
     // credential was revoked. Only its *absence* is tolerated, and only where checks are public.
-    if (isApply || authorizationFrom(headers) || !config.publicChecks) {
+    if (isApply || isInstall || authorizationFrom(headers) || !config.publicChecks) {
       const auth = authorizeCentral({ headers, config });
       if (!auth.ok) return { status: auth.status, body: { error: auth.error } };
+    }
+    if (isInstall) {
+      // The pipeline lives in the installer plugin. Handing the request over rather than importing the
+      // plugin here keeps this module free of Vercel upload code, and makes "no installer on this
+      // deployment" a sentence instead of a crash.
+      if (typeof install !== 'function') {
+        return {
+          status: 501,
+          body: { error: 'This platform has no installer configured, so it cannot redeploy a site. The build-and-upload pipeline lives in the rwp-saas-installer plugin: activate it, or use its own card to deploy.' },
+        };
+      }
+      const answer = await install({ body, config });
+      return { status: Number(answer?.status) || 200, body: answer?.body ?? answer ?? {} };
     }
     if (isApply) {
       const pkg = await buildCoreReleaseZip({
@@ -443,9 +490,11 @@ export async function handleCentralUpdateRequest({
     return {
       status: status === 404 ? 502 : status,
       body: {
-        error: isApply
-          ? 'The central server could not build the release package just now. Try again in a minute; the site keeps its last known release until then.'
-          : 'The central server could not read the release list from GitHub just now. Try again in a minute; this site keeps its last known release until then.',
+        error: isInstall
+          ? 'The central server could not redeploy this site just now. Nothing has changed on it — try again in a few minutes, and contact React-WP support if it keeps failing.'
+          : isApply
+            ? 'The central server could not build the release package just now. Try again in a minute; the site keeps its last known release until then.'
+            : 'The central server could not read the release list from GitHub just now. Try again in a minute; this site keeps its last known release until then.',
       },
     };
   }

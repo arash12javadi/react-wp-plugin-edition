@@ -43,8 +43,12 @@ import {
   installedPluginsFrom,
   latestPublishedVersion,
   managedUpdateSupport,
+  platformRedeployFrom,
+  platformUpdatePlan,
   readUpdatesConfig,
+  requestPlatformInstall,
   resolveInstalledVersion,
+  siteAddressFrom,
   updatePlan,
 } from './updateCenter.mjs';
 import {
@@ -151,8 +155,11 @@ async function overview({ readOptions, owner = true }) {
   // An end user's site installs a package and nothing else: the probe behind `selfUpdateSupport` (a git
   // checkout, a deploy hook) describes ways of updating that are not theirs to choose, so the two branches
   // answer with the one that is. `managedUpdateSupport` also replaces the host's technical refusal with the
-  // sentence a customer can act on.
-  const support = owner ? await selfUpdateSupport() : managedUpdateSupport(await packageUpdateSupport());
+  // sentence a customer can act on — and with `platform: true` it reports the third way a managed site has,
+  // where the platform rebuilds a host that cannot install a package at all (see `platformRedeployFrom`).
+  const support = owner
+    ? await selfUpdateSupport()
+    : managedUpdateSupport({ ...(await packageUpdateSupport()), platform: platformRedeployFrom(stored.config) });
   const installed = await installedFor(stored, owner);
   return {
     installed,
@@ -205,8 +212,11 @@ async function check(body, config, readOptions, owner = true) {
  * shaped differently on purpose — a started rebuild, a started run, and a refusal that names what to
  * configure — and each carries the check it was based on, so the screen never has to guess which release
  * it just asked for.
+ *
+ * `headers` is here for one thing: a managed site that the platform has to rebuild names itself, and when
+ * the body carries no address the request's own host is the honest one (`siteAddressFrom`).
  */
-async function applyUpdate(body, config, readOptions, readDeployHook, owner = true) {
+async function applyUpdate(body, headers, config, readOptions, readDeployHook, owner = true) {
   const stored = await readUpdatesConfig(readOptions);
   const installed = await installedFor(stored, owner);
   const plugins = pluginList(body.plugins);
@@ -241,7 +251,27 @@ async function applyUpdate(body, config, readOptions, readDeployHook, owner = tr
     // Asked before the run starts, because `startSelfUpdate` refuses with the probe's own sentence and that
     // sentence is about a filesystem this reader cannot do anything about. A host that cannot install a
     // package answers `managedUpdateSupport`'s reason: contact support, who apply it for them.
-    const support = managedUpdateSupport(await packageUpdateSupport());
+    const support = managedUpdateSupport({
+      ...(await packageUpdateSupport()),
+      platform: platformRedeployFrom(stored.config),
+    });
+    // …unless the platform is the one that rebuilds it. A prebuilt Vercel deployment — read-only files, no
+    // `dist/` in its repository — cannot install a package, and the platform that provisioned it can: it
+    // builds the release and uploads it to this site's own project, from the address the site names. That is
+    // `platformUpdatePlan`'s `mode: 'platform'`, and the work happens beyond this server, so the answer says
+    // which project and which version rather than reporting steps that are not this host's.
+    if (support.mode === 'platform') {
+      const plan = platformUpdatePlan({ latestVersion: answer.app.latest, installedVersion: installed });
+      if (plan.up_to_date) return { status: 200, body: { ...plan, check: reported } };
+      const install = await requestPlatformInstall({
+        config: stored.config,
+        // The body first (a script or a test may name the site it means), else the host that was asked.
+        site: siteAddressFrom(headers, { site: body.site }),
+        version: answer.app.latest,
+        env: process.env,
+      });
+      return { status: 200, body: { ...install, plan, check: reported } };
+    }
     if (!support.supported) throw new UpdateError(support.reason, 409);
     const run = await startSelfUpdate({
       to: answer.app.latest,
@@ -299,14 +329,19 @@ async function applyUpdate(body, config, readOptions, readDeployHook, owner = tr
 }
 
 /** GET /api/admin/system/update-status?id=<run> — one run with its log, or the recent ones. */
-async function updateStatus(query, owner = true) {
+async function updateStatus(query, readOptions, owner = true) {
   if (query.id) {
     const run = await readSelfUpdateRun(query.id);
     if (!run) throw new UpdateError('That update run does not exist on this server, or it was cleaned up.', 404);
     return { run, log: await readSelfUpdateLog(run.id) };
   }
-  // Same support answer as `overview`: a managed site is only ever told about the package it can install.
-  const support = owner ? await selfUpdateSupport() : managedUpdateSupport(await packageUpdateSupport());
+  // Same support answer as `overview`: a managed site is only ever told about the package it can install —
+  // or, when it has a token for the platform, about the redeploy the platform does for it. The stored config
+  // is read for that one bit and only for an end user; the owner's answer never depends on it.
+  const stored = await readUpdatesConfig(readOptions);
+  const support = owner
+    ? await selfUpdateSupport()
+    : managedUpdateSupport({ ...(await packageUpdateSupport()), platform: platformRedeployFrom(stored.config) });
   return { runs: await listSelfUpdateRuns(), support };
 }
 
@@ -340,13 +375,13 @@ export async function handleUpdateRequest({
     }
     if (pathname === '/api/admin/system/update-status') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
-      return { status: 200, body: await updateStatus(query, owner) };
+      return { status: 200, body: await updateStatus(query, readOptions, owner) };
     }
     if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
     if (pathname === '/api/admin/updates/check') {
       return { status: 200, body: await check(body, config, readOptions, owner) };
     }
-    return await applyUpdate(body, config, readOptions, readDeployHook, owner);
+    return await applyUpdate(body, headers, config, readOptions, readDeployHook, owner);
   } catch (error) {
     if (!(error instanceof UpdateError)) console.error(`${pathname} failed:`, error);
     return fail(error);

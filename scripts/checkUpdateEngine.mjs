@@ -49,10 +49,14 @@ import {
   githubUpdateSourceFrom,
   latestPublishedVersion,
   managedUpdateSupport,
+  platformRedeployFrom,
+  platformUpdatePlan,
   publicRelease,
   readUpdatesConfig,
   releaseFrom,
+  requestPlatformInstall,
   resolveInstalledVersion,
+  siteAddressFrom,
 } from '../server/updateCenter.mjs';
 
 const suites = [];
@@ -381,6 +385,62 @@ test('the platform answers its own dashboard with the dashboard check, not as on
     fetchImpl,
   });
   assert.equal(contract.status, 200, 'a caller speaking the site contract is answered, version or no version');
+});
+
+
+test('the platform hands a redeploy to its installer, and refuses one it cannot run', async () => {
+  const seen = [];
+  const install = async ({ body }) => {
+    seen.push(body);
+    return { status: 200, body: { success: true, ok: true, kind: 'install', projectName: 'acme-shop', version: '2.4.1' } };
+  };
+  const handed = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/install',
+    method: 'POST',
+    headers: { authorization: 'Bearer site-token' },
+    body: { site: 'https://shop.vercel.app', version: '2.4.1' },
+    env: platformEnv,
+    install,
+  });
+  assert.equal(handed.status, 200);
+  assert.equal(handed.body.projectName, 'acme-shop');
+  assert.equal(handed.body.kind, 'install', 'the answer says which pipeline ran, so the site can name it');
+  assert.deepEqual(seen, [{ site: 'https://shop.vercel.app', version: '2.4.1' }], 'the pipeline gets the body as it arrived');
+
+  // A deployment with no installer plugin: a sentence, not a crash, and not a 404 a site reads as \"this
+  // platform has no such API\" — it has one, it just cannot deploy.
+  const noInstaller = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/install',
+    method: 'POST',
+    headers: { authorization: 'Bearer site-token' },
+    body: { site: 'https://shop.vercel.app' },
+    env: platformEnv,
+    install: null,
+  });
+  assert.equal(noInstaller.status, 501);
+  assert.match(noInstaller.body.error, /rwp-saas-installer/);
+
+  // Token-gated like `/apply`: a redeploy changes a customer's project.
+  const anonymous = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/install',
+    method: 'POST',
+    body: { site: 'https://shop.vercel.app' },
+    env: platformEnv,
+    install,
+  });
+  assert.equal(anonymous.status, 401);
+  assert.equal(seen.length, 1, 'nothing is deployed for a caller with no token');
+
+  // A customer site answers nothing on this path, so its own routes stay its own.
+  assert.equal(await handleCentralUpdateRequest({ pathname: '/api/v1/updates/install', method: 'POST', env: {} }), null);
+  const wrongVerb = await handleCentralUpdateRequest({
+    pathname: '/api/v1/updates/install',
+    method: 'GET',
+    headers: { authorization: 'Bearer site-token' },
+    env: platformEnv,
+    install,
+  });
+  assert.equal(wrongVerb.status, 405);
 });
 
 
@@ -824,19 +884,167 @@ test('a managed site the platform will not answer is pointed at support, not at 
 test('a managed site support answer is the package it installs, with no repository and no host detail', () => {
   assert.deepEqual(
     managedUpdateSupport({ supported: true, reason: '', restart: 'pm2', app_name: 'react-wp' }),
-    { available: true, repo: false, supported: true, reason: '', restart: 'pm2', app_name: 'react-wp' },
+    { available: true, repo: false, supported: true, mode: 'self', reason: '', restart: 'pm2', app_name: 'react-wp' },
   );
   const refused = managedUpdateSupport({ supported: false, reason: 'This folder has no package.json.', restart: 'pm2', app_name: 'x' });
   assert.equal(refused.supported, false);
   assert.equal(refused.repo, false, 'a customer has no repository to name');
   assert.equal(refused.available, false);
   assert.equal(refused.reason, MANAGED_MESSAGES.cannot_apply, 'the host probe\'s sentence is replaced, never shown');
+  assert.equal(refused.mode, 'manual');
   assert.equal(refused.restart, 'manual');
   assert.equal(refused.app_name, '');
 });
 
-/* -- 6. Which version is installed ------------------------------------------------------------------ */
+/* -- 5b. A prebuilt host: the platform rebuilds it -------------------------------------------------- */
 
+test('a managed site whose host cannot install a package asks the platform that published it', () => {
+  // The read-only case: a prebuilt Vercel deployment has no writable files and no `dist/` in its
+  // repository, so a package cannot be installed. The platform that provisioned it *can* rebuild it, and
+  // that is a real button rather than the `cannot_apply` sentence.
+  const platform = managedUpdateSupport({ supported: false, reason: 'This folder has no package.json.', restart: 'manual', app_name: '', platform: true });
+  assert.equal(platform.mode, 'platform');
+  assert.equal(platform.supported, true, 'the button is real: the platform can redeploy this site');
+  assert.equal(platform.available, true);
+  assert.equal(platform.reason, MANAGED_MESSAGES.platform_applies);
+  assert.equal(platform.repo, false, 'a customer has no repository to name');
+  assert.equal(platform.app_name, '', 'a customer is never told the platform’s process name');
+  assert.equal(platform.restart, 'manual', 'nothing is left for the customer to restart');
+  // A host that can install keeps its own answer: a token must not turn a package update into a rebuild.
+  assert.equal(managedUpdateSupport({ supported: true, reason: '', restart: 'pm2', app_name: 'x', platform: true }).mode, 'self');
+  // The token is the whole test, and `central_url` falls back to the platform that issued it.
+  assert.equal(platformRedeployFrom({ token: 'site-token' }), true);
+  assert.equal(platformRedeployFrom({ token: '   ', central_url: 'https://react-wp.com' }), false);
+  assert.equal(platformRedeployFrom({ central_url: 'https://react-wp.com' }), false, 'an address alone is not a credential');
+  assert.equal(platformRedeployFrom(null), false);
+});
+
+test('a platform plan names the platform’s steps, not this server’s', () => {
+  const plan = platformUpdatePlan({ latestVersion: '2.4.1', installedVersion: '1.3.1' });
+  assert.equal(plan.mode, 'platform');
+  assert.deepEqual(plan.steps, ['building', 'uploading', 'triggering-rebuild']);
+  assert.match(plan.reason, /2\.4\.1/);
+  assert.match(plan.reason, /Update now/);
+  assert.doesNotMatch(plan.reason, /git pull|npm install|pm2|\.env/);
+  // The two non-answers stay `manual`, so a screen that already renders `plan.reason` keeps working.
+  assert.deepEqual(platformUpdatePlan({ latestVersion: '1.3.1', installedVersion: '1.3.1' }), {
+    mode: 'manual',
+    up_to_date: true,
+    reason: 'This site already runs 1.3.1, which is the latest release it can see.',
+    steps: [],
+  });
+  assert.equal(platformUpdatePlan({ latestVersion: '', installedVersion: '1.3.1' }).mode, 'manual');
+  assert.equal(platformUpdatePlan({ latestVersion: '', installedVersion: '1.3.1' }).up_to_date, undefined);
+});
+
+test('the rebuild request names the site and the release, and never a project name', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({
+      success: true,
+      version: '2.4.1',
+      projectName: 'acme-shop',
+      deployment: { id: 'dpl_1', url: 'shop-abc.vercel.app', readyState: 'READY' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const install = await requestPlatformInstall({
+    config: { central_url: 'https://react-wp.com', token: 'site-token' },
+    site: 'https://shop.vercel.app',
+    version: '2.4.1',
+    env: { RWP_APP_VERSION: '1.3.1' },
+    fetchImpl,
+  });
+  assert.equal(calls.length, 1, 'one call: the platform builds, uploads and answers');
+  assert.equal(calls[0].url, 'https://react-wp.com/api/v1/updates/install');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer site-token', 'the token this site already holds for /check');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { site: 'https://shop.vercel.app', version: '2.4.1' });
+  assert.equal(install.mode, 'platform');
+  assert.equal(install.queued, true);
+  assert.equal(install.project, 'acme-shop');
+  assert.equal(install.version, '2.4.1');
+  assert.deepEqual(install.deployment, { id: 'dpl_1', url: 'shop-abc.vercel.app', ready_state: 'READY' });
+  assert.match(install.message, /2\.4\.1/);
+  assert.equal(install.token, undefined, 'the token never travels back');
+});
+
+
+test('every way a platform rebuild can fail is a sentence a customer can act on', async () => {
+  const answer = (body, status) => requestPlatformInstall({
+    config: { token: 'site-token' },
+    site: 'https://shop.vercel.app',
+    fetchImpl: async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
+  });
+  const refusals = [];
+  const record = (predicate) => (error) => {
+    refusals.push(error);
+    assert.ok(predicate(error), `unexpected refusal: ${error.message}`);
+    return true;
+  };
+
+  // No address: the platform matches on it, and there is nothing to match without one.
+  await assert.rejects(
+    requestPlatformInstall({ config: { token: 'site-token' }, site: '   ', fetchImpl: async () => { throw new Error('must not be called'); } }),
+    record((error) => error.status === 400 && /no address/.test(error.message)),
+  );
+  // No token: nothing to authorise the rebuild with, which is a connection to restore rather than a wait.
+  await assert.rejects(
+    requestPlatformInstall({ config: {}, site: 'https://shop.vercel.app' }),
+    record((error) => error.status === 409 && error.message === MANAGED_MESSAGES.not_connected),
+  );
+  // A platform built before this route existed: no body at all, or this deployment's own fallthrough
+  // (`{"error":"No API endpoint at /api/v1/updates/install."}`) — both mean the endpoint is not there.
+  await assert.rejects(answer('', 404), record((error) => error.message === MANAGED_MESSAGES.no_install_api));
+  await assert.rejects(
+    answer({ error: 'No API endpoint at /api/v1/updates/install.' }, 404),
+    record((error) => error.message === MANAGED_MESSAGES.no_install_api),
+  );
+  // A 404 that is a refusal (`success: false`) is the platform declining *this address* — a failed rebuild,
+  // not a missing route.
+  await assert.rejects(
+    answer({ success: false, ok: false, error: 'No Vercel project is recorded for that site.' }, 404),
+    record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_failed(404)),
+  );
+  // A refusal with a status (501 no installer, 401 a revoked token, 500 a failed build) is one sentence.
+  for (const status of [501, 401, 500]) {
+    await assert.rejects(
+      answer({ success: false, error: 'internal detail' }, status),
+      record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_failed(status)),
+    );
+  }
+  // Nothing answered at all: DNS, TLS, the fifteen-minute timeout, a platform restarted mid-build.
+  await assert.rejects(
+    requestPlatformInstall({
+      config: { token: 'site-token' },
+      site: 'https://shop.vercel.app',
+      fetchImpl: async () => { throw new Error('getaddrinfo ENOTFOUND'); },
+    }),
+    record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_unreachable),
+  );
+
+  assert.equal(refusals.length, 9, 'every branch refused, and each one was checked above');
+  for (const error of refusals) {
+    // Nothing the customer cannot act on: no variable names, no Vercel credentials, no platform internals.
+    assert.doesNotMatch(error.message, /RWP_|VERCEL|Vercel token|environment variable|Not found/i);
+  }
+});
+
+test('a site names itself from the request being answered, so a click always has an address', () => {
+  assert.equal(siteAddressFrom(new Headers({ host: 'shop.vercel.app' })), 'https://shop.vercel.app');
+  assert.equal(siteAddressFrom({ host: 'shop.vercel.app' }), 'https://shop.vercel.app', 'a Node header record reads the same');
+  assert.equal(siteAddressFrom(new Headers({ host: 'shop.vercel.app', 'x-forwarded-proto': 'http' })), 'http://shop.vercel.app');
+  // What a proxy in front of the site (Vercel, Netlify) puts in front of `Host`.
+  assert.equal(siteAddressFrom(new Headers({ 'x-forwarded-host': 'shop.example.com', host: 'internal:3000' })), 'https://shop.example.com');
+  // A caller that names the site wins, so a script can mean a deployment other than the one it called.
+  assert.equal(siteAddressFrom(new Headers({ host: 'shop.vercel.app' }), { site: ' https://other.vercel.app ' }), 'https://other.vercel.app');
+  assert.equal(siteAddressFrom({}, { fallback: 'https://from-config.vercel.app' }), 'https://from-config.vercel.app');
+  // Nothing to go on: empty, which `requestPlatformInstall` turns into the sentence about this site's own address.
+  assert.equal(siteAddressFrom(null), '');
+});
+
+
+/* -- 6. Which version is installed ------------------------------------------------------------------ */
 test('a platform reports the release it publishes when nothing pins or records one', async () => {
   // The order, because each step was a screen that disagreed with another: the deploy's pin cannot lag, the
   // installer's record names the exact tag it deployed, the release this deployment publishes is the only

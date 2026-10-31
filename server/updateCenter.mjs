@@ -17,15 +17,18 @@
  *      because a JSON file was not published, and a tag cannot disagree with it.
  *   3. **Apply the update.** A Vercel/Netlify host is told to rebuild (`deploy_config`, Settings →
  *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
- *      Which one is chosen, and why, is `updatePlan`.
+ *      Which one is chosen, and why, is `updatePlan`. A managed site whose files are read-only — a prebuilt
+ *      Vercel deployment — has neither, and asks the platform to rebuild it instead
+ *      (`POST {central}/api/v1/updates/install`, `platformUpdatePlan` / `requestPlatformInstall`).
  *
  * A **managed site** — a customer's instance, whose signed-in account is not the update owner — is not
  * allowed to reach any of the owner paths. Its check is asked of `react-wp.com` and of nothing else: no
  * GitHub read, no deploy hook, no git checkout, and no sentence about a token or a repository, because
  * none of those are things a customer can act on. `checkForUpdates` forces the single source,
  * `managedUpdateSupport` reports the only way such a site installs a release (the package the platform
- * built), and every refusal it can meet is written in `MANAGED_MESSAGES` for the person who reads it
- * rather than for the administrator who runs the platform.
+ * built, or the redeploy the platform runs for a host that cannot install one), and every refusal it can
+ * meet is written in `MANAGED_MESSAGES` for the person who reads it rather than for the administrator who
+ * runs the platform.
  *
  * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
  * never the `version` field of a `package.json`. The tag travels with the release (`tag`), reaches this
@@ -70,6 +73,18 @@ export const CENTRAL_CHECK_FALLBACK_PATH = '/api/admin/updates/check';
 export const CENTRAL_CHECK_PATHS = [CENTRAL_CHECK_PATH, CENTRAL_CHECK_FALLBACK_PATH];
 /** The managed-update route, in step with `CENTRAL_APPLY_PATH` in `server/centralUpdates.mjs`. */
 export const CENTRAL_APPLY_PATH = '/api/v1/updates/apply';
+/**
+ * The redeploy route, in step with `CENTRAL_INSTALL_PATH` in `server/centralUpdates.mjs`: ask the platform to
+ * build the release and upload it to *this* site's Vercel project.
+ *
+ * It is the one managed path that works on a host which cannot install anything — a prebuilt Vercel
+ * deployment, whose files are read-only and whose repository never contains `dist/`. The site names itself,
+ * because a site knows its own address and the platform is the party that recorded which project is behind
+ * it; no Vercel token and no deploy hook is involved on this side.
+ */
+export const CENTRAL_INSTALL_PATH = '/api/v1/updates/install';
+/** How long one redeploy request waits before it gives up. A build plus an upload, not a link check. */
+export const CENTRAL_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 export const PLUGIN_DIRECTORY_PATH = '/api/v1/plugins';
 
 /** The release channels a site may follow. `beta` receives pre-releases, `stable` does not. */
@@ -104,11 +119,22 @@ export const MANAGED_MESSAGES = {
   /** The platform answered, but with nothing that names a release. */
   no_release: 'React-WP.com answered without naming a release, so there is nothing to compare this site against just now. Contact React-WP support and they will check what it publishes for this site.',
   /**
-   * A host that cannot install a package: the platform applies the release to it instead, which is what the
-   * platform's own installer card is for. Never an instruction, and never a promise of a button here — the
-   * screen hides the one it cannot honour.
+   * A host that cannot install a package and has no platform to redeploy it: nothing on this screen can be
+   * changed, so it is never an instruction. The screen hides a button it cannot honour, and this sentence is
+   * what the space under it says instead.
    */
   cannot_apply: 'React-WP.com publishes this site’s releases and installs them for you, so there is nothing to change here. If a release has not arrived within a day of being published, contact React-WP support.',
+  /**
+   * The same host, but this site *is* connected to a platform that can redeploy it (`mode: 'platform'`). This
+   * is the reason line the button sits under, so it says what the button does and what it does not touch.
+   */
+  platform_applies: 'React-WP.com builds this site’s releases and uploads them to its project, so Update now asks React-WP.com to rebuild it. Your plugins, uploads and database are not touched.',
+  /** The platform has no redeploy API at the address this site uses: a version skew, not a configuration. */
+  no_install_api: 'React-WP.com has no update API at the address this site uses, so it could not be asked to rebuild this site. Contact React-WP support and they will point it at the right one.',
+  /** The platform answered, and its answer was a refusal. The status is all a customer may be told. */
+  install_failed: (status) => `React-WP.com could not rebuild this site just now (HTTP ${status}). Nothing has changed on it — try again in a few minutes, and contact React-WP support if it keeps failing.`,
+  /** The request itself never completed: a timeout, a reset, a platform that restarted mid-build. */
+  install_unreachable: 'React-WP.com could not be reached from this server while it was rebuilding this site, so it is not known whether the update finished. The site keeps running its current release either way — check again in a few minutes, and contact React-WP support if it stays on the old version.',
 };
 
 /** A refusal that carries the status code to answer with, the same way `InstallError` does. */
@@ -509,6 +535,40 @@ const centralHeaders = (config, appVersion) => ({
   ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
 });
 
+/** One request header, from a `Headers` (Hono, fetch) or a plain Node record. */
+const headerOf = (headers, name) => {
+  if (!headers) return '';
+  if (typeof headers.get === 'function') return trimmed(headers.get(name));
+  const key = Object.keys(headers).find((entry) => entry.toLowerCase() === name);
+  return key ? trimmed(headers[key]) : '';
+};
+
+/**
+ * This site's own public address — the name `react-wp.com` knows it by.
+ *
+ * A managed site's one credential is the token it was issued, and the platform finds the Vercel project
+ * behind a site by matching `saas_installer_installations.site_url`. Something therefore has to state the
+ * address, and the site itself is the party that has it: the browser is asked for `window.location.origin`
+ * (`src/lib/updateCenter.ts`), and this is the server-side fallback for a request that did not carry one —
+ * `X-Forwarded-Host` (what Vercel and Netlify put in front of `Host`), else `Host`, with the protocol from
+ * `X-Forwarded-Proto`. An address taken from the request being answered cannot be another site's.
+ *
+ * `site` wins when it is present, so a caller that knows better than the headers (a script, a test, an
+ * operator curling one deployment on behalf of another) is not overruled. The result is exactly the shape
+ * the platform's `installationUrl` normalises to: `https://host`, no path, lower case.
+ *
+ * @param {unknown} headers the request's headers
+ * @param {{ site?: string, fallback?: string }} [input]
+ */
+export const siteAddressFrom = (headers, { site = '', fallback = '' } = {}) => {
+  const named = trimmed(site);
+  if (named) return named;
+  const host = headerOf(headers, 'x-forwarded-host').split(',')[0] || headerOf(headers, 'host').split(',')[0];
+  if (!host) return trimmed(fallback);
+  const proto = headerOf(headers, 'x-forwarded-proto').split(',')[0].toLowerCase();
+  return `${proto === 'http' ? 'http' : 'https'}://${host}`;
+};
+
 /** Turns a `fetch` refusal into a sentence an administrator can act on. */
 const networkMessage = (error, url) => {
   const name = error?.name || '';
@@ -648,6 +708,15 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
  */
 export const centralApplyUrl = (config) =>
   `${trimmed(config.central_url) || DEFAULT_CENTRAL_URL}${CENTRAL_APPLY_PATH}`;
+
+/**
+ * The endpoint a site that cannot install anything asks to be rebuilt.
+ *
+ * Same address as `centralApplyUrl` — one `central_url`, one platform — and the same token, so a site that
+ * can already check for updates can already install them.
+ */
+export const centralInstallUrl = (config) =>
+  `${trimmed(config.central_url) || DEFAULT_CENTRAL_URL}${CENTRAL_INSTALL_PATH}`;
 
 /**
  * The releases inside a central answer, in either shape the platform may answer with.
@@ -906,18 +975,92 @@ export async function checkForUpdates({ config, current, plugins, github = null,
  * are kept because every support answer has them, and `repo` is always false: an end user has no
  * repository to name.
  *
- * A host that cannot install a package at all (`packageUpdateSupport` says so with a sentence about
- * `package.json` and running the site from its own folder) is given `MANAGED_MESSAGES.cannot_apply`
- * instead. The technical reason names things this reader has no access to, and the support route is what
- * actually resolves it.
+ * Two answers are possible when that probe says no, and they are not the same fact:
  *
- * Pure on purpose: the probe needs `node:fs`, and this module is bundled for runtimes that have neither.
+ *   - **`mode: 'platform'`** — this site holds a token for the platform that publishes its releases, so the
+ *     button is real and the work happens there: `POST /api/v1/updates/install` names this site, and the
+ *     platform rebuilds the release and uploads it to this site's own project. That is the only path a
+ *     prebuilt Vercel deployment has, because its files are read-only and its repository never carries
+ *     `dist/`.
+ *   - **`mode: 'manual'`** — neither. `MANAGED_MESSAGES.cannot_apply` says so without naming anything this
+ *     reader has no access to, and the support route is what actually resolves it.
  *
- * @param {{ supported: boolean, reason: string, restart?: 'pm2' | 'manual', app_name?: string }} support
+ * The caller marks the first case by setting `platform` on the probe (`platformRedeployFrom(config)`),
+ * which is why this stays pure: the probe needs `node:fs`, and this module is bundled for runtimes that
+ * have neither.
+ *
+ * @param {{ supported: boolean, reason: string, restart?: 'pm2' | 'manual', app_name?: string, platform?: boolean }} support
  */
-export const managedUpdateSupport = (support) => (support.supported
-  ? { available: true, repo: false, supported: true, reason: '', restart: support.restart, app_name: support.app_name }
-  : { available: false, repo: false, supported: false, reason: MANAGED_MESSAGES.cannot_apply, restart: 'manual', app_name: '' });
+export const managedUpdateSupport = (support) => {
+  if (support.supported) {
+    return {
+      available: true,
+      repo: false,
+      supported: true,
+      mode: 'self',
+      reason: '',
+      restart: support.restart,
+      app_name: support.app_name,
+    };
+  }
+  if (support.platform) {
+    return {
+      available: true,
+      repo: false,
+      supported: true,
+      mode: 'platform',
+      reason: MANAGED_MESSAGES.platform_applies,
+      // The platform restarts the deployment when it promotes the new build; a customer has nothing to run.
+      restart: 'manual',
+      app_name: '',
+    };
+  }
+  return { available: false, repo: false, supported: false, mode: 'manual', reason: MANAGED_MESSAGES.cannot_apply, restart: 'manual', app_name: '' };
+};
+
+/**
+ * Whether this site may ask its platform to redeploy it: it needs a token for one, and nothing else.
+ *
+ * A managed site's `central_url` falls back to `DEFAULT_CENTRAL_URL`, which is exactly the platform that
+ * holds its `saas_installer_installations` row — so the token is the whole test. A site pointed at a
+ * platform build that predates the route gets `MANAGED_MESSAGES.no_install_api` from
+ * `requestPlatformInstall`, which is the honest answer for a version skew rather than a hidden button.
+ *
+ * @param {{ token?: string, central_url?: string }} config the `updates_config` row
+ */
+export const platformRedeployFrom = (config) => Boolean(trimmed(config?.token));
+
+/**
+ * The one plan a managed site has when its host cannot install anything: the platform rebuilds it.
+ *
+ * `mode` is `'platform'` and the steps are the platform's, not this server's — nothing here downloads,
+ * extracts or builds, so a screen that showed the self-updater's steps would be describing work that never
+ * happens. The reason names what the button does and says the two things that are *not* touched, because a
+ * customer about to press an update button is owed that.
+ *
+ * `up_to_date` and the empty-version case are `manual`, exactly as in `updatePlan`: those are answers to the
+ * question rather than failures, and every caller already renders `plan.reason`.
+ *
+ * @param {{ latestVersion: string, installedVersion: string }} input
+ */
+export const platformUpdatePlan = ({ latestVersion, installedVersion }) => {
+  if (!isVersion(latestVersion)) {
+    return { mode: 'manual', reason: 'No release is known yet. Run a check for updates first, then try again.', steps: [] };
+  }
+  if (compareVersions(latestVersion, installedVersion) <= 0) {
+    return {
+      mode: 'manual',
+      up_to_date: true,
+      reason: `This site already runs ${installedVersion}, which is the latest release it can see.`,
+      steps: [],
+    };
+  }
+  return {
+    mode: 'platform',
+    reason: `React-WP.com builds this site’s releases and uploads them to its project, so Update now asks it to rebuild ${latestVersion}. Your plugins, uploads and database are not touched.`,
+    steps: ['building', 'uploading', 'triggering-rebuild'],
+  };
+};
 
 /**
  * Calls a deploy hook — Vercel's, Netlify's, or any host's "build this branch now" URL.
@@ -1020,5 +1163,83 @@ export async function applyDeployHookUpdate({ deployHook, env, fetchImpl }) {
     message: deploy.triggered
       ? 'The deploy hook was called. The platform is checking out and building the new version now; this site switches over when that build is promoted.'
       : `The update could not be started: ${deploy.error}`,
+  };
+}
+
+/**
+ * Asks `react-wp.com` to rebuild this site — the way a managed site whose host cannot install a package gets
+ * a release.
+ *
+ * The request is deliberately small: this site's own address, and the release it means to run. The token it
+ * already sends for `/check` is the authorisation, and the platform — not this server — decides which Vercel
+ * project that address belongs to, spends its own `RWP_VERCEL_TOKEN`, and uploads the release with the same
+ * payload path a first provision uses. Nothing here holds a Vercel credential or a deploy hook, which is why
+ * a prebuilt deployment can have a working button at all.
+ *
+ * The wait is long by design (`CENTRAL_INSTALL_TIMEOUT_MS`): the platform builds the release and uploads it
+ * before it answers, so a fifteen-second timeout would report a failure for work that then succeeded. Every
+ * refusal is one of `MANAGED_MESSAGES`, because the platform's own text names environment variables and file
+ * counts that belong to the operator, not to the customer reading this screen.
+ *
+ * @param {{
+ *   config: { token?: string, central_url?: string },
+ *   site: string,
+ *   version?: string,
+ *   env?: Record<string, string | undefined>,
+ *   fetchImpl?: typeof fetch,
+ *   timeoutMs?: number,
+ * }} input
+ */
+export async function requestPlatformInstall({ config, site, version = '', env, fetchImpl = fetch, timeoutMs = CENTRAL_INSTALL_TIMEOUT_MS }) {
+  const address = trimmed(site);
+  if (!address) {
+    // The platform matches on this address; without one it has nothing to match. Only reachable from a tab
+    // that was opened on some other hostname, so the sentence tells the reader what to do instead.
+    throw new UpdateError('This site has no address to give React-WP.com, so it cannot tell which project to rebuild. Open Settings → Updates from this site’s own address and try again.', 400);
+  }
+  if (!trimmed(config?.token)) {
+    throw new UpdateError(MANAGED_MESSAGES.not_connected, 409);
+  }
+  const url = centralInstallUrl(config);
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: centralHeaders(config, environmentOf(env).RWP_APP_VERSION),
+      body: JSON.stringify({ site: address, ...(isVersion(version) ? { version: trimmed(version) } : {}) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new UpdateError(MANAGED_MESSAGES.install_unreachable, 502);
+  }
+  const body = await response.json().catch(() => null);
+  // A 404 that is *not* a refusal is a platform that publishes `/check` and `/apply` but not this route —
+  // an older build — and the answer is the same one a wrong address gets. Both shapes a missing route
+  // arrives in are covered: no body at all, and this deployment's own fallthrough
+  // (`{ error: 'No API endpoint at /api/v1/updates/install.' }`). A refusal from the platform carries
+  // `success: false` — `platformInstall` answering "no project is recorded for that address" — and that is
+  // a failed rebuild rather than a missing route.
+  if (response.status === 404 && body?.success !== false) throw new UpdateError(MANAGED_MESSAGES.no_install_api, 502);
+  // 401/403/409/501/500 all land here: the customer is told the rebuild did not happen and given the one
+  // action that is theirs. `response.status` is quoted because it is the only detail support will ask for.
+  if (!response.ok || !body || body.success === false) {
+    throw new UpdateError(MANAGED_MESSAGES.install_failed(response.status), 502);
+  }
+  const deployed = trimmed(body.version) || trimmed(version);
+  return {
+    mode: 'platform',
+    queued: true,
+    project: trimmed(body.projectName),
+    version: deployed,
+    deployment: body.deployment && typeof body.deployment === 'object'
+      ? {
+        id: trimmed(body.deployment.id),
+        url: trimmed(body.deployment.url || body.deployment.deploymentUrl),
+        ready_state: trimmed(body.deployment.readyState),
+      }
+      : null,
+    message: deployed
+      ? `React-WP.com rebuilt this site: ${deployed} was uploaded to its project. The new deployment replaces this one as soon as the platform promotes it — this screen reports the new version after that.`
+      : 'React-WP.com rebuilt this site. The new deployment replaces this one as soon as the platform promotes it — this screen reports the new version after that.',
   };
 }
