@@ -17,7 +17,7 @@ import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './Bul
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
-import { installPluginSchema, isEndpointUnavailable } from '../lib/pluginSchema';
+import { installPluginSchema } from '../lib/pluginSchema';
 import styles from './PluginsManager.module.css';
 
 const activationOption = 'rwp_active_plugins';
@@ -527,11 +527,20 @@ export default function PluginsManager() {
               // rather than letting the plugin fail later with a "relation does not exist".
               notes.push(`${plugin.name}: schema.sql ran but ${result.stillMissing.join(', ')} ${result.stillMissing.length === 1 ? 'is' : 'are'} still missing.`);
             }
+            if (result.installed === false && result.reason !== 'no-schema') {
+              notes.push(`${plugin.name}: ${result.message || `its database tables were not created (${result.reason || 'no reason given'}).`}`);
+            }
           } catch (schemaError: unknown) {
-            if (!isEndpointUnavailable(schemaError)) throw schemaError;
-            // Static host: there is no endpoint to run DDL. Activation still works, and the
-            // plugin's own screens already explain which migration to run by hand.
-            notes.push(`${plugin.name}: its database tables were not checked, because ${schemaError.message}`);
+            // Provisioning is a convenience on top of activation, never a condition for it: what
+            // "active" means is the plugin row below plus the option after it, and both writes are
+            // still to come. So a backend that cannot run the SQL (SQLite, MySQL), a server holding no
+            // database credentials, and a static host with no endpoint at all get the same answer —
+            // activate, and say in the same breath which tables are missing and why. Refusing here is
+            // what left a libsql checkout unable to switch the plugin on at all, with a message about
+            // SUPABASE_DB_URL that could not have helped: the plugin's own screens name the migration,
+            // and they can only be reached once it is active.
+            notes.push(`${plugin.name}: its database tables were not created. ${
+              schemaError instanceof Error ? schemaError.message : String(schemaError)}`);
           }
         }
       }

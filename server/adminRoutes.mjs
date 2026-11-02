@@ -22,9 +22,27 @@ const fail = (error) => ({
   body: { error: error instanceof Error ? error.message : 'Unknown server error.' },
 });
 
-/** The caller's plugin permission, or a ready-to-send error. Shared by every route below. */
+/**
+ * The caller's plugin permission, or a ready-to-send error. Shared by every route below.
+ *
+ * This classic host authorises through the site's own Supabase project — that is what
+ * `authorizePluginManager` speaks to — so a site without one cannot be asked who is allowed. The
+ * refusal distinguishes the two reasons that land here: no project at all (nothing is installed), and a
+ * site whose database is SQLite or MySQL, where a plugin's PostgreSQL schema.sql has nowhere to run and
+ * the missing project is not the problem. Saying "not installed" to the second one sends an operator to
+ * the Setup Wizard over a site that is running perfectly well.
+ */
 const requireManager = async (config, headers) => {
   if (!config?.supabaseUrl || !config?.supabasePublishableKey) {
+    const backend = String(config?.dbType || '').toLowerCase();
+    if (backend && backend !== 'supabase' && backend !== 'postgres') {
+      throw new SchemaError(
+        501,
+        `This site's database is ${backend}, and plugin tables are PostgreSQL, so this server has no plugin `
+        + 'schema to install or drop. Activation needs nothing from it, and a site that needs the tables runs '
+        + 'on Supabase or Postgres (npm run start:hono, or a Vercel deployment).',
+      );
+    }
     throw new SchemaError(501, 'This site is not installed, so plugins cannot be managed.');
   }
   const auth = await authorizePluginManager(

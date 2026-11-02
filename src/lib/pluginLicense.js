@@ -78,6 +78,37 @@ export const COMMERCIAL_PLUGIN_ADDONS = Object.freeze({
 });
 
 /**
+ * Catalogue slugs whose plugin id is different, `slug in the marketplace` -> `id on disk`.
+ *
+ * A marketplace listing is keyed by `rwp_plugins.slug`, which for a first-party plugin is normally the
+ * plugin id (`rwp-shop` is listed as `rwp-shop`). `rwp-chat` is the exception: it is listed as
+ * `rwp-chat-ai-assistant`, its marketing name, so `pluginLicenseAddon('rwp-chat-ai-assistant')` answers
+ * `CHAT-AI-ASSISTANT` - an addon no installed plugin validates, because the gate on a site asks for
+ * `COMMERCIAL_PLUGIN_ADDONS['rwp-chat']`, i.e. `CHAT`. Without this alias the marketplace would hand out
+ * a key the chat plugin rejects, or (before the opaque-token path worked) fail while minting one.
+ *
+ * The mapping is read by `marketplaceAddonFor` in `server/pluginLicense.mjs`, which is what signs a
+ * licence. The site's own gate is unaffected: it always asks with the installed plugin id, so the alias
+ * can never widen what a plugin accepts. `npm run check:plugins` fails if an alias names an id that is
+ * not a sold plugin or not a folder in `plugins/`, so a rename cannot leave a stale entry behind.
+ */
+export const MARKETPLACE_PLUGIN_SLUGS = Object.freeze({
+  'rwp-chat-ai-assistant': 'rwp-chat',
+});
+
+/**
+ * The plugin id a marketplace slug names: the alias above when one exists, the slug itself otherwise.
+ *
+ * Comparison is case-insensitive because a slug is user-editable on the listing form, while the maps
+ * above are written in lower case.
+ */
+export const pluginIdForSlug = (slug) => {
+  const value = str(slug).toLowerCase();
+  if (!value) return '';
+  return Object.hasOwn(MARKETPLACE_PLUGIN_SLUGS, value) ? MARKETPLACE_PLUGIN_SLUGS[value] : value;
+};
+
+/**
  * `RWP1-ADDON-YYYYMMDD-SIGNATURE`.
  *
  * The addon is what ties a key to a plugin, and the signature covers it, so a key minted for one

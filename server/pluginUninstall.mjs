@@ -32,6 +32,13 @@ const requireConnection = (body, config) => {
   return resolved.url;
 };
 
+/**
+ * The backends a plugin's schema.sql can run on. It is PostgreSQL: `create policy`, `security
+ * definer` functions and RLS grants. A MySQL or SQLite site has no equivalent to translate to, and a
+ * libsql dev checkout has no Supabase project behind it at all.
+ */
+const postgresBackends = new Set(['supabase', 'postgres']);
+
 /** `process.env` where there is one, and nothing where there is not (Workers, Deno, Bun). */
 const serverEnvironment = () => globalThis.process?.env ?? {};
 
@@ -103,6 +110,23 @@ export async function installPluginSchemaFor(config, id, body = {}, options = {}
   // rather than demanding credentials this server may not have.
   if (!database?.schema) {
     return { installed: false, reason: 'no-schema', plugin: id, tables: [], functions: [] };
+  }
+  // A plugin's schema.sql is PostgreSQL — policies, functions and RLS grants a SQLite or MySQL
+  // backend has no equivalent for — so on those backends there is nothing to run. Answered as a
+  // result rather than the 501 `requireConnection` would raise, because "set SUPABASE_DB_URL" sends an
+  // operator hunting for a password that would not change the outcome: the tables cannot exist on this
+  // site, and the caller (activation, the Plugins screen) needs to say why rather than report a
+  // credentials failure it cannot act on.
+  if (config?.dbType && !postgresBackends.has(config.dbType)) {
+    return {
+      installed: false,
+      reason: 'not-postgres',
+      plugin: id,
+      tables: database.tables,
+      functions: database.functions,
+      message: `This site's database is ${config.dbType}, and a plugin's schema.sql is PostgreSQL, so its `
+        + 'tables were not created. Plugin tables need a Supabase or Postgres backend.',
+    };
   }
   return installPluginSchema(requireConnection(body, config), id, options.catalogue ?? null);
 }

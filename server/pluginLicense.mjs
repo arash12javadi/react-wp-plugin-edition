@@ -36,13 +36,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSE_PREFIX, PLUGIN_LICENSE_SHOP_URL, PLUGIN_LICENSES_OPTION,
-  defaultActivePluginIds, isCommercialPlugin, maskPluginLicense, pluginLicenseAddon, pluginLicenseAddonFor,
-  pluginLicenseKeyFrom, pluginLicenseParts, readPluginLicenses,
+  defaultActivePluginIds, isCommercialPlugin, maskPluginLicense, pluginIdForSlug, pluginLicenseAddon,
+  pluginLicenseAddonFor, pluginLicenseKeyFrom, pluginLicenseParts, readPluginLicenses,
 } from '../src/lib/pluginLicense.js';
 
 export {
   COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds,
-  isCommercialPlugin, maskPluginLicense, pluginLicenseAddonFor, readPluginLicenses,
+  isCommercialPlugin, maskPluginLicense, pluginIdForSlug, pluginLicenseAddonFor, readPluginLicenses,
 };
 
 /** Where an operator's own signing secret is read from. Empty means the default below. */
@@ -140,9 +140,15 @@ export const signPluginLicense = ({ plugin, expiresOn, days, secret } = {}) => {
  * marketplace mint the same `RWP1-…` key the plugin's own gate verifies, without the browser or the
  * database ever holding the signing secret. A slug that is not a sold plugin returns `''`, and the
  * marketplace keeps issuing its opaque `RWPM-…` update token for it.
+ *
+ * The slug is first translated to a plugin id (`pluginIdForSlug`), because a listing may be named for
+ * its marketing rather than its folder - `rwp-chat-ai-assistant` is `rwp-chat`, and the gate on a site
+ * asks for `CHAT`. Signing `CHAT-AI-ASSISTANT` would produce a key shaped like a real one that no
+ * plugin accepts, which is worse than issuing the opaque token.
  */
 export const marketplaceAddonFor = (slug) => {
-  const id = str(slug);
+  const id = pluginIdForSlug(slug);
+  if (!id) return '';
   if (Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) return COMMERCIAL_PLUGIN_ADDONS[id];
   const addon = pluginLicenseAddon(id);
   return Object.values(COMMERCIAL_PLUGIN_ADDONS).includes(addon) ? addon : '';

@@ -9,6 +9,9 @@
  *   2. Exactly two plugins belong to the development edition and never ship to a customer -
  *      `rwp-ai-factory`, `rwp-saas-installer` (`DEV_EDITION_PLUGINS` in `src/lib/pluginEdition.js`),
  *      each marked `export-ignore` so no archive of this repository carries them.
+ *   3. A sold plugin listed under a different catalogue slug - `rwp-chat` as
+ *      `rwp-chat-ai-assistant` - is bridged by `MARKETPLACE_PLUGIN_SLUGS`, and the bridge has to land on
+ *      the addon that plugin itself verifies.
  *
  * The declarations are the policy; this script is what keeps them true. It reads `plugins/` and
  * `.gitattributes` and fails with a sentence per disagreement, because the failure mode is silent: a
@@ -21,8 +24,9 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  COMMERCIAL_PLUGIN_ADDONS, isCommercialPlugin, pluginLicenseAddon,
+  COMMERCIAL_PLUGIN_ADDONS, MARKETPLACE_PLUGIN_SLUGS, isCommercialPlugin, pluginLicenseAddon,
 } from '../src/lib/pluginLicense.js';
+import { marketplaceAddonFor } from '../server/pluginLicense.mjs';
 import { DEV_EDITION_PLUGINS, isDevEditionPlugin, pluginEdition } from '../src/lib/pluginEdition.js';
 
 /**
@@ -140,7 +144,38 @@ for (const plugin of plugins) {
   }
 }
 
-// ---- Rule 3: the development-edition set ------------------------------------------------------
+// ---- Rule 3: a catalogue slug that names another plugin -----------------------------------------
+
+// A marketplace listing is signed for the addon its *plugin* will verify, which means the listing's
+// slug has to resolve to a plugin folder. `rwp-chat-ai-assistant` is listed under its marketing name but
+// the gate on a site asks for `CHAT`, so `MARKETPLACE_PLUGIN_SLUGS` carries that bridge. Each entry is
+// checked from both ends: the target must be a sold plugin *and* a folder on disk, and the addon the
+// marketplace would sign must be the one the plugin derives for itself - otherwise an admin grants a
+// licence whose key the plugin rejects, which looks like success in the table.
+for (const [slug, target] of Object.entries(MARKETPLACE_PLUGIN_SLUGS)) {
+  if (slug === target) {
+    fail(`MARKETPLACE_PLUGIN_SLUGS maps ${slug} to itself. An identity alias reads like a fix while changing nothing; delete the entry.`);
+    continue;
+  }
+  if (!Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, target)) {
+    fail(`MARKETPLACE_PLUGIN_SLUGS maps the catalogue slug ${slug} to ${target}, which is not a sold plugin. A licence for that listing would be signed for an addon no plugin verifies.`);
+    continue;
+  }
+  if (!ids.includes(target)) {
+    fail(`MARKETPLACE_PLUGIN_SLUGS maps the catalogue slug ${slug} to ${target}, but there is no folder plugins/${target}.`);
+    continue;
+  }
+  const signed = marketplaceAddonFor(slug);
+  const expected = pluginLicenseAddon(target);
+  if (signed !== expected) {
+    fail(`A licence for the catalogue slug ${slug} is signed as ${signed || '(an opaque token)'}, but plugins/${target} verifies ${expected}. The key would be refused by the plugin.`);
+  }
+  if (COMMERCIAL_PLUGIN_ADDONS[target] !== expected) {
+    fail(`COMMERCIAL_PLUGIN_ADDONS gives ${target} the addon ${COMMERCIAL_PLUGIN_ADDONS[target]}, but its own gate asks for ${expected}.`);
+  }
+}
+
+// ---- Rule 4: the development-edition set ------------------------------------------------------
 
 if (!sameSet(DEV_EDITION_PLUGINS, EXPECTED_DEV)) {
   fail(`DEV_EDITION_PLUGINS lists ${DEV_EDITION_PLUGINS.join(', ') || 'nothing'}; the business rule is ${EXPECTED_DEV.join(', ')}.`);

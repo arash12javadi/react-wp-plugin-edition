@@ -140,11 +140,16 @@ export const fetchPluginSchemaStatus = (id: string) =>
  * than tracking installed-ness in a column that can drift from the actual database. The answer is
  * read back from the database, so `stillMissing` and `missingFunctions` are what is actually there
  * afterwards — a schema.sql that creates the tables but not an RPC reports both.
+ *
+ * `installed: false` is a decision, not a failure: `no-schema` (the plugin ships none) or
+ * `not-postgres` (this site's database cannot run PostgreSQL DDL), and `message` is the sentence to
+ * show. A real failure — no credentials, SQL that errored — still comes back as HTTP 4xx/5xx, which is
+ * why callers treat the two differently.
  */
 export const installPluginSchema = (id: string, credentials: DbCredentials = {}) =>
   request<{
-    installed: boolean; reason?: string; plugin: string; tables: string[]; functions?: string[];
-    created?: string[]; stillMissing?: string[]; missingFunctions?: string[];
+    installed: boolean; reason?: string; message?: string; plugin: string; tables: string[];
+    functions?: string[]; created?: string[]; stillMissing?: string[]; missingFunctions?: string[];
   }>(
     '/api/admin/plugins/install-schema',
     { method: 'POST', body: JSON.stringify({ id, ...credentials }) },
