@@ -75,9 +75,14 @@ function readMediaPrefixes(manifest, plugin) {
 }
 
 /**
- * The plugin's declared database contract, or null when it needs no tables. Table and option
- * names are validated here rather than at query time: they are interpolated into SQL below,
- * because table names cannot be bound as parameters.
+ * The plugin's declared database contract, or null when it needs no tables. Table, function and
+ * option names are validated here rather than at query time: they are interpolated into SQL below,
+ * because names cannot be bound as parameters.
+ *
+ * `functions` lists the `rwp_`-style RPCs the plugin's screens call — not everything its schema.sql
+ * creates, but the surface whose absence breaks a screen. Without that list, a database that has the
+ * tables and lost the functions answers a screen with an empty table (or a raw PGRST202 string) and
+ * nothing to install from; with it, the same database is reported as "these functions are missing".
  *
  * Pass `catalogue` on a host without a `plugins/` folder; the entry is returned as built (by
  * `pluginCatalogue()`), so `importers` is the build's answer there and `null` here, where the
@@ -107,6 +112,11 @@ export async function readPluginDatabase(id, catalogue = null) {
   if (invalid.length) {
     throw new SchemaError(400, `plugins/${plugin.folder}/manifest.json lists invalid table name(s): ${invalid.join(', ')}.`);
   }
+  const functions = Array.isArray(database.functions) ? database.functions.map(String) : [];
+  const invalidFunctions = functions.filter((name) => !identifier.test(name));
+  if (invalidFunctions.length) {
+    throw new SchemaError(400, `plugins/${plugin.folder}/manifest.json lists invalid function name(s): ${invalidFunctions.join(', ')}.`);
+  }
   const options = (Array.isArray(database.options) ? database.options : []).map(String);
 
   return {
@@ -115,6 +125,7 @@ export async function readPluginDatabase(id, catalogue = null) {
     importers: null,
     database: {
       tables,
+      functions,
       options,
       retains: (Array.isArray(database.retains) ? database.retains : []).map(String),
       schema: sqlSource(plugin.folder, database.schema, 'database.schema', 'schema.sql'),
@@ -164,47 +175,77 @@ const readSql = async ({ text, path: file, label }) => {
   }
 };
 
-/** Which of the plugin's declared tables already exist, so the UI can say "installed" truthfully. */
-export async function readSchemaState(client, tables) {
-  if (!tables.length) return { present: [], missing: [], rowCounts: {} };
-  const { rows } = await client.query(
-    `select c.relname as name, coalesce(s.n_live_tup, 0)::bigint as approx_rows
-       from pg_class c
-       join pg_namespace n on n.oid = c.relnamespace
-       left join pg_stat_user_tables s on s.relid = c.oid
-      where n.nspname = 'public' and c.relkind = 'r' and c.relname = any($1::text[])`,
-    [tables],
-  );
-  const present = rows.map((row) => row.name);
-  return {
-    present,
-    missing: tables.filter((name) => !present.includes(name)),
-    rowCounts: Object.fromEntries(rows.map((row) => [row.name, Number(row.approx_rows)])),
-  };
+/**
+ * Which of the plugin's declared tables and functions already exist, so the UI can say "installed"
+ * truthfully.
+ *
+ * Tables and functions are asked separately because they fail differently. A schema.sql applied to
+ * the wrong project leaves both missing; a schema.sql applied before the functions were added leaves
+ * every table in place and the RPC a screen calls missing — which surfaces as an empty list, not as a
+ * migration problem. `functionsPresent`/`functionsMissing` are flat rather than nested so the payload
+ * can carry the declared list under `functions` without the two colliding.
+ */
+export async function readSchemaState(client, tables, functions = []) {
+  const state = { present: [], missing: [], rowCounts: {}, functionsPresent: [], functionsMissing: functions };
+  if (tables.length) {
+    const { rows } = await client.query(
+      `select c.relname as name, coalesce(s.n_live_tup, 0)::bigint as approx_rows
+         from pg_class c
+         join pg_namespace n on n.oid = c.relnamespace
+         left join pg_stat_user_tables s on s.relid = c.oid
+        where n.nspname = 'public' and c.relkind = 'r' and c.relname = any($1::text[])`,
+      [tables],
+    );
+    const present = rows.map((row) => row.name);
+    state.present = present;
+    state.missing = tables.filter((name) => !present.includes(name));
+    state.rowCounts = Object.fromEntries(rows.map((row) => [row.name, Number(row.approx_rows)]));
+  }
+  if (functions.length) {
+    // pg_proc rather than a probe call: the anon role may be refused a function that exists
+    // (42501), and a permission error must not read as "install the schema".
+    const { rows } = await client.query(
+      `select distinct p.proname as name
+         from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = any($1::text[])`,
+      [functions],
+    );
+    const found = rows.map((row) => row.name);
+    state.functionsPresent = functions.filter((name) => found.includes(name));
+    state.functionsMissing = functions.filter((name) => !found.includes(name));
+  }
+  return state;
 }
 
 /**
  * Runs the plugin's schema.sql. Idempotent by contract, so re-activating a plugin whose tables
  * are already there is a no-op rather than an error — the same promise supabase/schema.sql makes.
+ *
+ * The reported state is read after the file runs and covers functions as well as tables, so a
+ * schema.sql that creates the tables but not an RPC (a stale copy of the file, or a run that stopped
+ * half way) is still reported as incomplete instead of as installed.
  */
 export async function installPluginSchema(connectionString, id, catalogue = null) {
   const { plugin, database } = await readPluginDatabase(id, catalogue);
   if (!database || !database.schema) {
-    return { installed: false, reason: 'no-schema', plugin: plugin.id, tables: [] };
+    return { installed: false, reason: 'no-schema', plugin: plugin.id, tables: [], functions: [] };
   }
   const sql = await readSql(database.schema);
   try {
     return await withClient(connectionString, async (client) => {
-      const before = await readSchemaState(client, database.tables);
+      const before = await readSchemaState(client, database.tables, database.functions);
       await client.query(sql);
-      const after = await readSchemaState(client, database.tables);
+      const after = await readSchemaState(client, database.tables, database.functions);
       return {
         installed: true,
         plugin: plugin.id,
         tables: after.present,
+        functions: after.functionsPresent,
         // "already there" vs "just created", so the Plugins screen can say which happened.
         created: after.present.filter((name) => !before.present.includes(name)),
         stillMissing: after.missing,
+        missingFunctions: after.functionsMissing,
       };
     }, { transaction: true });
   } catch (error) {

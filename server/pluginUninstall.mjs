@@ -72,12 +72,16 @@ export async function pluginSchemaStatus(config, id, options = {}) {
     hasSchema: Boolean(database?.schema),
     canDrop: Boolean(database?.uninstall),
     tables: database?.tables || [],
+    // The RPCs the plugin's screens call. Reported alongside the tables because a database can have
+    // every table and none of the functions, and that reads on screen as "no data" rather than as
+    // "the migration never ran here".
+    functions: database?.functions || [],
     retains: database?.retains || [],
     mediaPrefixes,
     cloudinaryConfigured: await cloudinaryConfigured(config, options),
     storedCredentials: hasStoredCredentials(),
   };
-  if (!database?.tables.length) return { ...base, checked: false };
+  if (!database?.tables.length && !database?.functions.length) return { ...base, checked: false };
 
   const resolved = resolveConnectionString({}, config);
   if (!resolved.ok) {
@@ -85,7 +89,7 @@ export async function pluginSchemaStatus(config, id, options = {}) {
     return { ...base, checked: false, reason: resolved.error };
   }
   try {
-    const state = await withClient(resolved.url, (client) => readSchemaState(client, database.tables));
+    const state = await withClient(resolved.url, (client) => readSchemaState(client, database.tables, database.functions));
     return { ...base, checked: true, ...state };
   } catch (error) {
     return { ...base, checked: false, reason: error instanceof Error ? error.message : 'unknown error' };
@@ -98,7 +102,7 @@ export async function installPluginSchemaFor(config, id, body = {}, options = {}
   // Asked before the connection is resolved, so a plugin that owns no tables answers "no-schema"
   // rather than demanding credentials this server may not have.
   if (!database?.schema) {
-    return { installed: false, reason: 'no-schema', plugin: id, tables: [] };
+    return { installed: false, reason: 'no-schema', plugin: id, tables: [], functions: [] };
   }
   return installPluginSchema(requireConnection(body, config), id, options.catalogue ?? null);
 }

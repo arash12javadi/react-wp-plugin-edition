@@ -22,6 +22,12 @@ export interface PluginSchemaStatus {
   /** It also ships an uninstall.sql, so "wipe data" can be offered. */
   canDrop: boolean;
   tables: string[];
+  /**
+   * The RPCs the plugin's screens call, as its manifest declares them. A database can hold every table
+   * and none of the functions — an older copy of schema.sql, or a run that stopped half way — and that
+   * reads on screen as "no data" rather than as "the migration never ran here".
+   */
+  functions: string[];
   /** Things the plugin's uninstall.sql deliberately leaves alone, shown in the dialog. */
   retains: string[];
   /** Provider folders the plugin owns, e.g. ["plugins/rwp-shop"]. Wiped only on a wipe. */
@@ -36,6 +42,9 @@ export interface PluginSchemaStatus {
   present?: string[];
   missing?: string[];
   rowCounts?: Record<string, number>;
+  /** Which of the declared functions exist. Flat, so they do not collide with the `functions` above. */
+  functionsPresent?: string[];
+  functionsMissing?: string[];
 }
 
 export interface PluginBackup {
@@ -128,10 +137,15 @@ export const fetchPluginSchemaStatus = (id: string) =>
 
 /**
  * Runs the plugin's schema.sql. Idempotent, so this is safe to call on every activation rather
- * than tracking installed-ness in a column that can drift from the actual database.
+ * than tracking installed-ness in a column that can drift from the actual database. The answer is
+ * read back from the database, so `stillMissing` and `missingFunctions` are what is actually there
+ * afterwards — a schema.sql that creates the tables but not an RPC reports both.
  */
 export const installPluginSchema = (id: string, credentials: DbCredentials = {}) =>
-  request<{ installed: boolean; reason?: string; plugin: string; tables: string[]; created?: string[]; stillMissing?: string[] }>(
+  request<{
+    installed: boolean; reason?: string; plugin: string; tables: string[]; functions?: string[];
+    created?: string[]; stillMissing?: string[]; missingFunctions?: string[];
+  }>(
     '/api/admin/plugins/install-schema',
     { method: 'POST', body: JSON.stringify({ id, ...credentials }) },
   );

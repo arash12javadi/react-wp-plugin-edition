@@ -785,6 +785,15 @@ A plugin's SQL may depend on core (`user_has_cap`, `pages`, `profiles`, `options
 
 Running the database requires a direct PostgreSQL connection, because PostgREST cannot execute DDL. Set `SUPABASE_DB_URL` in `.env.local` (Supabase → Project Settings → Database → Connection string → URI, session mode on port 5432) and activation is a single click. Without it the server asks for your database password in the dialog instead. These endpoints exist only under `server.mjs`; on a static host, activation still works and the screen says the tables were not checked.
 
+The same install runs from a terminal, which is the only way to do it when the site is on a host you cannot reach from here:
+
+```bash
+npm run db:plugin-schema -- rwp-plugin-marketplace --check   # report only
+npm run db:plugin-schema -- rwp-plugin-marketplace           # install
+```
+
+It prints the project ref inside `SUPABASE_DB_URL` before it writes anything, and **refuses** when that ref is not the project `VITE_SUPABASE_URL`/`data/react-wp-config.json` names — installing into the wrong Supabase project is the failure that looks like success, because the tables appear in a database no screen reads (`--force` overrides when that really is the target). A missing `profiles`/`user_has_cap()` is reported as *core* schema missing, not plugin schema missing, since the fix for that one is `supabase/schema.sql`. `--env <file>` fills missing values from another file (default `.env.live.local`), so a checkout running sqlite locally can still provision the Supabase site it deploys to. The command exits non-zero when anything it declared is still missing afterwards, which makes it usable in CI.
+
 ### Uninstalling a plugin
 
 **Uninstall** on the Plugins screen opens a dialog rather than a `confirm()`, because uninstalling is three separate decisions: does the code go, does the data go, and is there a copy first. It lists every table the plugin owns with its row count, then offers:
