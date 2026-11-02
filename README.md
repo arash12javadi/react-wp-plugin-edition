@@ -1367,7 +1367,9 @@ instead of breaking.
 
 - **Floating launcher** on every public page (`after_footer` slot), plus `[rwp_chat_box]` to place
   it on specific pages and `[rwp_inline_chat]` for a whole conversation embedded in a page — both
-  also exist as Page Builder widgets.
+  also exist as Page Builder widgets. Every visitor gets it, signed in or not; when core's floating
+  Login / Register button (Settings → Floating Login) is configured into the same corner, the
+  launcher sits above it rather than hiding, so the two never cover each other.
 - **AI assistant** on the provider you choose on **Settings → Integrations → AI** (Gemini, OpenAI,
   Anthropic, or any OpenAI-compatible service), answering from the site's own published pages and,
   on a product page, the product's real title/price/stock. It never invents a price, a policy, or
@@ -1378,7 +1380,8 @@ instead of breaking.
   question is answered from the passages that match it, so a policy that lives in one paragraph of
   a long page can still be quoted. Drafts and archived entries are never shown to a visitor.
 - **Pre-chat lead form** — name, email and phone, configurably required — so a lead is captured
-  even if the visitor leaves right after.
+  even if the visitor leaves right after. A signed-in visitor is not asked: their account's name
+  and email are recorded on the conversation instead (see **Chat → Inbox**).
 - **File attachments** (images, PDFs, text; 8 MB limit), stored in their own Media Library folder
   so support screenshots don't clutter the main library.
 - **Proactive invitations** — a speech bubble after N seconds on the page, or on exit intent —
@@ -1421,7 +1424,7 @@ instead of breaking.
 
 | Tab | What it controls |
 | --- | --- |
-| **General & AI** | Bot name/avatar/welcome message, launcher position & theme, whether the AI answers, pre-chat form fields, attachments on/off, proactive invitation timing and wording. |
+| **General & AI** | Bot name/avatar/welcome message, launcher position & theme, whether the AI answers, pre-chat form fields (asked of guests only — a signed-in visitor's account already has their name and email), attachments on/off, proactive invitation timing and wording. |
 | **Knowledge** | What the assistant is allowed to quote: pages and posts scraped from this site, entries written by hand, uploaded documents, the auto-refresh interval, an AI rewrite of any entry, and a box that runs a real question against the store to show what would be found. |
 | **Live agent** | Which channel "Talk to a person" uses, its button label, the public WhatsApp number (for the free link), and the Telegram / WhatsApp API credentials. |
 

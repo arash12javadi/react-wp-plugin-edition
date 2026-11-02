@@ -35,7 +35,8 @@ export function FloatingLoginTrigger({ controller, contained = false }: Floating
  *
  * Renders nothing when Floating Login is switched off, for someone who is signed in, and on the
  * account pages (/login, /register, …), which already show the same forms. The chat launcher asks
- * the same helper whether this button is on the page, and takes the corner when it is not.
+ * the same helper whether this button is on the page, and sits above it when the two share a
+ * corner, so a visitor who is not signed in has both the login button and the chat.
  */
 export default function FloatingLoginButton() {
   const controller = useFloatingLogin();

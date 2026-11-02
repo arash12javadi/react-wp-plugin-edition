@@ -188,9 +188,10 @@ export const saveFloatingLoginSettings = async (next: FloatingLoginSettings): Pr
 
 /**
  * Whether the floating Login / Register button is on the page right now. The chat launcher reads
- * this too, and the two swap rather than stack: while the button is on the page the launcher stays
- * out of the corner, and it takes over once the button is gone — because the visitor signed in, or
- * because the button is switched off or this is an account page.
+ * this too, and the two share the corner rather than fighting over it: when the button is on the
+ * page and configured into the same corner, the launcher sits above it instead of hiding, so a
+ * visitor who is not signed in still has a chat. See `.rwp-chat--stacked` in
+ * `plugins/rwp-chat/chat.css`.
  */
 export const floatingLoginShowsTrigger = (
   settings: FloatingLoginSettings,
