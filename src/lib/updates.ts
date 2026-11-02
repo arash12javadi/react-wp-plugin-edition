@@ -18,7 +18,7 @@
  *     badge, the Overview banner and the Updates screen always show the same answer.
  */
 import { version as installedAppVersion } from '../../package.json';
-import { describeDbError, client } from './db';
+import { describeDbError, client, tryGetClient } from './db';
 import { rwp } from './rwp';
 
 export { installedAppVersion };
@@ -137,6 +137,44 @@ const writeJsonOption = async (name: string, value: unknown) => {
 };
 
 export const loadUpdateStatus = () => readJsonOption<UpdateStatus>(updateStatusOption);
+
+/**
+ * The newest release the last check recorded, for a page nobody has signed in to read.
+ *
+ * A visitor's browser cannot answer this question on its own: the release usually lives on a **private**
+ * repository, and the answer exists here at all only because the *server* asked GitHub with the token
+ * Settings → Updates holds (`POST /api/admin/updates/check` → `server/updateCenter.mjs`). So the reader
+ * below — `[rwp_latest_release]` in `plugins/rwp-saas-installer`, the plugin that owns this site's
+ * release lifecycle — reads back that answer rather than calling `api.github.com` itself, which means it
+ * prints exactly the version the Updates screen printed — same tag, same date, same notes — and works for
+ * a repository that has no public releases at all.
+ *
+ * The row is readable without signing in (`options` carries the public-read policy this CMS needs for the
+ * site title), and it holds nothing a visitor should not see: the release the site is *published* from.
+ * `installed` and the plugin map stay in the row untouched and unread here.
+ *
+ * `null` covers every "nothing to print" case — no CMS configured on this page, no check has run yet, the
+ * row is malformed, or the last check answered with no release. The caller decides what a visitor sees.
+ */
+export const loadPublishedRelease = async (): Promise<{ release: UpdateReleaseInfo; checkedAt: string } | null> => {
+  const db = tryGetClient();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('options')
+    .select('option_value')
+    .eq('option_name', updateStatusOption)
+    .maybeSingle();
+  if (error || !data?.option_value) return null;
+  let status: UpdateStatus;
+  try {
+    status = JSON.parse(data.option_value) as UpdateStatus;
+  } catch {
+    return null;
+  }
+  const release = status?.latest;
+  if (!release || !(release.version || release.tag)) return null;
+  return { release, checkedAt: status.checked_at || '' };
+};
 
 /**
  * Stores a check result for every administrator.

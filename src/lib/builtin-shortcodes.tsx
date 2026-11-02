@@ -1,5 +1,4 @@
 import { lazy, Suspense, type ReactNode } from 'react';
-import ActiveInstalls from '../components/ActiveInstalls';
 import LoginButton from '../components/LoginButton';
 import AuthForm from '../components/auth/AuthForm';
 import { registerEngagementShortcodes } from '../components/engagement/shortcodes';
@@ -14,16 +13,6 @@ const loading = (node: ReactNode) => <Suspense fallback={<p>Loading…</p>}>{nod
 
 /** "no", "false", "0" and "off" switch an attribute off; anything else (or nothing) leaves it on. */
 const flag = (value: string | undefined) => !/^(no|false|0|off)$/i.test(value || '');
-
-/** The opposite default: "yes", "true", "1" and "on" switch it on, and nothing leaves it off. */
-const enabled = (value: string | undefined) => /^(yes|true|1|on)$/i.test(value || '');
-
-/** A whole-number attribute, or undefined when it is missing or not a number, so the component default applies. */
-const integer = (value: string | undefined): number | undefined => {
-  const raw = (value ?? '').trim();
-  const parsed = Number(raw);
-  return raw !== '' && Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
-};
 
 const formAttributes = [
   { name: 'title', description: 'The heading. Leave it out for the default.' },
@@ -98,32 +87,6 @@ export const registerBuiltinShortcodes = () => {
     example: '[rwp_user_dashboard title="My account"]',
     attributes: [{ name: 'title', description: 'The heading. Without it: "Hello, <name>".' }],
     render: (attributes) => loading(<UserDashboard title={attributes.title} />),
-  });
-
-  // [rwp_active_installs]: how many sites the RWP SaaS Installer handed out, read from the tracker
-  // table that plugin's schema.sql creates. Registered here rather than by the plugin because the
-  // public site renders it, and a plugin that is deactivated must not take the page down with it — the
-  // component degrades to its empty line when the table is missing.
-  rwp.shortcodes.register({
-    name: 'rwp_active_installs',
-    description: 'How many sites the RWP SaaS Installer has handed out, counted from its installations table. Needs that plugin active and its schema installed.',
-    example: '[rwp_active_installs days="30" list="yes"]',
-    attributes: [
-      { name: 'days', description: 'How recently a site must have checked in to count. 30 by default; 0 counts every site ever recorded.' },
-      { name: 'list', description: 'yes lists the sites and not just the number. Off by default: the count is the public fact.' },
-      { name: 'limit', description: 'How many sites the list prints. 20 by default.' },
-      { name: 'title', description: 'The heading. Leave it out for the default.' },
-      { name: 'empty', description: 'What to say when nothing is recorded yet.' },
-    ],
-    render: (attributes) => (
-      <ActiveInstalls
-        days={integer(attributes.days)}
-        list={enabled(attributes.list)}
-        limit={integer(attributes.limit)}
-        title={attributes.title}
-        empty={attributes.empty}
-      />
-    ),
   });
 
   // [rwp_like], [rwp_save], [rwp_follow], [rwp_views], [rwp_engagement], [rwp_popular_content],

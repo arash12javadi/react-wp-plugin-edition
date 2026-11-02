@@ -523,7 +523,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
         items: [
           'The installations tracker is a count, never a limit: provisioning needs no license key and no key is stored anywhere.',
           'The card says how many recorded sites checked in within a window, and says the number is unknown — not zero — when the tracker could not be read.',
-          '[rwp_active_installs] publishes the same rows; it is registered by the core so a page that uses it keeps working while this plugin is inactive.',
+          '[rwp_active_installs] publishes the same rows. It is this plugin’s shortcode, so deactivating the installer takes the count away with the tracker it reads.',
         ],
       },
     ],
@@ -535,6 +535,14 @@ export const pluginDocs: Record<string, PluginDoc> = {
         usage: '[react_wp_installer]',
         description: 'The multi-step wizard that provisions a new independent React-WP site on the visitor’s own Vercel and Supabase accounts. It takes no attributes.',
       },
+      {
+        usage: '[rwp_active_installs days="30" list="yes" limit="10"]',
+        description: 'How many sites this installation has handed out, from the tracker the plugin creates. [rwp_active_installs days="0"] counts every site ever recorded, and list="yes" prints them as links instead of just the number.',
+      },
+      {
+        usage: '[rwp_latest_release notes="yes" limit="5"]',
+        description: 'The newest release — tag, date and notes — exactly as Dashboard → Updates shows it: the recorded check is read back, which is the only way a visitor can see the version of a private release repository. Without a recorded check it falls back to the repository’s public GitHub releases, where channel="beta" also offers pre-releases.',
+      },
     ],
     steps: [
       'Activate the plugin: the first activation creates the saas_installer_installations tracker.',
@@ -543,6 +551,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Add [react_wp_installer] to a page, sign in at /login, and run the wizard once yourself to see the four stages and the result it reports.',
       'For this site’s own updates, fill in the Vercel project (and team), paste an access token, then press Update to <version> or pick an older release to roll back to.',
       'Optional: publish [rwp_active_installs days="30"] to show the number of sites this installation has built.',
+      'Add [rwp_latest_release] to any page to print the release this site runs — the same tag Dashboard → Updates records, so it works for a private release repository. Its notes attribute hides the release notes, and limit sets how many lines print.',
     ],
     notes: [
       'Development edition only: it is the sign-up flow for new React-WP sites, so it never ships inside a customer’s template.',
