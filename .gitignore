@@ -54,3 +54,7 @@ react-wp.config.*.json
 #No needed plugins for User Edition
 plugins/rwp-ai-factory
 plugins/rwp-saas-installer
+
+#Cline Configs
+.clineignore
+.clinerules

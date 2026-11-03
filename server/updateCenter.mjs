@@ -40,6 +40,7 @@
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
  * `environmentOf`, so a Workers deployment that has none does not crash on import.
  */
+import { centralFetch } from './centralFetch.mjs';
 import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
 import { fetchGithubReleases, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
@@ -485,6 +486,11 @@ export const versionStateAfter = (previous, entry) => {
  * `server/githubReleases.mjs`, and a row written by hand. A `version` (or a tag that parses as one) is
  * the only requirement; everything else is optional.
  *
+ * `title` is what the release is called — `name` on GitHub is read by `releaseFromGithub` before a row gets
+ * here, so this only has to recognise the two field names an answer of this feature's own uses. It is *not*
+ * read from `name`: in a `plugins` map that field can be the plugin's display name, and a plugin card must
+ * not print its own name as a release title.
+ *
  * @param {unknown} value
  */
 export const releaseFrom = (value) => {
@@ -506,6 +512,7 @@ export const releaseFrom = (value) => {
     version,
     /** The published tag, `v2.4.1`. Shown as is, and what a self-update checks out. */
     tag: tag || `v${version}`,
+    title: trimmed(row.title) || trimmed(row.release_title),
     released: trimmed(row.released) || trimmed(row.published_at) || trimmed(row.publishedAt),
     notes,
     changelog_url: /^https:\/\//i.test(changelog) ? changelog : '',
@@ -515,11 +522,18 @@ export const releaseFrom = (value) => {
   };
 };
 
-/** A release as the browser may see it: no download URL, which only an installer needs. */
+/**
+ * A release as the browser may see it: no download URL, which only an installer needs.
+ *
+ * `title` travels with it because it is what the release is *called* — the Updates screen and
+ * `[rwp_latest_release]` both print it above the tag, and a card that only ever showed `v2.6.3` was
+ * showing half of what the release on GitHub says.
+ */
 export const publicRelease = (release) => (release
   ? {
     version: release.version,
     tag: release.tag || `v${release.version}`,
+    title: release.title || '',
     released: release.released,
     notes: release.notes,
     changelog_url: release.changelog_url,
@@ -527,7 +541,14 @@ export const publicRelease = (release) => (release
   }
   : null);
 
-/** The bearer header a central request carries. The token never appears in a response or a log line. */
+/**
+ * The bearer header a central request carries. The token never appears in a response or a log line.
+ *
+ * A request built here is *sent* through `centralFetch` rather than `fetch`, never directly: the
+ * platform redirects its apex domain to `www`, and a redirect `fetch` follows itself drops this very
+ * header (`server/centralFetch.mjs`). That is why an update failed with `HTTP 401` while the check on
+ * the same screen worked — a release list is public, a rebuild is not.
+ */
 const centralHeaders = (config, appVersion) => ({
   Accept: 'application/json',
   'Content-Type': 'application/json',
@@ -667,7 +688,9 @@ export async function fetchCentralCheck({ config, current, plugins, fetchImpl = 
     const url = `${base}${path}`;
     let response;
     try {
-      response = await fetchImpl(url, request);
+      // Through `centralFetch`: the platform's apex domain redirects to `www`, and the token has to survive
+      // that hop or a revoked credential would go unreported (`server/centralFetch.mjs`).
+      response = await centralFetch(url, request, { fetchImpl });
     } catch (error) {
       throw new UpdateError(managed ? MANAGED_MESSAGES.unreachable : networkMessage(error, url), 502);
     }
@@ -733,6 +756,7 @@ export const centralReleasesFrom = (body, managed = false) => {
   const app = releaseFrom(body?.app) || releaseFrom({
     version: body?.latestVersion ?? body?.latest_version,
     tag: body?.latestVersion ?? body?.latest_version ?? body?.release?.tag,
+    title: body?.release?.title,
     notes: body?.releaseNotes ?? body?.release_notes ?? body?.release?.notes,
     released: body?.release?.released ?? body?.publishedAt ?? body?.published_at,
     changelog_url: body?.releaseUrl ?? body?.release_url ?? body?.html_url,
@@ -1203,12 +1227,15 @@ export async function requestPlatformInstall({ config, site, version = '', env, 
   const url = centralInstallUrl(config);
   let response;
   try {
-    response = await fetchImpl(url, {
+    // `centralFetch`, not `fetch`: the platform's apex domain answers `308` to `www`, and a redirect
+    // followed by `fetch` itself drops the `Authorization` header — which the platform then reports as a
+    // missing token (HTTP 401) rather than as the rebuild it never started.
+    response = await centralFetch(url, {
       method: 'POST',
       headers: centralHeaders(config, environmentOf(env).RWP_APP_VERSION),
       body: JSON.stringify({ site: address, ...(isVersion(version) ? { version: trimmed(version) } : {}) }),
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    }, { fetchImpl });
   } catch {
     throw new UpdateError(MANAGED_MESSAGES.install_unreachable, 502);
   }

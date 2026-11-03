@@ -115,6 +115,11 @@ const downloadUrlFrom = (row) => {
  * `server/updateCenter.mjs` already understands — so an answer built from GitHub and one built from the
  * public feed are indistinguishable to the screen.
  *
+ * `title` is the name the release was given on GitHub (`name`), which is not the tag: a release tagged
+ * `v2.6.3` is usually titled "React-WP v2.6.3 | Fix plugin licensing". It is carried separately for that
+ * reason — `[rwp_latest_release]` prints both, and a release that was never titled arrives with an empty
+ * one rather than with its tag repeated.
+ *
  * `draft` and `prerelease` ride along because `latestReleaseFrom` needs them and the public answer does
  * not: a draft is visible only to the owner's token, and a pre-release is what the `beta` channel is for.
  *
@@ -130,6 +135,8 @@ export const releaseFromGithub = (value) => {
   return {
     version,
     tag: /^v/i.test(tag) ? `v${version}` : tag,
+    /** What GitHub calls the release, `name` in the API. Never guessed from the tag. */
+    title: trimmed(row.name),
     released: trimmed(row.published_at) || trimmed(row.created_at),
     notes: notesFromGithubBody(row.body),
     changelog_url: /^https:\/\//i.test(page) ? page : '',
@@ -159,9 +166,9 @@ export const releasesFromGithub = (value) => (Array.isArray(value)
  * releases endpoint, and its tags are the same fact one endpoint over: the tag *is* the published version.
  * Reading them means a repository tagged `v2.4.2` is offered `v2.4.2` instead of "no release yet".
  *
- * A tag carries less than a release — no notes, no publish date, no asset — so `notes` stays empty and
- * `changelog_url` points at GitHub's own page for that tag. `prerelease` is inferred from the tag itself
- * (`v2.5.0-rc.1`), so a candidate tag is never offered on the stable channel.
+ * A tag carries less than a release — no title, no notes, no publish date, no asset — so `title` and
+ * `notes` stay empty and `changelog_url` points at GitHub's own page for that tag. `prerelease` is inferred
+ * from the tag itself (`v2.5.0-rc.1`), so a candidate tag is never offered on the stable channel.
  *
  * @param {unknown} value one tag row
  * @param {string} [repo] `owner/name`, for the URL to open
@@ -176,6 +183,8 @@ export const releaseFromTag = (value, repo = '') => {
   return {
     version,
     tag: /^v/i.test(tag) ? `v${version}` : tag,
+    /** A tag is not a release: it has no name of its own, so the card prints no title for one. */
+    title: '',
     released: '',
     notes: [],
     changelog_url: name ? `https://github.com/${name}/releases/tag/${encodeURIComponent(tag)}` : '',

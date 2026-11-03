@@ -43,6 +43,12 @@ export interface UpdateRelease {
   version: string;
   /** The published tag, `v2.4.1`. What the screen shows; `version` is the same release without the `v`. */
   tag: string;
+  /**
+   * What the release is called on GitHub (`v2.6.3 … | Fix plugin licensing`), when it was given a name.
+   * Absent on a bare tag, on a release titled only with its own tag, and on rows written before the title
+   * was carried — which is why nothing decides anything from it.
+   */
+  title?: string;
   released: string;
   notes: string[];
   changelog_url: string;
@@ -510,6 +516,7 @@ export const updateStatusFrom = (answer: UpdateCheckAnswer): UpdateStatus => {
   const notes = (release: UpdateRelease | null | undefined) => ({
     version: asPlainVersion(release?.version || ''),
     tag: release?.tag || '',
+    title: release?.title || '',
     released: release?.released || '',
     notes: release?.notes || [],
     changelog_url: release?.changelog_url || '',

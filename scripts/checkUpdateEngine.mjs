@@ -12,7 +12,9 @@
  *      instead of answering 404.
  *   3. **One payload, two shapes.** The fields the contract promises (`installedVersion`, `latestVersion`,
  *      `updateAvailable`, `releaseNotes`, `releaseUrl`) and the release list this project's own screens
- *      read describe the same release, and the client accepts either.
+ *      read describe the same release, and the client accepts either. The release's own title rides along
+ *      in both: it is what the release is *called*, so a card that only ever printed `v2.6.3` was showing
+ *      half of what GitHub says.
  *   4. **A badge that clears.** An install older than the tag offers an update; the same version does not,
  *      and neither does a newer one — the sidebar badge is written from this answer.
  *
@@ -31,6 +33,10 @@ import {
   repoFrom,
   tagVersionFrom,
 } from '../server/githubReleases.mjs';
+import {
+  CENTRAL_REDIRECT_LIMIT,
+  centralFetch,
+} from '../server/centralFetch.mjs';
 import {
   clearCentralReleaseCache,
   clearStoredReleaseSource,
@@ -147,6 +153,23 @@ test('a GitHub release keeps its tag, its notes and its page; the asset never re
   assert.match(release.download_url, /react-wp\.zip$/);
   assert.equal(publicRelease(release).download_url, undefined);
   assert.equal(publicRelease(release).tag, 'v2.4.1');
+});
+
+test('a release keeps the name it was given, and a bare tag has none to give', () => {
+  const named = releaseFromGithub(githubRow('v2.6.3', { body: '- Fix plugin licensing' }));
+  assert.equal(named.title, 'Release v2.6.3', 'the name GitHub holds is the title, not the tag');
+  assert.equal(publicRelease(named).title, 'Release v2.6.3', 'the browser is told what the release is called');
+  assert.equal(releaseFromGithub({ ...githubRow('v2.6.3'), name: '' }).title, '', 'an untitled release stays untitled');
+
+  // A parsed release keeps it too, whichever field an answer used, and a row that names none has none.
+  assert.equal(releaseFrom({ tag: 'v2.6.3', title: 'React-WP v2.6.3 | Fix plugin licensing' }).title, 'React-WP v2.6.3 | Fix plugin licensing');
+  assert.equal(releaseFrom({ tag: 'v2.6.3', release_title: 'Hand written' }).title, 'Hand written');
+  assert.equal(releaseFrom({ tag: 'v2.6.3' }).title, '');
+  assert.equal(releaseFromTag(tagRow('v2.6.3'), 'acme/react-wp').title, '', 'a tag has no name of its own');
+
+  // The contract shape carries it as well, so a site on a platform release sees the title its platform saw.
+  const central = centralReleasesFrom({ latestVersion: 'v2.6.3', release: { title: 'From the platform' } });
+  assert.equal(central.app.title, 'From the platform');
 });
 
 test('rows that are not releases are dropped, one at a time', () => {
@@ -967,6 +990,92 @@ test('the rebuild request names the site and the release, and never a project na
   assert.deepEqual(install.deployment, { id: 'dpl_1', url: 'shop-abc.vercel.app', ready_state: 'READY' });
   assert.match(install.message, /2\.4\.1/);
   assert.equal(install.token, undefined, 'the token never travels back');
+});
+
+
+test('the platform’s apex→www redirect keeps the token, so the rebuild is authorised where it lands', async () => {
+  // `https://react-wp.com` answers `308` to `https://www.react-wp.com` — the platform canonicalising its
+  // own host. The Fetch standard deletes `Authorization` when a redirect crosses origins, so a `fetch` that
+  // followed that hop itself delivered an unauthenticated POST: the platform answered `401 Send this site's
+  // update token…` and the screen reported a rebuild that had never been asked for. The check on the same
+  // screen kept working because a release list is public, which is what made this look like a broken button.
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url) === 'https://react-wp.com/api/v1/updates/install') {
+      return new Response(null, { status: 308, headers: { location: 'https://www.react-wp.com/api/v1/updates/install' } });
+    }
+    // The address that actually lands answers only because the token travelled with the request — which is
+    // what the platform's own 401 says when it does not.
+    const authorised = init?.headers?.Authorization === 'Bearer site-token';
+    return new Response(JSON.stringify(authorised
+      ? { success: true, version: '2.4.1' }
+      : { success: false, error: 'Send this site\'s update token as "Authorization: Bearer <token>".' }), {
+      status: authorised ? 200 : 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const install = await requestPlatformInstall({
+    config: { central_url: 'https://react-wp.com', token: 'site-token' },
+    site: 'https://shop.vercel.app',
+    version: '2.4.1',
+    fetchImpl,
+  });
+  assert.deepEqual(calls.map((call) => call.url), [
+    'https://react-wp.com/api/v1/updates/install',
+    'https://www.react-wp.com/api/v1/updates/install',
+  ], 'the redirect is re-issued at the address it names, rather than refused');
+  assert.equal(install.queued, true, 'the rebuild started at the address that answered it');
+  for (const call of calls) {
+    assert.equal(call.init.headers.Authorization, 'Bearer site-token', 'the token rides every hop');
+    assert.equal(call.init.method, 'POST', 'and so does the method: this is not a GET after a 303');
+    assert.equal(call.init.redirect, 'manual', '`fetch` is never allowed to follow the hop itself');
+  }
+  assert.equal(calls[1].init.body, calls[0].init.body, 'the body is re-sent, not dropped');
+
+  // A check is the same request through the same helper, so the token survives the hop there too.
+  const checkCalls = [];
+  const { app } = await fetchCentralCheck({
+    config: { central_url: 'https://react-wp.com', token: 'site-token', channel: 'stable' },
+    current: { app: '1.3.1' },
+    plugins: [],
+    fetchImpl: async (url, init) => {
+      checkCalls.push({ url: String(url), init });
+      if (String(url).startsWith('https://react-wp.com/')) {
+        return new Response(null, { status: 308, headers: { location: String(url).replace('https://react-wp.com', 'https://www.react-wp.com') } });
+      }
+      return new Response(JSON.stringify({ latestVersion: 'v2.4.1', updateAvailable: true, releaseNotes: '- x' }), { status: 200 });
+    },
+  });
+  assert.equal(app.version, '2.4.1');
+  assert.equal(checkCalls.at(-1).url, 'https://www.react-wp.com/api/v1/updates/check');
+  assert.equal(checkCalls.at(-1).init.headers.Authorization, 'Bearer site-token');
+});
+
+test('a redirect is followed by hand: relative addresses resolve, and a loop ends with the redirect', async () => {
+  const hop = (status, location) => new Response(null, { status, headers: location ? { location } : {} });
+  // A relative `Location` is resolved against the address that was asked.
+  const seen = [];
+  const answered = await centralFetch('https://react-wp.com/old', { method: 'POST' }, {
+    fetchImpl: async (url) => {
+      seen.push(String(url));
+      return seen.length === 1 ? hop(301, '/api/v1/updates/check') : new Response('{}', { status: 200 });
+    },
+  });
+  assert.equal(answered.status, 200);
+  assert.deepEqual(seen, ['https://react-wp.com/old', 'https://react-wp.com/api/v1/updates/check']);
+
+  // A loop stops at the last hop and hands back the redirect: every caller already has a sentence for "the
+  // platform refused", and a request that never returns is worse than that sentence.
+  let loops = 0;
+  const stuck = await centralFetch('https://react-wp.com/x', {}, {
+    fetchImpl: async () => { loops += 1; return hop(308, 'https://www.react-wp.com/x'); },
+  });
+  assert.equal(stuck.status, 308);
+  assert.equal(loops, CENTRAL_REDIRECT_LIMIT + 1, 'one request for the address asked, one per hop it named');
+
+  // A 3xx with no `Location` is not a redirect anywhere: it is the platform's answer, returned as is.
+  assert.equal((await centralFetch('https://react-wp.com/x', {}, { fetchImpl: async () => hop(302, '') })).status, 302);
 });
 
 

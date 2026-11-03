@@ -636,6 +636,10 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
                       <td><code>{entry.release?.tag || asTag(entry.latest)}</code></td>
                       <td>
                         {entry.release?.critical && <span className={styles.badgeWarn}>Security release</span>}
+                        {/* What the release is called on GitHub, above the notes it was published with. */}
+                        {entry.release?.title && entry.release.title !== (entry.release.tag || '') && (
+                          <p className={styles.help}><strong>{entry.release.title}</strong></p>
+                        )}
                         {entry.release?.notes?.length ? (
                           <ul className={styles.notes}>
                             {entry.release.notes.map((note) => <li key={note}>{note}</li>)}

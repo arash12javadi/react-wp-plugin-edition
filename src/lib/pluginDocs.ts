@@ -540,8 +540,8 @@ export const pluginDocs: Record<string, PluginDoc> = {
         description: 'How many sites this installation has handed out, from the tracker the plugin creates. [rwp_active_installs days="0"] counts every site ever recorded, and list="yes" prints them as links instead of just the number.',
       },
       {
-        usage: '[rwp_latest_release notes="yes" limit="5"]',
-        description: 'The newest release — tag, date and notes — exactly as Dashboard → Updates shows it: the recorded check is read back, which is the only way a visitor can see the version of a private release repository. Without a recorded check it falls back to the repository’s public GitHub releases, where channel="beta" also offers pre-releases.',
+        usage: '[rwp_latest_release version="yes" title="yes" notes="yes" limit="5"]',
+        description: 'The newest release — its title, tag, date and notes — read live from GitHub on the server, with the token Settings → Updates holds, so it is current and it works for a private repository. version="no" hides the tag and its date, title="no" the release’s own name, notes="no" the notes; heading replaces the section heading. channel="beta" also offers pre-releases, and repo="owner/name" asks about another public repository instead. Without a live answer it falls back to the check Dashboard → Updates recorded, then to the repository’s public GitHub releases.',
       },
     ],
     steps: [
@@ -551,7 +551,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Add [react_wp_installer] to a page, sign in at /login, and run the wizard once yourself to see the four stages and the result it reports.',
       'For this site’s own updates, fill in the Vercel project (and team), paste an access token, then press Update to <version> or pick an older release to roll back to.',
       'Optional: publish [rwp_active_installs days="30"] to show the number of sites this installation has built.',
-      'Add [rwp_latest_release] to any page to print the release this site runs — the same tag Dashboard → Updates records, so it works for a private release repository. Its notes attribute hides the release notes, and limit sets how many lines print.',
+      'Add [rwp_latest_release] to any page to print the release this site publishes — title, tag and notes, read live from GitHub by the plugin’s own public route, so it is current and it works for a private release repository. version="no", title="no" and notes="no" hide one part each, heading replaces the section heading, and limit sets how many note lines print.',
     ],
     notes: [
       'Development edition only: it is the sign-up flow for new React-WP sites, so it never ships inside a customer’s template.',

@@ -63,6 +63,11 @@ export interface UpdateReleaseInfo {
   version: string;
   /** The published tag, `v2.4.1`, when the source names one. `version` is the same release without the `v`. */
   tag?: string;
+  /**
+   * The name the release was given on GitHub. Optional because a bare tag has none and a row written by an
+   * older build predates the field — a reader that needs a title has to fall back to the tag.
+   */
+  title?: string;
   released?: string;
   notes?: string[];
   changelog_url?: string;
@@ -148,6 +153,11 @@ export const loadUpdateStatus = () => readJsonOption<UpdateStatus>(updateStatusO
  * release lifecycle — reads back that answer rather than calling `api.github.com` itself, which means it
  * prints exactly the version the Updates screen printed — same tag, same date, same notes — and works for
  * a repository that has no public releases at all.
+ *
+ * It is no longer the shortcode's *first* source: that card asks the plugin's own route
+ * (`GET /api/plugins/rwp-saas-installer/latest-release`) for a live read, because this row is only as
+ * fresh as the last check somebody ran. What is left here is the fallback for a site whose route cannot
+ * answer, and it holds the only answer a client-side reader could ever have had.
  *
  * The row is readable without signing in (`options` carries the public-read policy this CMS needs for the
  * site title), and it holds nothing a visitor should not see: the release the site is *published* from.

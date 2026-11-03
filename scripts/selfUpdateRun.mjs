@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
+import { centralFetch } from '../server/centralFetch.mjs';
 
 const recordFile = process.argv[2];
 if (!recordFile) {
@@ -132,7 +133,7 @@ try {
     // Managed update: download the core release package from the central server, then apply it.
     await save({ step: 'downloading' });
     await log(`Downloading ${record.to} from react-wp.com…`);
-    const response = await fetch(record.package_url, {
+    const response = await centralFetch(record.package_url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${record.package_token}`,
