@@ -410,7 +410,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
   'rwp-plugin-marketplace': {
     icon: '🛍️',
     summary:
-      'A WordPress-style plugin marketplace and digital store on your own Supabase: a public storefront, Stripe checkout that mints license keys, developer submissions that are vetted before they are listed, and the owner’s control panel.',
+      'A WordPress-style plugin marketplace and digital store on your own Supabase: a public storefront, USDT checkout through NOWPayments that mints license keys, developer submissions that are vetted before they are listed, and the owner’s control panel.',
     featureGroups: [
       {
         title: 'The storefront',
@@ -423,7 +423,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       {
         title: 'Selling',
         items: [
-          'Checkout reads the price from the database, never from the browser, opens Stripe Checkout for a paid plugin, and mints the license from the webhook once the payment is confirmed.',
+          'Checkout reads the price from the database, never from the browser, opens a USDT invoice on NOWPayments for a paid plugin, and mints the license from the IPN webhook once the payment is confirmed.',
           'Free plugins skip the gateway entirely: a SQL function re-checks that the price is zero and issues the key immediately.',
           'For the four plugins sold separately the key is the signed RWP1-… entitlement the plugin’s own offline gate verifies; for a third-party plugin it is an opaque RWPM-… token that is bound to one domain and drives one-click updates.',
           'Every transaction is recorded, so revenue, refunds and re-issued keys can be traced to a session id.',
@@ -453,7 +453,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
     ],
     publicRoutes: [
       { where: '/plugins', what: 'The storefront: search, categories, sorting, cards and pagination.' },
-      { where: '/plugins/:slug', what: 'One plugin: description, rating and reviews, Buy now, and the license activation form.' },
+      { where: '/plugins/:slug', what: 'One plugin: description, rating and reviews, Pay in USDT, and the license activation form.' },
       { where: '/plugins/submit', what: 'The developer submission form, for a signed-in member.' },
     ],
     shortcodes: [
@@ -473,8 +473,8 @@ export const pluginDocs: Record<string, PluginDoc> = {
     steps: [
       'Activate the plugin: the Plugins screen runs schema.sql, which creates the four tables, their Row Level Security and the functions the store depends on.',
       'Create a public Supabase Storage bucket named rwp-plugin-packages for the uploaded .zip packages.',
-      'Set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and PLUGIN_LICENSE_SECRET in the server environment (and SITE_URL if the return URLs must be absolute), then restart.',
-      'Point a Stripe webhook at /api/plugins/rwp-plugin-marketplace/stripe/webhook with checkout.session.completed and checkout.session.async_payment_succeeded — the webhook, not the browser, is what mints a key.',
+      'Set NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET, SUPABASE_SECRET_KEY and PLUGIN_LICENSE_SECRET in the server environment (and SITE_URL if the return URLs must be absolute), then redeploy: the IPN secret is what lets the payment callback be verified.',
+      'Each NOWPayments invoice carries its own ipn_callback_url (/api/plugins/rwp-plugin-marketplace/crypto/webhook), which marks the order paid and mints the key — the webhook, not the browser, is what mints a license.',
       'Add [rwp_marketplace] to a page, or add a page at the slug plugins and the storefront at /plugins picks up the site chrome.',
       'Approve or reject submissions in Marketplace → Inventory, feature the ones worth featuring, then watch Marketplace → Sales & analytics.',
     ],
