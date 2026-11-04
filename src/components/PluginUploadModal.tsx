@@ -14,7 +14,7 @@ type StepState = 'pending' | 'active' | 'done' | 'skipped' | 'error';
  * from. The server sends it with every step, so the progress list can say what "installing" means
  * there, and repeats it in the result for a dialog reopened after a reload.
  */
-export type InstallMode = 'local' | 'github';
+export type InstallMode = 'local' | 'github' | 'build';
 
 export interface PluginInstallResult {
   plugin: { id: string; name: string; version: string; folder: string };
@@ -55,7 +55,13 @@ const stepLabels = (mode: InstallMode | null): Record<StepId, string> => ({
   downloading: 'Downloading',
   extracting: 'Extracting ZIP',
   validating: 'Validating',
-  installing: mode === 'github' ? 'Committing to GitHub' : mode === 'local' ? 'Saving to plugins/ folder' : 'Installing files',
+  installing: mode === 'github'
+    ? 'Committing to GitHub'
+    : mode === 'local'
+      ? 'Saving to plugins/ folder'
+      : mode === 'build'
+        ? 'Adding to plugins/ and queueing the redeploy'
+        : 'Installing files',
   'registering-routes': 'Registering routes',
   'triggering-rebuild': 'Triggering rebuild',
 });
@@ -66,6 +72,69 @@ const stepsFor = (mode: 'file' | 'url'): StepId[] => [
 ];
 
 const formatBytes = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+/** A refusal from the upload endpoint, with the HTTP status that says what kind. */
+class UploadRefused extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const INSTALLER_API = '/api/plugins/rwp-saas-installer/installs/jobs';
+
+const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(new Error(`"${file.name}" could not be read.`));
+  reader.readAsDataURL(file);
+});
+
+/**
+ * The upload path for a host that cannot write `plugins/` and holds no GitHub token: the ZIP becomes an
+ * install job. The build puts it in `plugins/<id>/` of the checkout it compiles and redeploys the site, so the
+ * plugin ends up in the same place as everywhere else; the job survives this request.
+ *
+ * It exists only where the SaaS installer plugin does. A site without it answers 404 here, and the caller then
+ * shows the upload endpoint's own refusal, which is the accurate one for that site.
+ */
+async function queueInstallJob(body: File | { url: string }, accessToken: string): Promise<PluginInstallResult | null> {
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
+  const payload = body instanceof File
+    ? { source: 'upload', file: await readAsDataUrl(body) }
+    : { source: 'upload', url: body.url };
+  const queued = await fetch(INSTALLER_API, { method: 'POST', headers, body: JSON.stringify(payload) });
+  if (queued.status === 404 || queued.status === 401) return null;
+  const created = await queued.json().catch(() => null) as {
+    success?: boolean; error?: string; message?: string;
+    job?: { id: string; projectName: string };
+    plugin?: { id: string; name: string; version: string; files: number };
+  } | null;
+  if (!queued.ok || !created?.success || !created.job || !created.plugin) {
+    throw new Error(created?.error || created?.message || `The install could not be queued: the server answered HTTP ${queued.status}.`);
+  }
+
+  // One step now, so a build this host can run starts; a worker-built job answers "awaiting a build environment".
+  const advanced = await fetch(`${INSTALLER_API}/${encodeURIComponent(created.job.id)}/advance`, { method: 'POST', headers })
+    .then((response) => response.json().catch(() => null) as Promise<{ success?: boolean; error?: string; message?: string; state?: string } | null>)
+    .catch(() => null);
+  if (advanced && advanced.success === false && advanced.error) throw new Error(advanced.error);
+
+  const note = advanced?.message || created.message || 'The install is queued.';
+  return {
+    plugin: { id: created.plugin.id, name: created.plugin.name, version: created.plugin.version, folder: `plugins/${created.plugin.id}` },
+    files: created.plugin.files,
+    serverRoutes: { detected: false, registered: false },
+    sql: [],
+    dependencies: { missing: [], installCommand: null },
+    deploy: { configured: true, triggered: true },
+    restart: { required: false, reason: '' },
+    warnings: [`${note} Follow it under Settings → Integrations → Plugin installs; the plugin is switched on once the redeploy is live.`],
+    mode: 'build',
+  };
+}
 
 /**
  * POSTs to /api/admin/plugins/upload with XMLHttpRequest rather than fetch: it reports upload
@@ -120,7 +189,7 @@ function sendInstall(
       if (xhr.status === 404 && !message) {
         message = 'This host has no /api/admin/plugins/upload endpoint. It belongs to the API server that owns /api: npm run dev starts it, npm start runs it on its own, and npm run start:hono runs the universal engine — which installs to plugins/ where it can write, and commits to your GitHub repository where it cannot.';
       }
-      reject(new Error(message || `The upload failed: the server answered HTTP ${xhr.status}.`));
+      reject(new UploadRefused(message || `The upload failed: the server answered HTTP ${xhr.status}.`, xhr.status));
     };
     xhr.onerror = () => reject(new Error('The upload could not reach the server (network error, or the connection was closed). In development, is server.mjs running on :3000?'));
     if (body instanceof File) {
@@ -252,6 +321,22 @@ export default function PluginUploadModal({ onClose: close, onInstalled, initial
     setFile(selected);
   };
 
+  /** Marks the list finished and hands the result to the screen, whichever installer produced it. */
+  const finish = (installed: PluginInstallResult) => {
+    setSteps((current) => {
+      const next = { ...current };
+      order.forEach((id) => {
+        if (next[id] === 'active') next[id] = 'done';
+        else if (!next[id]) next[id] = 'skipped';
+      });
+      if (!installed.deploy.triggered) next['triggering-rebuild'] = installed.deploy.error ? 'error' : 'skipped';
+      return next;
+    });
+    storePendingInstallResult(installed);
+    setResult(installed);
+    onInstalled(installed);
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
@@ -286,19 +371,7 @@ export default function PluginUploadModal({ onClose: close, onInstalled, initial
             if (serverEvent.mode) setInstallMode(serverEvent.mode);
             advance(serverEvent.step);
           } else if (serverEvent.type === 'result') {
-            const installed = serverEvent.result;
-            setSteps((current) => {
-              const next = { ...current };
-              order.forEach((id) => {
-                if (next[id] === 'active') next[id] = 'done';
-                else if (!next[id]) next[id] = 'skipped';
-              });
-              if (!installed.deploy.triggered) next['triggering-rebuild'] = installed.deploy.error ? 'error' : 'skipped';
-              return next;
-            });
-            storePendingInstallResult(installed);
-            setResult(installed);
-            onInstalled(installed);
+            finish(serverEvent.result);
           } else {
             failed = true;
             setSteps((current) => ({ ...current, [lastStep]: 'error' }));
@@ -307,9 +380,26 @@ export default function PluginUploadModal({ onClose: close, onInstalled, initial
         },
       );
     } catch (installError: unknown) {
+      let reported: unknown = installError;
+      // 501 is "this host can neither write plugins/ nor commit": the install-job pipeline is the third way in.
+      if (installError instanceof UploadRefused && installError.status === 501) {
+        try {
+          const { data } = await client.auth.getSession();
+          const token = data.session?.access_token;
+          const queued = token ? await queueInstallJob(mode === 'file' ? (file as File) : { url: url.trim() }, token) : null;
+          if (queued) {
+            setInstallMode('build');
+            advance('installing');
+            finish(queued);
+            return;
+          }
+        } catch (jobError: unknown) {
+          reported = jobError;
+        }
+      }
       failed = true;
       setSteps((current) => ({ ...current, [lastStep]: 'error' }));
-      setError(installError instanceof Error ? installError.message : 'The plugin could not be installed.');
+      setError(reported instanceof Error ? reported.message : 'The plugin could not be installed.');
     } finally {
       setBusy(false);
       if (failed) setSteps((current) => Object.fromEntries(Object.entries(current).map(([id, state]) => [id, state === 'active' ? 'error' : state])));

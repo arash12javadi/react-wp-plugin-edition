@@ -519,6 +519,14 @@ export const pluginDocs: Record<string, PluginDoc> = {
         ],
       },
       {
+        title: 'The public updater',
+        items: [
+          '[react_wp_updater] takes a Vercel token, a project name and an optional team, then deploys the newest stable release to that project.',
+          'It never installs a pre-release or an older version, and it refuses a second update of the same project while one is running.',
+          'It does not record the update in the installations tracker, so [rwp_active_installs] does not change.',
+        ],
+      },
+      {
         title: 'Counting what it handed out',
         items: [
           'The installations tracker is a count, never a limit: provisioning needs no license key and no key is stored anywhere.',
@@ -536,6 +544,14 @@ export const pluginDocs: Record<string, PluginDoc> = {
         description: 'The multi-step wizard that provisions a new independent React-WP site on the visitor’s own Vercel and Supabase accounts. It takes no attributes.',
       },
       {
+        usage: '[react_wp_updater]',
+        description: 'A form where a site owner updates their own React-WP site: they enter a Vercel token, the Vercel project name and optionally a team, and the newest stable release is deployed to that project. Their database, content and plugins are untouched, and the token is used once and never stored.',
+        attributes: [
+          { name: 'heading', note: 'The card heading. Leave it out for the default.' },
+          { name: 'intro', note: 'The sentence under the heading. Leave it out for the default.' },
+        ],
+      },
+      {
         usage: '[rwp_active_installs days="30" list="yes" limit="10"]',
         description: 'How many sites this installation has handed out, from the tracker the plugin creates. [rwp_active_installs days="0"] counts every site ever recorded, and list="yes" prints them as links instead of just the number.',
       },
@@ -550,6 +566,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Press Check template access to prove the GitHub card’s token can read that repository — a private template needs Contents: Read on it.',
       'Add [react_wp_installer] to a page, sign in at /login, and run the wizard once yourself to see the four stages and the result it reports.',
       'For this site’s own updates, fill in the Vercel project (and team), paste an access token, then press Update to <version> or pick an older release to roll back to.',
+      'Optional: add [react_wp_updater] to a page (for example /update) so the owners of sites this platform built can move their own project to the newest release. It needs no sign-in: their Vercel token proves they own the project, and a project without React-WP settings is refused.',
       'Optional: publish [rwp_active_installs days="30"] to show the number of sites this installation has built.',
       'Add [rwp_latest_release] to any page to print the release this site publishes — title, tag and notes, read live from GitHub by the plugin’s own public route, so it is current and it works for a private release repository. version="no", title="no" and notes="no" hide one part each, heading replaces the section heading, and limit sets how many note lines print.',
     ],

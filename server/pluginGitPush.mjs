@@ -101,7 +101,7 @@ export function githubTargetFrom(value) {
     || [asString(row.owner), asString(row.repo)].filter(Boolean).join('/');
   const branch = asString(row.branch) || 'main';
   if (!token) {
-    throw new InstallError('This site has no GitHub personal access token, so the plugin could not be committed to the repository it is built from. Add one on Settings → Integrations → GitHub, then upload it again.', 501);
+    throw new InstallError('This site has no GitHub personal access token, so the plugin could not be committed to the repository it is built from. Add one on Settings → Integrations → GitHub, then upload it again. A site with the SaaS installer can instead queue the upload as an install job (Settings → Integrations → Plugin installs).', 501);
   }
   if (!repositoryPattern.test(repository)) {
     throw new InstallError('The GitHub connection has no repository to publish to. Choose one on Settings → Integrations → GitHub, then upload the plugin again.', 501);
