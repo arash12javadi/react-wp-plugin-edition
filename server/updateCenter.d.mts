@@ -46,6 +46,10 @@ export const MANAGED_MESSAGES: {
   no_install_api: string;
   /** The platform answered with a refusal; the status is the only detail a customer is told. */
   install_failed(status: number): string;
+  /** The platform has no record of the address this site reports (`code: 'no_project_recorded'`). */
+  install_no_project: string;
+  /** The platform's Vercel account cannot see the site's project (`code: 'project_not_found'`). */
+  install_project_missing: string;
   /** The rebuild request never completed, so whether it finished is unknown. */
   install_unreachable: string;
 };

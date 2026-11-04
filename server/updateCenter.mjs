@@ -134,6 +134,10 @@ export const MANAGED_MESSAGES = {
   no_install_api: 'React-WP.com has no update API at the address this site uses, so it could not be asked to rebuild this site. Contact React-WP support and they will point it at the right one.',
   /** The platform answered, and its answer was a refusal. The status is all a customer may be told. */
   install_failed: (status) => `React-WP.com could not rebuild this site just now (HTTP ${status}). Nothing has changed on it — try again in a few minutes, and contact React-WP support if it keeps failing.`,
+  /** The platform has no record of the address this site reports, and cannot work out which project it is. */
+  install_no_project: 'React-WP.com does not have this site’s address on file, so it could not tell which project to rebuild. Nothing has changed on it — contact React-WP support with this site’s address and they will link it.',
+  /** The platform knows the site but its own Vercel account cannot see the project. */
+  install_project_missing: 'React-WP.com found this site but cannot reach its hosting project, so it could not rebuild it. Nothing has changed on it — contact React-WP support.',
   /** The request itself never completed: a timeout, a reset, a platform that restarted mid-build. */
   install_unreachable: 'React-WP.com could not be reached from this server while it was rebuilding this site, so it is not known whether the update finished. The site keeps running its current release either way — check again in a few minutes, and contact React-WP support if it stays on the old version.',
 };
@@ -1247,6 +1251,10 @@ export async function requestPlatformInstall({ config, site, version = '', env, 
   // `success: false` — `platformInstall` answering "no project is recorded for that address" — and that is
   // a failed rebuild rather than a missing route.
   if (response.status === 404 && body?.success !== false) throw new UpdateError(MANAGED_MESSAGES.no_install_api, 502);
+  // The platform names *why* it refused (`code`), and the two 404s are different problems with different
+  // owners. Neither sentence carries a variable name or a project name: those belong to the operator.
+  if (body?.code === 'no_project_recorded') throw new UpdateError(MANAGED_MESSAGES.install_no_project, 502);
+  if (body?.code === 'project_not_found') throw new UpdateError(MANAGED_MESSAGES.install_project_missing, 502);
   // 401/403/409/501/500 all land here: the customer is told the rebuild did not happen and given the one
   // action that is theirs. `response.status` is quoted because it is the only detail support will ask for.
   if (!response.ok || !body || body.success === false) {

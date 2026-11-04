@@ -1115,6 +1115,15 @@ test('every way a platform rebuild can fail is a sentence a customer can act on'
     answer({ success: false, ok: false, error: 'No Vercel project is recorded for that site.' }, 404),
     record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_failed(404)),
   );
+  // The platform names the reason, so the two 404s read differently to the customer.
+  await assert.rejects(
+    answer({ success: false, error: 'internal detail', code: 'no_project_recorded' }, 404),
+    record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_no_project),
+  );
+  await assert.rejects(
+    answer({ success: false, error: 'internal detail', code: 'project_not_found' }, 404),
+    record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_project_missing),
+  );
   // A refusal with a status (501 no installer, 401 a revoked token, 500 a failed build) is one sentence.
   for (const status of [501, 401, 500]) {
     await assert.rejects(
@@ -1132,7 +1141,7 @@ test('every way a platform rebuild can fail is a sentence a customer can act on'
     record((error) => error.status === 502 && error.message === MANAGED_MESSAGES.install_unreachable),
   );
 
-  assert.equal(refusals.length, 9, 'every branch refused, and each one was checked above');
+  assert.equal(refusals.length, 11, 'every branch refused, and each one was checked above');
   for (const error of refusals) {
     // Nothing the customer cannot act on: no variable names, no Vercel credentials, no platform internals.
     assert.doesNotMatch(error.message, /RWP_|VERCEL|Vercel token|environment variable|Not found/i);
