@@ -25,7 +25,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
-  JOB_STATUS, attachArtifact, claimJob, cleanupJobs, createJob, jobRecord, listJobs, markFailed, publicJob,
+  JOB_STATUS, SERVER_WORKER, attachArtifact, claimJob, cleanupJobs, createJob, jobRecord, listJobs, markFailed, publicJob,
   requeueExpiredLeases, setJobStep,
 } from '../server/deploy/jobs.mjs';
 import {
@@ -43,6 +43,11 @@ import { clientBuildEnv, readRepoFiles } from '../server/deploy/repoBuild.mjs';
 import { postgrestStore } from '../plugins/rwp-saas-installer/jobStore.mjs';
 import { SECRET_BOX_KEY_ENV } from '../server/deploy/secretBox.mjs';
 import { DeployError } from '../server/deploy/errors.mjs';
+
+// rwp_installer_jobs.worker_id is a uuid foreign key to rwp_installer_workers, so a worker id in a test must be one.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const WORKER_A = '11111111-1111-4111-8111-111111111111';
+const WORKER_B = '22222222-2222-4222-8222-222222222222';
 
 const KEY_B64 = Buffer.alloc(32, 3).toString('base64');
 const secretEnv = { [SECRET_BOX_KEY_ENV]: KEY_B64 };
@@ -89,9 +94,16 @@ function memoryStore() {
         (row) => row.project_name === projectName && LOCKED.includes(row.status) && row.id !== excludeJobId,
       ) || null;
     },
-    async updateJob({ id, patch, expect = null, expectWorker = null }) {
+    async updateJob({ id, patch, expect = null, expectWorker = null, expectUnowned = false }) {
       const job = state.jobs.get(id);
       if (!job) return null;
+      // Postgres types: worker_id is a uuid, so anything else is SQLSTATE 22P02 (HTTP 400), not "no match".
+      for (const candidate of [patch.worker_id, expectWorker]) {
+        if (candidate !== null && candidate !== undefined && !UUID.test(candidate)) {
+          throw Object.assign(new Error(`invalid input syntax for type uuid: "${candidate}"`), { code: '22P02', status: 400 });
+        }
+      }
+      if (expectUnowned && job.worker_id) return null;
       if (Array.isArray(expect) && !expect.includes(job.status)) return null;
       if (expectWorker !== null && job.worker_id !== expectWorker) return null;
       const next = { ...job, ...patch };
@@ -329,7 +341,7 @@ const credential = () => ({ token: 'vercel_token_1234567890', projectName: PROJE
 /** The worker half of a job: claimed, payload uploaded, waiting for the server to deploy it. */
 async function builtJob(store, { files = payloadFiles(), overrides = {} } = {}) {
   const job = await queuedJob(store, overrides);
-  const claimed = await claimJob({ store, workerId: 'worker-a' });
+  const claimed = await claimJob({ store, workerId: WORKER_A });
   const zip = filesToZip(files);
   const digest = sha256Of(zip);
   await putArtifactChunk({
@@ -461,6 +473,33 @@ test('a job with no build environment waits, and the site can build it itself', 
   assert.equal(built.state, JOB_STATUS.INSTALLED);
   assert.equal(built.job.attempts, 1);
   assert.equal(vercel.calls.created[0].count, 4);
+});
+
+test('the server claims its own job without writing a worker id the uuid column would refuse', async () => {
+  const store = memoryStore();
+  const job = await queuedJob(store, { buildMode: 'server' });
+
+  const claimed = await claimJob({ store, workerId: SERVER_WORKER });
+  assert.equal(claimed.status, JOB_STATUS.BUILDING);
+  assert.equal(claimed.worker_id, null);
+
+  // Its own later writes are guarded as "unowned", so they succeed...
+  const stepped = await setJobStep({ store, jobId: job.id, step: 'building', progress: 35, workerId: SERVER_WORKER });
+  assert.equal(stepped.step, 'building');
+  const built = await attachArtifact({ store, jobId: job.id, workerId: SERVER_WORKER, sha256: '', size: 0, files: 1 });
+  assert.equal(built.status, JOB_STATUS.BUILT);
+
+  // ...and a job a paired worker owns is not the server's to write.
+  const other = await queuedJob(store, { buildMode: 'worker', pluginId: 'rwp-shop', projectName: 'other-site' });
+  await claimJob({ store, workerId: WORKER_A });
+  assert.equal(await attachArtifact({ store, jobId: other.id, workerId: SERVER_WORKER, sha256: '', size: 0, files: 1 }), null);
+});
+
+test('a worker id that is not a uuid fails the way Postgres fails it, so a mismatch cannot hide in a test', async () => {
+  const store = memoryStore();
+  await queuedJob(store);
+  const error = await claimJob({ store, workerId: 'worker-a' }).catch((caught) => caught);
+  assert.equal(error.code, '22P02');
 });
 
 test('a schema is applied only against an approval of those statements, and only after a backup', async () => {
@@ -679,8 +718,8 @@ test('only VITE_ variables may be compiled into a browser bundle', () => {
 test('cleanup deletes only finished jobs past their retention, and their artifacts with them', async () => {
   const store = memoryStore();
   const job = await queuedJob(store);
-  await claimJob({ store, workerId: 'worker-a' });
-  await attachArtifact({ store, jobId: job.id, workerId: 'worker-a', sha256: 'x', size: 10, files: 1 });
+  await claimJob({ store, workerId: WORKER_A });
+  await attachArtifact({ store, jobId: job.id, workerId: WORKER_A, sha256: 'x', size: 10, files: 1 });
   await putArtifactChunk({ store, jobId: job.id, kind: 'payload', index: 0, total: 1, sha256: 'x', size: 10, data: 'cGF5bG9hZA==' });
   await markFailed({ store, jobId: job.id, code: 'build_failed', message: 'nope', now: () => new Date('2026-01-01T00:00:00Z') });
 
@@ -733,21 +772,21 @@ test('two workers cannot claim the same job', async () => {
   const store = memoryStore();
   await queuedJob(store);
 
-  const first = await claimJob({ store, workerId: 'worker-a' });
-  const second = await claimJob({ store, workerId: 'worker-b' });
+  const first = await claimJob({ store, workerId: WORKER_A });
+  const second = await claimJob({ store, workerId: WORKER_B });
 
   assert.equal(first.status, JOB_STATUS.BUILDING);
-  assert.equal(first.worker_id, 'worker-a');
+  assert.equal(first.worker_id, WORKER_A);
   assert.equal(first.attempts, 1);
   assert.equal(second, null);
   const stored = await store.findJob(first.id);
-  assert.equal(stored.worker_id, 'worker-a');
+  assert.equal(stored.worker_id, WORKER_A);
 });
 
 test('a claim whose worker disappeared is put back in the queue, then failed once the budget is spent', async () => {
   const store = memoryStore();
   const job = await queuedJob(store, { maxAttempts: 2 });
-  const claimed = await claimJob({ store, workerId: 'worker-a', now: () => new Date('2026-01-01T00:00:00Z') });
+  const claimed = await claimJob({ store, workerId: WORKER_A, now: () => new Date('2026-01-01T00:00:00Z') });
   assert.equal(claimed.status, JOB_STATUS.BUILDING);
 
   // The lease has not expired yet: nothing happens.
@@ -760,7 +799,7 @@ test('a claim whose worker disappeared is put back in the queue, then failed onc
   assert.equal(late[0].error_code, 'lease_expired');
 
   // Attempt two fails for good once it too runs out of time.
-  await claimJob({ store, workerId: 'worker-b', now: () => new Date('2026-01-01T02:00:00Z') });
+  await claimJob({ store, workerId: WORKER_B, now: () => new Date('2026-01-01T02:00:00Z') });
   const spent = await requeueExpiredLeases({ store, now: () => new Date('2026-01-01T03:00:00Z') });
   assert.equal(spent.length, 1);
   assert.equal(spent[0].status, JOB_STATUS.FAILED);
@@ -770,7 +809,7 @@ test('a claim whose worker disappeared is put back in the queue, then failed onc
 test('progress never goes backwards, and every step is kept as history', async () => {
   const store = memoryStore();
   const job = await queuedJob(store);
-  await claimJob({ store, workerId: 'worker-a' });
+  await claimJob({ store, workerId: WORKER_A });
 
   await setJobStep({ store, jobId: job.id, step: 'installing-plugin', progress: 30 });
   const late = await setJobStep({ store, jobId: job.id, step: 'running-npm', progress: 60 });
@@ -784,13 +823,13 @@ test('progress never goes backwards, and every step is kept as history', async (
 test('a retryable failure requeues the job until the attempt budget is spent', async () => {
   const store = memoryStore();
   const job = await queuedJob(store, { maxAttempts: 2 });
-  await claimJob({ store, workerId: 'worker-a' });
+  await claimJob({ store, workerId: WORKER_A });
 
   const retried = await markFailed({ store, jobId: job.id, code: 'network', message: 'Vercel did not answer.', retryable: true });
   assert.equal(retried.status, JOB_STATUS.QUEUED);
   assert.equal(retried.finished_at, null);
 
-  await claimJob({ store, workerId: 'worker-b' });
+  await claimJob({ store, workerId: WORKER_B });
   const failed = await markFailed({ store, jobId: job.id, code: 'network', message: 'Vercel did not answer.', retryable: true });
   assert.equal(failed.status, JOB_STATUS.FAILED);
   assert.notEqual(failed.finished_at, null);
@@ -827,12 +866,12 @@ async function uploadPayload(store, job, workerId) {
 test('a second install for the same project stays queued until the first is installed', async () => {
   const store = memoryStore();
   const { first, second } = await twoQueued(store);
-  const claimed = await claimJob({ store, workerId: 'worker-a' });
+  const claimed = await claimJob({ store, workerId: WORKER_A });
   // Oldest first: the job somebody queued first is the one that starts.
   assert.equal(claimed.id, first.id);
 
   // The other job is not taken, and the worker is told there is nothing to do rather than blocked.
-  assert.equal(await claimJob({ store, workerId: 'worker-b' }), null);
+  assert.equal(await claimJob({ store, workerId: WORKER_B }), null);
   assert.equal((await store.findJob(second.id)).status, JOB_STATUS.QUEUED);
 
   // The site's own build path answers with a sentence instead of a second build.
@@ -851,14 +890,14 @@ test('a second install for the same project stays queued until the first is inst
   const installed = await advanceJob({ store, jobId: first.id, vercel: stubVercel(), resolveCredential: async () => credential() });
   assert.equal(installed.state, JOB_STATUS.INSTALLED);
 
-  const next = await claimJob({ store, workerId: 'worker-b' });
+  const next = await claimJob({ store, workerId: WORKER_B });
   assert.equal(next.id, second.id);
 });
 
 test('the database refuses a second claim even when the check before it is skipped', async () => {
   const store = memoryStore();
   const { first, second } = await twoQueued(store);
-  await claimJob({ store, workerId: 'worker-a' });
+  await claimJob({ store, workerId: WORKER_A });
 
   // Exactly the write `claimJobById()` makes, without its read: the partial unique index is what stops it.
   await assert.rejects(
@@ -874,7 +913,7 @@ test('a build environment that disappears frees its project and keeps its place 
   const store = memoryStore();
   const { first } = await twoQueued(store);
   const start = new Date('2026-03-01T10:00:00Z');
-  await claimJob({ store, workerId: 'worker-a', now: () => start });
+  await claimJob({ store, workerId: WORKER_A, now: () => start });
 
   const requeued = await requeueExpiredLeases({ store, now: () => new Date('2026-03-01T10:21:00Z') });
   assert.equal(requeued.length, 1);
@@ -882,7 +921,7 @@ test('a build environment that disappears frees its project and keeps its place 
   assert.equal(requeued[0].status, JOB_STATUS.QUEUED);
 
   // Still first in line: the requeued job is not pushed behind the one created after it.
-  const taken = await claimJob({ store, workerId: 'worker-b', now: () => new Date('2026-03-01T10:22:00Z') });
+  const taken = await claimJob({ store, workerId: WORKER_B, now: () => new Date('2026-03-01T10:22:00Z') });
   assert.equal(taken.id, first.id);
   assert.equal(taken.attempts, 2);
 });
@@ -891,7 +930,7 @@ test('a deployment nobody followed up is put back, so its project is never locke
   const store = memoryStore();
   const { first, second } = await twoQueued(store);
   const start = new Date('2026-03-02T09:00:00Z');
-  const claimed = await claimJob({ store, workerId: 'worker-a', now: () => start });
+  const claimed = await claimJob({ store, workerId: WORKER_A, now: () => start });
   await uploadPayload(store, first, claimed.worker_id);
 
   // Vercel accepted the deployment and then never answered: the job is `deploying`, not failed.
@@ -915,7 +954,7 @@ test('a deployment nobody followed up is put back, so its project is never locke
   assert.equal((await store.findJob(second.id)).status, JOB_STATUS.QUEUED);
 
   const vercel = stubVercel();
-  const retried = await claimJob({ store, workerId: 'worker-b', now: () => new Date('2026-03-02T09:47:00Z') });
+  const retried = await claimJob({ store, workerId: WORKER_B, now: () => new Date('2026-03-02T09:47:00Z') });
   assert.equal(retried.id, first.id);
   // A retried job is rebuilt and re-uploaded, but the deployment it already created is the one it follows:
   // uploading a second one here is exactly the duplicate this whole section exists to prevent.
@@ -972,6 +1011,12 @@ test('the store asks PostgREST the two questions the project lock depends on', a
     assert.match(stub.calls[1].url, /status=in\.\(queued\)/);
     await store.listJobs({ limit: 5 });
     assert.match(stub.calls[2].url, /order=created_at\.desc/);
+
+    // The server's own writes ask for an unowned job. worker_id is a uuid, so never `worker_id=eq.server`.
+    await store.updateJob({ id: 'job-1', expect: ['building'], expectUnowned: true, patch: { step: 'building' } });
+    const unowned = decodeURIComponent(stub.calls[3].url);
+    assert.match(unowned, /worker_id=is\.null/);
+    assert.doesNotMatch(unowned, /worker_id=eq/);
   } finally {
     stub.restore();
   }

@@ -66,6 +66,20 @@ export const FINISHED_JOB_STATUSES = Object.freeze([
 ]);
 
 /** Where the *build* runs. `worker` is a paired checkout, `server` is this site's own Node process. */
+/**
+ * The id the site's own server claims a `build_mode: 'server'` job with. It is not a row in `rwp_installer_workers`,
+ * and `rwp_installer_jobs.worker_id` is a uuid foreign key to that table, so it is never written to the column:
+ * the server owns a job exactly when `worker_id` is null. `workerGuard` is the one place that translation lives.
+ */
+export const SERVER_WORKER = 'server';
+
+/** `{ expectWorker }` for a paired worker, `{ expectUnowned }` for the server itself, nothing for "any". */
+function workerGuard(workerId) {
+  const id = str(workerId);
+  if (!id) return {};
+  return id === SERVER_WORKER ? { expectUnowned: true } : { expectWorker: id };
+}
+
 export const BUILD_MODES = Object.freeze(['worker', 'server']);
 
 /** Where the package came from. `upload` is a ZIP an administrator chose, `marketplace` a paid download. */
@@ -313,7 +327,7 @@ export async function claimJobById({ store, jobId, workerId, now = () => new Dat
     patch: {
       status: JOB_STATUS.BUILDING,
       step: 'claimed',
-      worker_id: worker,
+      worker_id: worker === SERVER_WORKER ? null : worker,
       attempts: (Number(job.attempts) || 0) + 1,
       lease_expires_at: new Date(at.getTime() + leaseMs).toISOString(),
       updated_at: at.toISOString(),
@@ -333,7 +347,7 @@ export async function heartbeatJob({ store, jobId, workerId, now = () => new Dat
   return await store.updateJob({
     id: str(jobId),
     expect: [JOB_STATUS.BUILDING],
-    expectWorker: str(workerId),
+    ...workerGuard(workerId),
     patch: {
       lease_expires_at: new Date(new Date(toIso(now)).getTime() + leaseMs).toISOString(),
       updated_at: toIso(now),
@@ -365,7 +379,7 @@ export async function setJobStep({ store, jobId, step, progress, workerId = '', 
   return await store.updateJob({
     id: job.id,
     expect: ACTIVE_JOB_STATUSES,
-    ...(str(workerId) ? { expectWorker: str(workerId) } : {}),
+    ...workerGuard(workerId),
     patch: { step: name, progress: next, steps, updated_at: at },
   });
 }
@@ -381,7 +395,7 @@ export async function attachArtifact({ store, jobId, workerId, sha256, size, fil
   return await store.updateJob({
     id: str(jobId),
     expect: [JOB_STATUS.BUILDING],
-    ...(str(workerId) ? { expectWorker: str(workerId) } : {}),
+    ...workerGuard(workerId),
     patch: {
       status: JOB_STATUS.BUILT,
       step: 'built',
