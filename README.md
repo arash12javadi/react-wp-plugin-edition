@@ -763,6 +763,17 @@ Plugins behave like WordPress: a plugin is installed while its folder exists. A 
 
 **On Vercel — or any host whose filesystem is read-only — the same upload commits to Git instead.** There `server/pluginInstaller.mjs` would fail with `EROFS`, so the route hands the ZIP to `server/pluginGitInstaller.mjs`, which applies the same checks with the same functions — the same limits, the same refusal of a path outside the plugin folder, the same manifest validation — and then writes the plugin into the repository the deployment is built from in **one commit**, through GitHub's Git Data API (`server/pluginGitPush.mjs`): a tree built on the branch's current tree — the text of every file travels inside that one call, so a blob is uploaded only for a file that is not text, an empty one, or one past 8 MB — a commit, and the branch ref updated last, so a failure anywhere before that leaves the branch exactly as it was. The writes are serial and a second apart, because GitHub counts content-generating requests against a secondary rate limit that answers a burst with `HTTP 403`: a tree, a commit and a ref update are what an install makes. Files a previous version of the plugin left in `plugins/<id>/` are deleted in that commit too, and a plugin shipping a `server.mjs` has its import added to `server/plugins.mjs` in the same commit — the one path the installer may write outside `plugins/<id>/`. The credential is the stored **GitHub** connection from Settings → Integrations (`github_config`); an empty card is answered with `501` and the sentence that says so, because a host with no disk of its own has no other way in. Because the plugin arrives with a build, the dialog reports no restart: the platform rebuilds when it builds the commit, which is what the **Deployments** card's saved hook (or `VERCEL_DEPLOY_HOOK_URL`) above is for. Committing the folder yourself still works, and is exactly what the upload does for you.
 
+**Installing a plugin that has to be *compiled in* is a different route entirely (dev edition).** A plugin whose code has
+to be part of the bundle — a paid one the marketplace hands over, or any ZIP a customer picks — cannot be dropped into a
+running deployment at all, so `plugins/rwp-saas-installer` owns a job pipeline for it: a durable job row, a build machine
+that composes the site with the plugin (`npm run install:worker`), the built output uploaded back, and the site's own
+server deploying it with the customer's Vercel token and waiting for `READY` before switching the plugin on. The screen
+is **Settings → Integrations → Plugin installs**, and the details — where the build runs, one install per project, what a
+failure leaves behind, and what is deliberately not supported (rollback, uninstall) — are in
+[`plugins/rwp-saas-installer/README.md`](./plugins/rwp-saas-installer/README.md). `npm run verify:install -- --check`
+reports what a real end-to-end run still needs; that run has not been executed yet.
+
+
 ### Per-plugin database tables
 
 A fresh install creates the **core CMS only** — the tables in [`supabase/schema.sql`](./supabase/schema.sql) (twenty-two since the engagement tables were added). It no longer creates the twenty `shop_*` tables, the four page-builder tables or `code_snippets`, because a site that never enables those plugins has no use for them.

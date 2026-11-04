@@ -131,3 +131,56 @@ A plugin's `schema.sql` is the only copy of its objects: nothing is duplicated i
 ## Working with the owner
 
 Changes are tested by hand in the browser against the live Supabase project, and the exact error text gets reported back. Error messages must name the real cause: a wrong diagnosis in an error string costs a debugging round.
+
+## Plugin installs: the build environment (20261104)
+
+Installing a plugin is *building the site again with the plugin in it* and deploying that. The engine is core —
+`server/deploy/{credentials,jobs,workerAuth,artifacts,pipeline,migrations,repoBuild}.mjs` on top of the existing
+`secretBox`/`vercelApi`/`prebuilt`/`obfuscate`/`bundleLock` — and the customer-facing half is
+`plugins/rwp-saas-installer/installJobs.mjs`. Read `plugins/rwp-saas-installer/README.md` before touching either.
+
+- **Where the build runs is not negotiable, and it is recorded on the job.** A Vercel function cannot `npm ci`, has no
+  checkout and a read-only filesystem, so `build_mode: 'worker'` is the only option there: a paired machine
+  (`npm run install:worker`, `scripts/rwpBuildWorker.mjs`) claims the job, builds with `server/deploy/repoBuild.mjs` and
+  uploads the payload. `build_mode: 'server'` is the self-hosted case, where the process is *inside* the checkout. Do
+  not add an in-function build "optimisation": it would be a path that only fails in production.
+- **The worker never gets the Vercel token.** It can claim a job, read one package, read the project's own build
+  variables and upload one payload. The deploy is always `server/deploy/pipeline.mjs` on the site's own server, using
+  the token that `credentials.mjs` opens from the sealed column. A leaked worker token costs one wasted build.
+- **`RWP_SECRET_BOX_KEY` is required**, and a missing key is a refusal (`secret_box_unconfigured`), never a plaintext
+  fallback. The key is deliberately not `VITE_`-prefixed: Vite would inline it into the browser bundle.
+- **Only `READY` means installed.** `waitForDeployment` throws on any terminal state that is not `READY`, `markInstalled`
+  is its only caller, and `rwp_active_plugins` is written after that. A failed build therefore leaves the site serving
+  its previous deployment — that property is what makes `failed` safe to show a customer, so never "helpfully" activate
+  the plugin earlier.
+- **A wait that times out is not a failure.** The job keeps `deployment_id` and the next `advanceJob()` polls that
+  deployment; re-uploading would create a second deployment, spend the customer's build minutes and race the alias.
+- **Jobs are advanced by whoever asks.** No timers exist in a serverless deployment: a worker claim, a dashboard
+  `advance` and `GET installs/jobs` (which requeues expired leases) are the only things that move a job forward.
+- **One install per project, enforced twice.** `claimJobById()` refuses a project another job owns (`409 project_busy`),
+  and `rwp_installer_jobs_project_lock_idx` (a partial unique index on `project_name` for
+  `building`/`built`/`deploying`, in `schema.sql`) is what makes that true when two workers poll in the same instant —
+  the loser's `23505` becomes the same 409 in `jobStore.mjs`. `claimJob()` skips a busy project and takes the next
+  queued job, so an idle worker is never blocked. Do not "simplify" this into a read-then-write check.
+- **A lock must always be releasable.** `requeueExpiredLeases()` requeues a lease that ran out (20 min), a payload nobody
+  deployed (`deploy_abandoned`, 6 h) and a deployment nobody followed up (`deploy_stalled`, 45 min). A job that quietly
+  stopped moving would otherwise keep its project queued for everyone else.
+- **The dashboard card is `plugins/rwp-saas-installer/InstallJobsCard.tsx`** (`Settings → Integrations → Plugin
+  installs`). It registers without a `describe` on purpose — its state lives behind authorised routes, so a pill derived
+  from `system_settings` would be a guess. It holds the pasted Vercel token in component state only, never in
+  `localStorage` and never in a prop it renders.
+- **Rollback and uninstall are deliberately absent**, and both the card and the README say so: a failed install needs no
+  rollback (the alias does not move), undoing a successful one is a Vercel promote, and uninstalling is the Plugins
+  screen's own uninstall plus one more deployment. Do not add a "rollback" button that redeploys without testing it
+  against a real project.
+- **`npm run verify:install` is the real end-to-end check** (`scripts/verifyPluginInstall.mjs`): `--check` prints what is
+  missing, `--run` performs the path against a live site/Supabase/Vercel and `--run --fail` asserts a failed build leaves
+  the previous deployment serving. It has **not** been run against a real deployment yet — until it has, this feature is
+  "ready to try", not production-ready.
+- **A plugin's `schema.sql` runs only with consent for *those* statements.** `applyMigrations()` requires
+  `{ consent: { fingerprint } }` matching the plan it just showed, snapshots every touched table first (5000 rows per
+  table, refused above that), and restores it if a statement fails. Never add a path that applies plugin SQL without
+  the fingerprint: the whole point is that an approval cannot be reused for a schema that changed afterwards.
+- **The marketplace hand-off never throws.** `enqueuePluginInstall()` runs after a payment has been confirmed, so an
+  unconfigured installer reports `queued: false` with a reason instead of turning a paid order into an error.
+
