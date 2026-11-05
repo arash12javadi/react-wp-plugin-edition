@@ -25,7 +25,36 @@ import {
   type IntegrationStatus,
   type MediaStorageProvider,
 } from '../../lib/integrations';
+import { GithubCard } from './GithubCard';
+import {
+  githubConfigFrom,
+  githubConfigKey,
+  isGithubConnected,
+} from '../../lib/githubConnection';
 import styles from './IntegrationsHub.module.css';
+
+/**
+ * GitHub is core's card, not a plugin's: the server commits plugin uploads and uninstalls with this
+ * row on every edition, and the plugin that used to register it (`rwp-saas-installer`) never ships to
+ * a client's site. Built here rather than through the registry so it exists before any plugin loads.
+ */
+const githubCard: RwpIntegrationCard = {
+  id: 'github',
+  title: 'GitHub',
+  icon: '🐙',
+  description: 'Publishes themes and plugins to a repository, and reads that repository’s release tags as this site’s update source.',
+  order: 10,
+  platformOwnerOnly: true,
+  describe: async () => {
+    const stored = githubConfigFrom(await getSystemSetting<unknown>(githubConfigKey));
+    if (!isGithubConnected(stored)) return { configured: false, label: 'Not connected' };
+    return {
+      configured: true,
+      label: stored.repository ? `@${stored.username} → ${stored.repository}` : `@${stored.username}`,
+    };
+  },
+  renderComponent: GithubCard,
+};
 
 /** The one place a caught value becomes a sentence. */
 const messageOf = (value: unknown, fallback: string): string =>
@@ -982,7 +1011,9 @@ export default function IntegrationsHub() {
   const [status, setStatus] = useState<IntegrationStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const { cards } = useIntegrationsRegistry();
+  const { cards: registered } = useIntegrationsRegistry();
+  const cards = [githubCard, ...registered.filter((card) => card.id !== githubCard.id)]
+    .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   const role = useViewerRole();
 
   const refresh = useCallback(async () => {
