@@ -34,6 +34,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .forEach(([name, value]) => res.setHeader(name, value as string));
     res.status(result.status).send(result.text);
   } else {
+    Object.entries(result.headers || {}).forEach(([name, value]) => res.setHeader(name, value as string));
     res.status(result.status).json(result.body ?? {});
   }
 }

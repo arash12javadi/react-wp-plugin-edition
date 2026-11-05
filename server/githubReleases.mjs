@@ -284,6 +284,42 @@ async function githubList({ name, url, token = '', fetchImpl = fetch }) {
 }
 
 /**
+ * The newest commit on the repository's default branch: its title (first line of the message) and its
+ * description (the rest). Shown to the platform owner only, so it never throws — a repository that cannot
+ * be read answers `null` and the screen simply omits the block.
+ *
+ * @param {{ repo: string, token?: string, fetchImpl?: typeof fetch, origin?: string }} options
+ * @returns {Promise<{ sha: string, title: string, description: string, author: string, date: string, url: string } | null>}
+ */
+export async function fetchLatestCommit({ repo, token = '', fetchImpl = fetch, origin = GITHUB_API_ORIGIN }) {
+  const target = repoFrom(repo);
+  if (!target) return null;
+  const name = `${target.owner}/${target.repo}`;
+  try {
+    const list = await githubList({
+      name,
+      url: `${trimmed(origin) || GITHUB_API_ORIGIN}/repos/${name}/commits?per_page=1`,
+      token,
+      fetchImpl,
+    });
+    const commit = list[0];
+    if (!commit) return null;
+    const message = String(commit.commit?.message || '').replace(/\r\n?/g, '\n');
+    const [title, ...rest] = message.split('\n');
+    return {
+      sha: String(commit.sha || ''),
+      title: title.trim(),
+      description: rest.join('\n').trim(),
+      author: String(commit.commit?.author?.name || ''),
+      date: String(commit.commit?.author?.date || ''),
+      url: String(commit.html_url || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `GET /repos/{owner}/{repo}/releases`, newest first, and `GET /repos/{owner}/{repo}/tags` when that list
  * has nothing that can be compared.
  *

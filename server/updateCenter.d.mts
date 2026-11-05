@@ -216,6 +216,13 @@ export function resolveInstalledVersion(input: {
 /** Drops the remembered release, so the next `latestPublishedVersion` reads GitHub again. */
 export function clearPublishedVersion(): void;
 
+/** Newest commit of the owner's update repository (owner only; `null` otherwise or on failure). */
+export function latestCommitFor(options?: {
+  source?: { repo?: string; token?: string } | null;
+  owner?: boolean;
+  fetchImpl?: typeof fetch;
+}): Promise<{ sha: string; title: string; description: string; author: string; date: string; url: string } | null>;
+
 /**
  * The newest release tag of the repository this deployment publishes, as a plain version — or `''` when
  * there is nothing to read or the read failed. Cached for a minute; never throws.

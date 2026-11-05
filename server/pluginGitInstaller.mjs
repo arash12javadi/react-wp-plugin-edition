@@ -82,7 +82,9 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
       throw new InstallError(`index.tsx is missing next to manifest.json. The build loads plugins from plugins/${manifest.id}/index.tsx.`);
     }
     const sql = sqlFiles(entries);
-    const dependencies = await inspectDependencies(entries);
+    // The function's own folder has no package.json; the repository the site is built from does.
+    const rootPackage = await readTextFile(target, 'package.json').catch(() => null);
+    const dependencies = await inspectDependencies(entries, rootPackage === null ? {} : { rootPackage });
     const hasServer = entries.has('server.mjs');
 
     onStep('installing');
@@ -129,6 +131,7 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
       warnings.push(`GitHub did not accept the deletion of ${commit.deletionsSkipped.length} file(s) (${commit.deletionsSkipped.slice(0, 3).join(', ')}${commit.deletionsSkipped.length > 3 ? ', …' : ''}). They are still in plugins/${manifest.id}/ and may end up in the build; delete them on GitHub.`);
     }
 
+    if (dependencies.unchecked) warnings.push(dependencies.unchecked);
     const pinWarning = await pinActivePluginsWithStore(optionStore, pluginFolderIds(base.paths.keys()));
     if (pinWarning) warnings.push(pinWarning);
 

@@ -150,6 +150,8 @@ export interface UpdateCheckAnswer {
   updateAvailable?: boolean;
   releaseNotes?: string;
   releaseUrl?: string;
+  /** Newest commit of the update repository; sent to the platform owner only. */
+  latestCommit?: { sha: string; title: string; description: string; author: string; date: string; url: string } | null;
   /**
    * Why the source that was *not* used did not answer. A site that names a repository reads `error` when the
    * repository refused and the platform answered instead, and the other way round; empty when the first

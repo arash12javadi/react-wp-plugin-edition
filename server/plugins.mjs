@@ -167,12 +167,43 @@ const matchRoute = (routes, method, path) => {
 export async function handlePluginRequest(request) {
   const [pluginId, ...rest] = request.path.split('/').filter(Boolean);
   const plugin = serverPlugins.find((item) => item.id === pluginId);
-  if (!plugin) return { status: 404, body: { error: `No server plugin is registered with the id "${pluginId}".` } };
+  const routePath = rest.join('/');
+
+  // A plugin's `cors` list names the few routes a *different site's browser* is meant to call directly
+  // (a buyer's own site reading its license against the marketplace, for example) - everything else on
+  // every plugin stays same-origin, which is the default a browser already enforces. Only an anon-safe,
+  // credential-less route (the caller's proof is a value in the body, not a cookie) belongs on that
+  // list: CORS controls who may *read the response*, not who may make the request, so it must never be
+  // added to a route a signed-in session alone protects. Handled before any other check - including
+  // whether the plugin exists - because a browser sends the preflight with no route-specific context.
+  const corsRoute = plugin?.cors?.find((entry) => entry.endsWith(` ${routePath}`));
+  if (request.method === 'OPTIONS') {
+    if (!corsRoute) return { status: 404, body: {} };
+    return {
+      status: 204,
+      body: {},
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': corsRoute.split(' ')[0],
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '86400',
+      },
+    };
+  }
+  const withCors = (result) => (corsRoute && corsRoute.startsWith(`${request.method} `)
+    ? { ...result, headers: { ...result.headers, 'Access-Control-Allow-Origin': '*' } }
+    : result);
+
+  if (!plugin) return withCors({ status: 404, body: { error: `No server plugin is registered with the id "${pluginId}".` } });
   if (!request.supabase?.url || !request.supabase?.publishableKey) {
-    return { status: 501, body: { error: 'This site is not installed, so plugin endpoints are unavailable.' } };
+    return withCors({ status: 501, body: { error: 'This site is not installed, so plugin endpoints are unavailable.' } });
   }
 
-  const routePath = rest.join('/');
+  return withCors(await routeWithinPlugin({ request, plugin, routePath }));
+}
+
+/** Everything past the plugin/installed checks, pulled out so every exit point passes through `withCors`. */
+async function routeWithinPlugin({ request, plugin, routePath }) {
   const addon = pluginLicenseAddonFor(plugin);
   const readOptions = (options) => readPluginOptions(request.supabase.url, request.supabase.publishableKey, options);
 

@@ -276,8 +276,13 @@ const packageOf = (specifier) => {
  * Exported for the Git-backed installer: it runs in the same project, from the same `package.json`
  * and `node_modules`, so the same answer — and the same copy-pasteable `npm install` line — is right
  * for both.
+ *
+ * `options.rootPackage` is the project's `package.json` text when the caller knows it from somewhere other
+ * than this process's disk. A serverless function has no `package.json` in `/var/task` (the bundle is
+ * one file), so the Git-backed installer passes the copy it reads from the repository the site is built
+ * from; `node_modules` is then not checkable either, and a declared package counts as installed.
  */
-export async function inspectDependencies(entries) {
+export async function inspectDependencies(entries, options = {}) {
   const used = new Map();
   for (const [name, bytes] of entries) {
     if (name.split('/').includes('node_modules') || !sourceExtensions.has(path.extname(name))) continue;
@@ -305,7 +310,14 @@ export async function inspectDependencies(entries) {
     if (packageNamePattern.test(name) && !used.has(name)) used.set(name, new Set(['package.json']));
   }
 
-  const rootPackage = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+  const onDisk = typeof options.rootPackage !== 'string';
+  let rootPackage;
+  try {
+    rootPackage = JSON.parse(onDisk ? await readFile(path.join(projectRoot, 'package.json'), 'utf8') : options.rootPackage);
+  } catch (error) {
+    // No readable package.json to compare against: say so instead of failing the whole install.
+    return { missing: [], installCommand: null, unchecked: `This host could not read the project's package.json (${error?.code || error?.message || 'unreadable'}), so the npm packages this plugin imports were not compared with it.` };
+  }
   const declared = { ...(rootPackage.devDependencies || {}), ...(rootPackage.dependencies || {}) };
 
   const missing = [];
@@ -313,10 +325,12 @@ export async function inspectDependencies(entries) {
     if (entries.has(`node_modules/${name}/package.json`)) continue; // shipped inside the plugin
     const range = typeof wantedRanges[name] === 'string' && /^[\w.^~<>=|*\s-]+$/.test(wantedRanges[name]) ? wantedRanges[name].trim() : undefined;
     let installed = true;
-    try {
-      await access(path.join(projectRoot, 'node_modules', ...name.split('/'), 'package.json'));
-    } catch {
-      installed = false;
+    if (onDisk) {
+      try {
+        await access(path.join(projectRoot, 'node_modules', ...name.split('/'), 'package.json'));
+      } catch {
+        installed = false;
+      }
     }
     if (declared[name] && installed) continue;
     missing.push({ name, range, reason: declared[name] ? 'not-installed' : 'not-declared', usedIn: [...files].slice(0, 5) });

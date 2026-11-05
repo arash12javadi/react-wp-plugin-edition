@@ -43,7 +43,7 @@
 import { centralFetch } from './centralFetch.mjs';
 import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
-import { fetchGithubReleases, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
+import { fetchGithubReleases, fetchLatestCommit, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
 import { compareVersions, isVersion } from './versions.mjs';
 
 /** Re-exported so every caller of this module keeps one import, as it always has. */
@@ -824,6 +824,17 @@ export async function latestPublishedVersion({ source, channel = 'stable', fetch
   }
   publishedVersion = { at: now, key, value: version };
   return version;
+}
+
+/**
+ * The newest commit (title + description) of the repository the owner's updates come from. Owner only:
+ * a managed site gets `null` without any request. Never throws.
+ *
+ * @param {{ source?: { repo?: string, token?: string } | null, owner?: boolean, fetchImpl?: typeof fetch }} [input]
+ */
+export async function latestCommitFor({ source, owner = true, fetchImpl = fetch } = {}) {
+  if (!owner || !trimmed(source?.repo)) return null;
+  return fetchLatestCommit({ repo: source.repo, token: trimmed(source?.token), fetchImpl });
 }
 
 /**

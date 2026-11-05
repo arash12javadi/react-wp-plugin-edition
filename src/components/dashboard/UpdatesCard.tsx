@@ -578,6 +578,27 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
           )}
         </div>
 
+        {isOwner && check?.latestCommit && (
+          <div className={styles.panel} aria-label="Latest commit">
+            <p className={styles.muted}>
+              Latest commit
+              {check.latestCommit.sha ? <> · <code>{check.latestCommit.sha.slice(0, 7)}</code></> : null}
+              {check.latestCommit.author ? ` · ${check.latestCommit.author}` : ''}
+              {check.latestCommit.date ? ` · ${new Date(check.latestCommit.date).toLocaleString()}` : ''}
+              {check.latestCommit.url && (
+                <>
+                  {' '}
+                  <a className={styles.versionLink} href={check.latestCommit.url} target="_blank" rel="noreferrer">↗</a>
+                </>
+              )}
+            </p>
+            <h3>{check.latestCommit.title}</h3>
+            {check.latestCommit.description && (
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0, font: 'inherit' }}>{check.latestCommit.description}</pre>
+            )}
+          </div>
+        )}
+
         {platformManaged || managedHosted ? (
           // Said plainly rather than boxed as a warning: for this reader there is nothing to fix. The platform
           // publishes the release, and either it rebuilds the site (the button above is real) or it installs

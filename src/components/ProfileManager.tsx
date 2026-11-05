@@ -6,6 +6,7 @@ import {
 } from '../lib/profiles';
 import { canUploadMedia, roleLabels, type UserRole } from '../lib/roles';
 import MediaManager from './MediaManager';
+import HookSlot from '../core/HookSlot';
 import styles from './ProfileManager.module.css';
 
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
@@ -332,6 +333,9 @@ export default function ProfileManager({ role, embedded = false }: { role: UserR
           </>
         )}
       </form>
+
+      {/* A plugin's own section of this profile - the marketplace's "Your licenses" is the first tenant. */}
+      <HookSlot name="rwp_profile_extra" />
 
       {pickingAvatar && canPickAvatar && (
         <MediaManager

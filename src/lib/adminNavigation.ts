@@ -63,6 +63,7 @@ const coreNavigation: AdminNavItem[] = [
     submenu: [
       { id: 'installed', label: 'Installed Plugins', icon: '🧩' },
       { id: 'marketplace', label: 'Plugins Marketplace', icon: '🛍️' },
+      { id: 'my-purchases', label: 'My Purchases', icon: '🧾' },
     ],
   },
   {

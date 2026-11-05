@@ -57,6 +57,7 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  latestCommitFor,
   latestPublishedVersion,
   managedUpdateSupport,
   platformRedeployFrom,
@@ -261,6 +262,7 @@ async function check(c: Context): Promise<Response> {
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
+      latestCommit: await latestCommitFor({ source: stored.github, owner }),
     });
   } catch (error) {
     return fail(c, error);

@@ -44,6 +44,7 @@ const CommentsManager = lazy(() => import('./components/CommentsManager'));
 const ProfileManager = lazy(() => import('./components/ProfileManager'));
 const PluginsManager = lazy(() => import('./components/PluginsManager'));
 const AdminPluginsMarketplace = lazy(() => import('./components/AdminPluginsMarketplace'));
+const MyPurchases = lazy(() => import('./components/MyPurchases'));
 const PagesList = lazy(() => import('./components/PagesList'));
 const PageEditor = lazy(() => import('./components/PageEditor'));
 const CategoriesManager = lazy(() => import('./components/CategoriesManager'));
@@ -415,7 +416,9 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
       </Suspense>
     );
   } else if (section === 'plugins') {
-    content = subsection === 'marketplace' ? <AdminPluginsMarketplace navigate={navigate} /> : <PluginsManager />;
+    content = subsection === 'marketplace' ? <AdminPluginsMarketplace navigate={navigate} />
+      : subsection === 'my-purchases' ? <MyPurchases />
+      : <PluginsManager />;
   } else if (section === 'comments') {
     content = <CommentsManager />;
   } else if (section === 'profile') {

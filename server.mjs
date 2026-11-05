@@ -996,7 +996,7 @@ const server = http.createServer(async (request, response) => {
         response.writeHead(result.status, result.headers || { 'Content-Type': 'text/plain; charset=utf-8' });
         response.end(result.text);
       } else {
-        json(request, response, result.status, result.body ?? {});
+        json(request, response, result.status, result.body ?? {}, result.headers || {});
       }
       return;
     }
