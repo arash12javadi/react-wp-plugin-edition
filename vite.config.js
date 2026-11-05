@@ -97,6 +97,10 @@ export default defineConfig({
             { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
             { name: 'supabase', test: /node_modules[\\/]@supabase[\\/]/, priority: 20 },
             { name: 'tiptap', test: /node_modules[\\/](@tiptap|prosemirror-)/, priority: 20 },
+            // @dnd-kit is class-based (sensors, `extends`/`new` chains) and, like the editor, breaks under the
+            // deployment's obfuscation (`_0x… is not a function` on the first Theme Editor drag). Its own
+            // `dnd-<hash>.js` chunk is what `EDITOR_CHUNK_NAME` in server/deploy/obfuscate.mjs leaves readable.
+            { name: 'dnd', test: /node_modules[\\/]@dnd-kit[\\/]/, priority: 20 },
             // CodeMirror belongs to the two screens that embed a code field — the builder's inspector
             // (plugins/rwp-page-builder/editor/CodeField.tsx) and the Code Snippets editor
             // (plugins/rwp-code-snippets/SnippetCodeField.tsx) — and to nothing else; both are plugin

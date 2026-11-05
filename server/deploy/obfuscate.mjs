@@ -79,7 +79,7 @@ const BUILT_ENTRY = /^(?:dist|dist-ssr|build|out|public\/build|\.vercel\/output\
  * after themselves. Matched against the file name only, so `dist/assets/tiptap-CRJxO9ru.js` and
  * `prosemirror-model-<hash>.js` are caught wherever they are emitted.
  */
-const EDITOR_CHUNK_NAME = /(?:^|[^a-z0-9])(?:tiptap|prosemirror)(?:[^a-z0-9]|$)/i;
+const EDITOR_CHUNK_NAME = /(?:^|[^a-z0-9])(?:tiptap|prosemirror|dnd)(?:[^a-z0-9]|$)/i;
 
 /**
  * Strings that survive minification *inside* a bundled editor chunk, so a build that put the editor in
