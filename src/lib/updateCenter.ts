@@ -177,6 +177,8 @@ export interface UpdatesOverview {
   plugin_directory: string;
   channels: string[];
   auto_check: string[];
+  /** True only for the owner on a deployment that sets `OWNER_GITHUB_REPO`: the screen shows just the latest commit and release. */
+  owner_commit_view?: boolean;
 }
 
 /**

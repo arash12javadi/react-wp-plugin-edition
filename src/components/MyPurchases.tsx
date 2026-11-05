@@ -200,9 +200,6 @@ export default function MyPurchases() {
       setError(saveError instanceof Error ? saveError.message : 'Could not save this licence key.');
       return;
     }
-    // "Automatic install": the moment a pasted key verifies as active for this site, install it right
-    // away - a buyer does not have to know there is a second step.
-    if (entry.result) void install(key);
   };
 
   const removeKey = async (key: string) => {
@@ -220,8 +217,8 @@ export default function MyPurchases() {
       <h1 className={styles.heading}>My Purchases</h1>
       <p className={styles.intro}>
         Plugins bought on <a href={MARKETPLACE_ORIGIN} target="_blank" rel="noreferrer">react-wp.com</a>.
-        Paste a licence key once — it is checked against this site's domain and, once active, installed here
-        automatically. A key already pasted is re-checked and can be reinstalled (for an update) any time.
+        Paste a licence key once — it is checked against this site's domain. When it is active, press
+        Install to add the plugin to this site. A saved key is re-checked and can be reinstalled (for an update) any time.
       </p>
 
       <div className={styles.addRow}>
@@ -262,7 +259,7 @@ export default function MyPurchases() {
                   disabled={!entry.result || installing === entry.key}
                   onClick={() => void install(entry.key)}
                 >
-                  {installing === entry.key ? `${installStep || 'working'}…` : 'Install / Update'}
+                  {installing === entry.key ? `${installStep || 'working'}…` : 'Install'}
                 </button>
                 <button type="button" className={styles.danger} onClick={() => void removeKey(entry.key)}>Remove</button>
               </div>

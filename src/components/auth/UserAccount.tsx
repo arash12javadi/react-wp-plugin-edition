@@ -5,7 +5,7 @@ import { fetchProfile, type Profile } from '../../lib/profiles';
 import { canAccessAdmin, getUserRole, roleLabels, type UserRole } from '../../lib/roles';
 import { defaultSettings, loadSettings, type SiteSettings } from '../../lib/settings';
 import { loginHref, signOutAndRedirect } from '../../lib/account';
-import { HookSlot } from '../../core/HookSlot';
+import { HookSlot, useApplyFilters } from '../../core/HookSlot';
 import { useAppSettings } from '../../lib/appSettings';
 import ProfileManager from '../ProfileManager';
 import SavedCollections from '../engagement/SavedCollections';
@@ -82,12 +82,19 @@ export function UserDashboard({ title }: { title?: string }) {
   );
 }
 
-type DashboardTab = 'overview' | 'saved' | 'following';
+/** A tab a plugin adds to the dashboard through the `user_dashboard_tabs` filter. */
+export interface DashboardTabContribution {
+  id: string;
+  label: string;
+  render: (args: { userId: string; role: UserRole }) => ReactNode;
+}
 
-const readTab = (): DashboardTab => {
-  const value = new URLSearchParams(window.location.search).get('tab');
-  return value === 'saved' || value === 'following' ? value : 'overview';
-};
+type DashboardTab = string;
+
+// Unknown ids fall back to Overview below, once the plugin tabs are known.
+const readTab = (): DashboardTab => new URLSearchParams(window.location.search).get('tab') || 'overview';
+
+const noTabs: DashboardTabContribution[] = [];
 
 function DashboardView({ viewer, settings, title }: { viewer: Viewer; settings: SiteSettings; title?: string }) {
   const { user, profile, role } = viewer;
@@ -96,8 +103,13 @@ function DashboardView({ viewer, settings, title }: { viewer: Viewer; settings: 
   const { settings: appSettings } = useAppSettings();
   const showSaved = appSettings.engagement.show_save_global;
   const showFollowing = appSettings.engagement.show_follow_global;
+  const pluginTabs = useApplyFilters<DashboardTabContribution[]>('user_dashboard_tabs', noTabs);
   const [tab, setTab] = useState<DashboardTab>(readTab);
-  const activeTab = (tab === 'saved' && !showSaved) || (tab === 'following' && !showFollowing) ? 'overview' : tab;
+  const pluginTab = pluginTabs.find((entry) => entry.id === tab);
+  const activeTab = pluginTab ? tab
+    : tab === 'saved' && showSaved ? 'saved'
+      : tab === 'following' && showFollowing ? 'following'
+        : 'overview';
 
   // In the address bar, so "My saved collections" can be linked to (/dashboard?tab=saved).
   const choose = (next: DashboardTab) => {
@@ -109,6 +121,7 @@ function DashboardView({ viewer, settings, title }: { viewer: Viewer; settings: 
   };
   const tabs: Array<[DashboardTab, string]> = [
     ['overview', 'Overview'],
+    ...pluginTabs.map((entry) => [entry.id, entry.label] as [DashboardTab, string]),
     ...(showSaved ? [['saved', 'My saved collections'] as [DashboardTab, string]] : []),
     ...(showFollowing ? [['following', 'Following'] as [DashboardTab, string]] : []),
   ];
@@ -140,7 +153,8 @@ function DashboardView({ viewer, settings, title }: { viewer: Viewer; settings: 
       )}
 
       <div id="rwp-dashboard-panel" role="tabpanel" aria-labelledby={`rwp-dashboard-tab-${activeTab}`}>
-        {activeTab === 'saved' ? <SavedCollections />
+        {pluginTab ? pluginTab.render(slotArgs)
+          : activeTab === 'saved' ? <SavedCollections />
           : activeTab === 'following' ? <FollowingFeed />
             : (
               <div className={`${styles.cards} rwp-user-dashboard-cards`}>

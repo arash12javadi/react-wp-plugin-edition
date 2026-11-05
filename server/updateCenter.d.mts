@@ -216,11 +216,14 @@ export function resolveInstalledVersion(input: {
 /** Drops the remembered release, so the next `latestPublishedVersion` reads GitHub again. */
 export function clearPublishedVersion(): void;
 
-/** Newest commit of the owner's update repository (owner only; `null` otherwise or on failure). */
+/** Whether the owner's Updates screen shows only the latest commit and release (`OWNER_GITHUB_REPO` is set). */
+export function ownerCommitView(owner?: boolean, env?: Record<string, string | undefined>): boolean;
+
+/** Newest commit of `OWNER_GITHUB_REPO` (owner only; `null` otherwise, when unset, or on failure). */
 export function latestCommitFor(options?: {
-  source?: { repo?: string; token?: string } | null;
   owner?: boolean;
   fetchImpl?: typeof fetch;
+  env?: Record<string, string | undefined>;
 }): Promise<{ sha: string; title: string; description: string; author: string; date: string; url: string } | null>;
 
 /**

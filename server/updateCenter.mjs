@@ -826,15 +826,24 @@ export async function latestPublishedVersion({ source, channel = 'stable', fetch
   return version;
 }
 
+/** True for the owner on a deployment that sets `OWNER_GITHUB_REPO`: the screen then shows only the latest commit and release. */
+export function ownerCommitView(owner = true, env = process.env) {
+  return Boolean(owner && trimmed(env.OWNER_GITHUB_REPO));
+}
+
 /**
- * The newest commit (title + description) of the repository the owner's updates come from. Owner only:
- * a managed site gets `null` without any request. Never throws.
+ * The newest commit (title + description) of the repository named by `OWNER_GITHUB_REPO`, read with
+ * `OWNER_GITHUB_TOKEN_FOR_COMMIT_READING`. Deliberately independent of the update source (which clients
+ * follow): this only feeds the owner's Dashboard → Updates card. Owner only: anyone else gets `null`
+ * without any request, and so does a deployment that sets no `OWNER_GITHUB_REPO`. Never throws; the
+ * token is never returned.
  *
- * @param {{ source?: { repo?: string, token?: string } | null, owner?: boolean, fetchImpl?: typeof fetch }} [input]
+ * @param {{ owner?: boolean, fetchImpl?: typeof fetch, env?: Record<string, string | undefined> }} [input]
  */
-export async function latestCommitFor({ source, owner = true, fetchImpl = fetch } = {}) {
-  if (!owner || !trimmed(source?.repo)) return null;
-  return fetchLatestCommit({ repo: source.repo, token: trimmed(source?.token), fetchImpl });
+export async function latestCommitFor({ owner = true, fetchImpl = fetch, env = process.env } = {}) {
+  const repo = trimmed(env.OWNER_GITHUB_REPO);
+  if (!owner || !repo) return null;
+  return fetchLatestCommit({ repo, token: trimmed(env.OWNER_GITHUB_TOKEN_FOR_COMMIT_READING), fetchImpl });
 }
 
 /**

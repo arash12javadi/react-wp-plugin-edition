@@ -215,6 +215,8 @@ export type SlotName = (typeof slotNames)[number];
 export const coreFilterNames = [
   /** The HTML of a page or post body, before it is sanitized and rendered. */
   'the_content',
+  /** Extra tabs on the visitors' dashboard: an array of { id, label, render(args) }, shown after Overview. args are { userId, role }. */
+  'user_dashboard_tabs',
   /** (translated, key, locale, vars) — the final string for one key, after Settings → Translations and the bundled dictionaries. */
   'i18n_translate_key',
   /** The active locale code, before it is applied to the document. */

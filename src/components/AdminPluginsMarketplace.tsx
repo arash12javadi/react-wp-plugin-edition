@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  activateRemoteLicense,
   CATALOG_PAGE_SIZE,
   fetchRemoteCatalog,
   isMarketplaceListing,
@@ -147,7 +146,7 @@ const actionLabel = (item: RemoteCatalogItem) => {
 };
 
 /** Why a remote plugin cannot be installed yet; browsing never asks for a licence. */
-const NOT_ACTIVATED_HINT = 'Browsing is free — activate this site with a licence key to install it here.';
+const NOT_ACTIVATED_HINT = 'Browsing is free — add your licence key under Plugins → My Purchases to install from here.';
 
 /** Why the catalogue is empty, in words an administrator can act on. */
 const catalogProblem = (reason?: string) => {
@@ -162,36 +161,11 @@ const catalogProblem = (reason?: string) => {
   return 'The marketplace catalogue could not be read. Press Check again in a moment.';
 };
 
-/** Why a licence key was refused. */
-const activationProblem = (reason?: string) => {
-  switch (reason) {
-    case 'missing_license':
-    case 'missing_fields':
-      return 'Enter the licence key you were sent.';
-    case 'unknown_license':
-      return 'That licence key is not one this marketplace issued. Check it against your receipt.';
-    case 'domain_mismatch':
-      return 'That licence is bound to a different domain. One licence covers one site — contact support to move it.';
-    case 'site_token_mismatch':
-      return 'This browser holds a site token that does not belong to that licence. Clear it and activate again.';
-    case 'license_expired':
-      return 'That licence has expired. Renew it, then activate this site again.';
-    case 'license_revoked':
-      return 'That licence has been revoked, so it cannot be bound to a site.';
-    case 'not_configured':
-      return 'The marketplace server is not configured for this build (VITE_RWP_REMOTE_LICENSE_URL is not set).';
-    case 'network_error':
-      return 'The licensing server could not be reached. Try again in a moment.';
-    default:
-      return `The licence could not be activated (${reasonText(reason || 'unknown')}).`;
-  }
-};
-
 /** Why checkout was refused, including the verdict the server sent back with it. */
 const checkoutProblem = (result: { reason?: string; status?: string } | null, plugin: RemoteCatalogItem) => {
   if (!result) return 'Checkout could not be started.';
   if (result.reason === 'not_activated' || result.reason === 'missing_identity') {
-    return 'This site has no stored licence identity yet. Activate it above, then buy.';
+    return 'This site has no stored licence identity yet. Add your licence key under Plugins → My Purchases, then buy.';
   }
   if (result.reason === 'not_configured') return 'The marketplace server is not configured for this build.';
   if (result.reason === 'network_error') return 'The marketplace server could not be reached. Try again in a moment.';
@@ -227,14 +201,11 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [licenseKey, setLicenseKey] = useState('');
   const [details, setDetails] = useState<RemoteCatalogItem | null>(null);
 
   const activated = licence.status === 'active';
   const entitled = useMemo(() => new Set(licence.plugins.map((plugin) => plugin.pluginId)), [licence.plugins]);
   const pages = Math.max(1, Math.ceil(catalog.total / Math.max(catalog.perPage, 1)));
-  const statusLabel = licence.reason === 'not_activated' ? 'Not activated' : LICENCE_STATUS[licence.status] || 'Not verified';
-  const maskedToken = identity.siteToken ? `${identity.siteToken.slice(0, 8)}…${identity.siteToken.slice(-4)}` : '';
 
   const refreshLicence = useCallback(async () => {
     const current = readSiteIdentity() as SiteIdentity;
@@ -329,26 +300,6 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
     })();
   }, [refreshLicence]);
 
-  const activate = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmed = licenseKey.trim();
-    if (!trimmed || busy) return;
-    setBusy('activate');
-    setError('');
-    setNotice('Activating and binding this site…');
-    const result = (await activateRemoteLicense(trimmed, window.location.origin)) as { status?: string; reason?: string };
-    if (result?.status === 'active') {
-      setLicenseKey('');
-      await refreshLicence();
-      await syncRemotePlugins();
-      setNotice(`Licence activated. ${window.location.origin} is the domain this site's plugins are bound to.`);
-    } else {
-      setError(activationProblem(result?.reason));
-      await refreshLicence();
-    }
-    setBusy('');
-  };
-
   /** One button for both cases: a free plugin is granted on the spot, a paid one leaves for checkout. */
   const install = async (plugin: RemoteCatalogItem) => {
     if (busy) return;
@@ -427,47 +378,6 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
           </button>
         </div>
       </header>
-
-      <section className={styles.identity} aria-label="Site licence">
-        <div className={styles.identityMain}>
-          <span className={styles.identityLabel}>Licence</span>
-          <span className={activated ? styles.pillActive : styles.pillInactive}>{statusLabel}</span>
-          {activated && licence.plan ? <span className={styles.identityValue}>Plan <code>{licence.plan}</code></span> : null}
-          {activated && day(licence.expiresAt) ? <span className={styles.identityValue}>Renews {day(licence.expiresAt)}</span> : null}
-          <span className={styles.identityValue}>Domain <code>{identity.siteUrl || 'unknown'}</code></span>
-          {maskedToken ? <span className={styles.identityValue}>Token <code>{maskedToken}</code></span> : null}
-          {activated ? (
-            <span className={styles.identityValue}>
-              {licence.plugins.length} plugin{licence.plugins.length === 1 ? '' : 's'} licensed
-            </span>
-          ) : null}
-        </div>
-
-        {!activated && (
-          <form className={styles.activateForm} onSubmit={activate}>
-            <label className={styles.activateLabel} htmlFor="rwp-marketplace-license">
-              {licence.reason === 'not_activated'
-                ? `Browsing needs no licence. To install a remote plugin on ${identity.siteUrl || 'this site'}, paste the key you were sent — free plugins install straight away, paid ones check out in USDT (TRC20).`
-                : `This site's licence cannot be used (${reasonText(licence.reason)}). Enter a valid key to bind it to ${identity.siteUrl || 'this domain'}.`}
-            </label>
-            <div className={styles.activateRow}>
-              <input
-                id="rwp-marketplace-license"
-                className={styles.input}
-                value={licenseKey}
-                onChange={(event) => setLicenseKey(event.target.value)}
-                placeholder="RWPL-…"
-                autoComplete="off"
-                spellCheck={false}
-                disabled={busy === 'activate'}
-              />
-              <button type="submit" className={styles.primary} disabled={busy === 'activate' || !licenseKey.trim()}>
-                {busy === 'activate' ? 'Activating…' : 'Activate this site'}
-              </button>
-            </div>
-          </form>
-        )}
-      </section>
 
       {notice && <p className={styles.notice} role="status">{notice}</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}

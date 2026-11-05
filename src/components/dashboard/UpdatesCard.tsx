@@ -498,6 +498,19 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
     }
   }, [load]);
 
+  // Owner view (the server sets `owner_commit_view` only for the owner on a deployment that names
+  // `OWNER_GITHUB_REPO`): no Update now / source / schedule controls, just the latest dev-edition commit and
+  // the latest release. One check runs on its own so both are filled without a click.
+  const ownerView = isOwner && Boolean(overview?.owner_commit_view);
+  useEffect(() => {
+    if (!ownerView || check) return;
+    let cancelled = false;
+    checkForUpdates()
+      .then((answer) => { if (!cancelled) publish(answer); })
+      .catch((checkError) => { if (!cancelled) setError(message(checkError, 'The latest release could not be read.')); });
+    return () => { cancelled = true; };
+  }, [ownerView, check, publish]);
+
   if (loading) {
     return (
       <section className={styles.panel} aria-busy="true">
@@ -528,6 +541,47 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   const latestTag = asTag(check?.latestVersion || check?.app?.latest_tag || check?.app?.latest || '');
   const coreUpdate = check ? (check.updateAvailable ?? check.app.update_available) : false;
   const releaseUrl = check?.releaseUrl || check?.app?.release?.changelog_url || '';
+
+  if (ownerView) {
+    const commit = check?.latestCommit;
+    return (
+      <div className={styles.dashboard}>
+        {error && <div className={styles.error} role="alert">{error}</div>}
+        <section className={styles.panel} aria-labelledby="owner-release-heading">
+          <h2 id="owner-release-heading">Latest release</h2>
+          <p>
+            <code>{latestTag || (check ? '—' : 'Reading…')}</code>
+            {releaseUrl && (
+              <> <a className={styles.versionLink} href={releaseUrl} target="_blank" rel="noreferrer">Release notes ↗</a></>
+            )}
+          </p>
+        </section>
+        <section className={styles.panel} aria-labelledby="owner-commit-heading">
+          <h2 id="owner-commit-heading">Latest commit</h2>
+          {commit ? (
+            <>
+              <p className={styles.muted}>
+                {commit.sha ? <code>{commit.sha.slice(0, 7)}</code> : null}
+                {commit.author ? ` · ${commit.author}` : ''}
+                {commit.date ? ` · ${new Date(commit.date).toLocaleString()}` : ''}
+                {commit.url && (
+                  <> <a className={styles.versionLink} href={commit.url} target="_blank" rel="noreferrer">↗</a></>
+                )}
+              </p>
+              <h3>{commit.title}</h3>
+              {commit.description && (
+                <pre style={{ whiteSpace: 'pre-wrap', margin: 0, font: 'inherit' }}>{commit.description}</pre>
+              )}
+            </>
+          ) : (
+            <p className={styles.muted}>
+              {check ? 'GitHub did not return a commit. Check OWNER_GITHUB_REPO and OWNER_GITHUB_TOKEN_FOR_COMMIT_READING.' : 'Reading…'}
+            </p>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.dashboard}>

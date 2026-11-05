@@ -42,6 +42,7 @@ import {
   describeUpdateConfig,
   installedPluginsFrom,
   latestCommitFor,
+  ownerCommitView,
   latestPublishedVersion,
   managedUpdateSupport,
   platformRedeployFrom,
@@ -178,6 +179,7 @@ async function overview({ readOptions, owner = true }) {
     plugin_directory: PLUGIN_DIRECTORY_PATH,
     channels: UPDATE_CHANNELS,
     auto_check: AUTO_CHECK_KEYS,
+    owner_commit_view: ownerCommitView(owner),
   };
 }
 
@@ -202,7 +204,7 @@ async function check(body, config, readOptions, owner = true) {
     config: describeUpdateConfig(stored.config, owner),
     github: describeGithubSource(stored.github, owner),
     readable: stored.readable,
-    latestCommit: await latestCommitFor({ source: stored.github, owner }),
+    latestCommit: await latestCommitFor({ owner }),
   };
 }
 

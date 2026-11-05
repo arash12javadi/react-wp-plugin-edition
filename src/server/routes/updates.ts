@@ -58,6 +58,7 @@ import {
   describeUpdateConfig,
   installedPluginsFrom,
   latestCommitFor,
+  ownerCommitView,
   latestPublishedVersion,
   managedUpdateSupport,
   platformRedeployFrom,
@@ -229,6 +230,7 @@ async function overview(c: Context): Promise<Response> {
       plugin_directory: PLUGIN_DIRECTORY_PATH,
       channels: UPDATE_CHANNELS,
       auto_check: AUTO_CHECK_KEYS,
+      owner_commit_view: ownerCommitView(owner),
     });
   } catch (error) {
     return fail(c, error);
@@ -262,7 +264,7 @@ async function check(c: Context): Promise<Response> {
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
-      latestCommit: await latestCommitFor({ source: stored.github, owner }),
+      latestCommit: await latestCommitFor({ owner }),
     });
   } catch (error) {
     return fail(c, error);
