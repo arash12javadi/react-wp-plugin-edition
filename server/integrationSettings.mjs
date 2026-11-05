@@ -27,6 +27,7 @@ import {
   mediaCredentialsFrom,
   mediaStorageConfigFrom,
 } from './integrationConfig.mjs';
+import { configuredOwnerEmail, isOwnerUser } from './ownerIdentity.mjs';
 
 /** The table the hub writes to. */
 const SETTINGS_TABLE = 'system_settings';
@@ -404,6 +405,7 @@ const PLATFORM_OWNER_MESSAGES = {
       ? `${role} is not the platform owner (${PLATFORM_OWNER_ROLES.join(' or ')}).`
       : `this account has no role on this site, and only the platform owner (${PLATFORM_OWNER_ROLES.join(' or ')}) can.`),
   unreachable: (detail) => `The site could not be reached to check your permission: ${detail}`,
+  notOwner: 'Only the owner of this installation (the account named by RWP_OWNER_EMAIL, with a confirmed email) can use this tool.',
 };
 
 /**
@@ -442,6 +444,7 @@ export async function authorizePlatformOwner(supabaseUrl, supabaseKey, accessTok
   try {
     const userResponse = await fetch(`${baseUrl}/auth/v1/user`, { headers });
     if (!userResponse.ok) return { ok: false, status: 401, error: text.invalidSession };
+    const user = await userResponse.json().catch(() => null);
     const roleResponse = await fetch(`${baseUrl}/rest/v1/rpc/current_user_role`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
@@ -456,6 +459,11 @@ export async function authorizePlatformOwner(supabaseUrl, supabaseKey, accessTok
     const role = typeof answer === 'string' ? answer.trim() : '';
     if (!PLATFORM_OWNER_ROLES.includes(role)) {
       return { ok: false, status: 403, error: text.roleFailure(role) };
+    }
+    // When RWP_OWNER_EMAIL is set, the role is not enough: only that confirmed address is the owner.
+    // The address comes from Supabase Auth's answer for this token, never from the request.
+    if (configuredOwnerEmail() && !isOwnerUser(user)) {
+      return { ok: false, status: 403, error: text.notOwner };
     }
     return { ok: true, role };
   } catch (error) {

@@ -137,7 +137,11 @@ export const MANAGED_MESSAGES = {
   /** The platform has no record of the address this site reports, and cannot work out which project it is. */
   install_no_project: 'React-WP.com does not have this site’s address on file, so it could not tell which project to rebuild. Nothing has changed on it — contact React-WP support with this site’s address and they will link it.',
   /** The platform knows the site but its own Vercel account cannot see the project. */
-  install_project_missing: 'React-WP.com found this site but cannot reach its hosting project, so it could not rebuild it. Nothing has changed on it — contact React-WP support.',
+  install_project_missing: 'React-WP.com found this site but cannot reach its hosting project, so it could not rebuild it. Nothing has changed on it — update once at react-wp.com/update with your hosting access details, which lets this button work from then on, or contact React-WP support.',
+  /** The platform holds no token of the owner's for that project (and its own cannot see it). */
+  install_no_credential: 'React-WP.com has no hosting access for this site, so it could not rebuild it. Nothing has changed on it — update once at react-wp.com/update with your hosting access details, and this button will work from then on.',
+  /** The owner's stored token was revoked, rotated or lost access at Vercel. */
+  install_token_rejected: 'The hosting access React-WP.com has stored for this site no longer works. Nothing has changed on it — update once at react-wp.com/update with fresh hosting access details, and this button will work again.',
   /** The request itself never completed: a timeout, a reset, a platform that restarted mid-build. */
   install_unreachable: 'React-WP.com could not be reached from this server while it was rebuilding this site, so it is not known whether the update finished. The site keeps running its current release either way — check again in a few minutes, and contact React-WP support if it stays on the old version.',
 };
@@ -1255,6 +1259,8 @@ export async function requestPlatformInstall({ config, site, version = '', env, 
   // owners. Neither sentence carries a variable name or a project name: those belong to the operator.
   if (body?.code === 'no_project_recorded') throw new UpdateError(MANAGED_MESSAGES.install_no_project, 502);
   if (body?.code === 'project_not_found') throw new UpdateError(MANAGED_MESSAGES.install_project_missing, 502);
+  if (body?.code === 'no_credential') throw new UpdateError(MANAGED_MESSAGES.install_no_credential, 502);
+  if (body?.code === 'stored_token_rejected') throw new UpdateError(MANAGED_MESSAGES.install_token_rejected, 502);
   // 401/403/409/501/500 all land here: the customer is told the rebuild did not happen and given the one
   // action that is theirs. `response.status` is quoted because it is the only detail support will ask for.
   if (!response.ok || !body || body.success === false) {

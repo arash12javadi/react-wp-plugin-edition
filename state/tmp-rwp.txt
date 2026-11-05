@@ -1,3 +1,0 @@
-﻿108: export interface RwpShortcode {
-110: render: (attributes: Record<string, string>) => ReactNode;
-114: attributes?: Array<{ name: string; description: string }>;

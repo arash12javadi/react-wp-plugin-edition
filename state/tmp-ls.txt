@@ -1,7 +1,0 @@
-﻿db.ts
-adapters
-migrations
-DBAdapter.ts
-errors.ts
-index.ts
-types.ts

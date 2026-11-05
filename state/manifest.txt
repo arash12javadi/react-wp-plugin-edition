@@ -1,8 +1,0 @@
-{
-  "id": "rwp-saas-installer",
-  "name": "RWP SaaS Installer",
-  "version": "1.1.0",
-  "author": "React-WP",
-  "description": "A [react_wp_installer] shortcode wizard that provisions a new, independent React-WP site on a visitor's own Vercel and Supabase accounts, and the release lifecycle - update and rollback - for sites that already exist.",
-  "entry": "./index.tsx"
-}

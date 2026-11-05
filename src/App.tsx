@@ -1,19 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { Client, Session } from './lib/db';
-import SetupWizard from './components/SetupWizard';
-import AdminLayout from './components/AdminLayout';
-import AdminErrorBoundary from './components/AdminErrorBoundary';
-import SiteSettings from './components/SiteSettings';
-import MenusScreen from './components/MenusScreen';
-import CommentsManager from './components/CommentsManager';
-import ProfileManager from './components/ProfileManager';
-import PluginsManager from './components/PluginsManager';
-import AdminPluginsMarketplace from './components/AdminPluginsMarketplace';
-import PagesList from './components/PagesList';
-import PageEditor from './components/PageEditor';
-import CategoriesManager from './components/CategoriesManager';
-import MediaLibrary from './components/MediaLibrary';
-import UsersManager from './components/UsersManager';
 import PublicHome from './components/PublicHome';
 import PublicContent from './components/PublicContent';
 import AuthPage from './components/AuthPage';
@@ -47,6 +33,22 @@ import { HookSlot } from './core/HookSlot';
 import { initI18n } from './lib/i18n';
 import { initDatabaseTranslations } from './lib/translations';
 import styles from './Dashboard.module.css';
+
+// Admin screens and the Setup Wizard are separate chunks: a visitor reading the public site never downloads them.
+const SetupWizard = lazy(() => import('./components/SetupWizard'));
+const AdminLayout = lazy(() => import('./components/AdminLayout'));
+const AdminErrorBoundary = lazy(() => import('./components/AdminErrorBoundary'));
+const SiteSettings = lazy(() => import('./components/SiteSettings'));
+const MenusScreen = lazy(() => import('./components/MenusScreen'));
+const CommentsManager = lazy(() => import('./components/CommentsManager'));
+const ProfileManager = lazy(() => import('./components/ProfileManager'));
+const PluginsManager = lazy(() => import('./components/PluginsManager'));
+const AdminPluginsMarketplace = lazy(() => import('./components/AdminPluginsMarketplace'));
+const PagesList = lazy(() => import('./components/PagesList'));
+const PageEditor = lazy(() => import('./components/PageEditor'));
+const CategoriesManager = lazy(() => import('./components/CategoriesManager'));
+const MediaLibrary = lazy(() => import('./components/MediaLibrary'));
+const UsersManager = lazy(() => import('./components/UsersManager'));
 
 // Its own chunk: the Overview, Updates and Guide are only ever needed inside the admin.
 const Dashboard = lazy(() => import('./components/dashboard/Dashboard'));
@@ -423,6 +425,7 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
   }
 
   return (
+    <Suspense fallback={<BootSplash />}>
     <AdminLayout
       navigation={navigation}
       activeSection={section}
@@ -444,6 +447,7 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
       <AdminErrorBoundary key={`${section}:${subsection}`}>{content}</AdminErrorBoundary>
       <HookSlot name="admin_after_content" args={{ section, subsection, role }} />
     </AdminLayout>
+      </Suspense>
   );
 }
 
@@ -688,7 +692,7 @@ export default function App() {
 
   if (!supabase) {
     // The wizard resets the cached adapters, clears its scratch keys and hard-navigates to / itself.
-    return <SetupWizard onAlreadyInstalled={recheckInstalled} />;
+    return <Suspense fallback={<BootSplash />}><SetupWizard onAlreadyInstalled={recheckInstalled} /></Suspense>;
   }
 
   if (isAdminRoute) {

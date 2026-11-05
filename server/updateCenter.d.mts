@@ -50,6 +50,10 @@ export const MANAGED_MESSAGES: {
   install_no_project: string;
   /** The platform's Vercel account cannot see the site's project (`code: 'project_not_found'`). */
   install_project_missing: string;
+  /** No token of the owner's is stored for the project (`code: 'no_credential'`). */
+  install_no_credential: string;
+  /** The owner's stored token no longer works (`code: 'stored_token_rejected'`). */
+  install_token_rejected: string;
   /** The rebuild request never completed, so whether it finished is unknown. */
   install_unreachable: string;
 };

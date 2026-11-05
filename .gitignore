@@ -51,10 +51,10 @@ react-wp.config.*.json
 *.pem
 *.key
 
-#No needed plugins for User Edition
+# No needed plugins for User Edition
 plugins/rwp-ai-factory
 plugins/rwp-saas-installer
 
-#Cline Configs
+# Cline Configs
 .clineignore
 .clinerules
