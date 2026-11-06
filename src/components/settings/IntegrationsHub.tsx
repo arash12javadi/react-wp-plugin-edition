@@ -26,6 +26,8 @@ import {
   type MediaStorageProvider,
 } from '../../lib/integrations';
 import { GithubCard } from './GithubCard';
+import { DeploymentCard } from './DeploymentCard';
+import { fetchDeploymentOverview } from '../../lib/gitDeployment';
 import {
   githubConfigFrom,
   githubConfigKey,
@@ -54,6 +56,31 @@ const githubCard: RwpIntegrationCard = {
     };
   },
   renderComponent: GithubCard,
+};
+
+/**
+ * GitHub & Vercel: the one-time connection of this site to its own repository and Vercel project, and the
+ * Git-based core update. Core's card, platform owner only; its state lives behind authorised routes
+ * (`server/deploymentRoutes.mjs`), so the pill asks that route rather than reading a row.
+ */
+const deploymentCard: RwpIntegrationCard = {
+  id: 'github-vercel',
+  title: 'GitHub & Vercel',
+  icon: '🚀',
+  description: 'Connects this site to its own GitHub repository and Vercel project. Plugin installs and core updates are committed there, and Vercel deploys them.',
+  order: 11,
+  platformOwnerOnly: true,
+  describe: async () => {
+    try {
+      const { connection } = await fetchDeploymentOverview();
+      return connection.connected
+        ? { configured: true, label: `${connection.repository} → ${connection.project?.name || 'Vercel'}` }
+        : { configured: false, label: 'Not connected' };
+    } catch {
+      return { configured: false, label: 'Not connected' };
+    }
+  },
+  renderComponent: DeploymentCard,
 };
 
 /** The one place a caught value becomes a sentence. */
@@ -1012,7 +1039,7 @@ export default function IntegrationsHub() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const { cards: registered } = useIntegrationsRegistry();
-  const cards = [githubCard, ...registered.filter((card) => card.id !== githubCard.id)]
+  const cards = [githubCard, deploymentCard, ...registered.filter((card) => card.id !== githubCard.id && card.id !== deploymentCard.id)]
     .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   const role = useViewerRole();
 

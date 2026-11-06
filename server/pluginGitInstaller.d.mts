@@ -36,7 +36,7 @@ export interface PluginGitInstallResult {
   serverRoutes: { detected: boolean; registered: boolean };
   sql: PluginInstallSqlFile[];
   dependencies: { missing: PluginInstallDependency[]; installCommand: string | null };
-  deploy: { configured: boolean; triggered: boolean; status?: number; error?: string };
+  deploy: { configured: boolean; triggered: boolean; status?: number; error?: string; git?: boolean; skipped?: string };
   /**
    * Always `required: false` here: the site is built from the repository, and the platform under it
    * redeploys when it builds the commit. There is no local process to restart.
@@ -50,7 +50,11 @@ export interface PluginGitInstallResult {
     repository: string;
     branch: string;
     deletions: number;
+    /** True when the branch already held this exact tree (a retry that had landed), so nothing was committed. */
+    unchanged?: boolean;
   };
+  /** Set when the project deploys from Git by itself; the state is only ever `pending` here. */
+  deployment?: { sha: string; state: 'pending' } | null;
 }
 
 /**
@@ -70,4 +74,8 @@ export function installPluginFromGit(options: {
   optionStore?: PluginInstallOptionStore;
   deployHook?: string;
   onStep?: (step: PluginInstallStep) => void;
+  /** When set, a package for any other plugin id is refused (an update of one named plugin). */
+  expectedId?: string;
+  /** True when the Vercel project deploys this repository by itself, so no deploy hook is called. */
+  gitDeploys?: boolean;
 }): Promise<PluginGitInstallResult>;

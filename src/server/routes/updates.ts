@@ -47,6 +47,7 @@ import {
   statusOf,
 } from '../pluginHostAccess';
 import { currentUserRole, isUpdateOwnerRole } from '../../../server/integrationSettings.mjs';
+import { gitDeploysFor } from '../deployment';
 import {
   AUTO_CHECK_KEYS,
   PLUGIN_DIRECTORY_PATH,
@@ -364,6 +365,7 @@ async function applyUpdate(c: Context): Promise<Response> {
       selfUpdate: support.supported,
       latestVersion: answer.app.latest,
       installedVersion: installed,
+      gitDeploy: await gitDeploysFor(config, (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '')),
     });
 
     if (plan.up_to_date) return c.json({ ...plan, check: reported });

@@ -11,14 +11,15 @@ import { buildEnvString } from './server/installEnv.mjs';
 import { authorizeImageKitUpload, authorizeMediaDelete, deleteFromProvider } from './server/media.mjs';
 import { describeDeleteSupport, DEPLOY_CONFIG_KEY, deployHookFrom } from './server/integrationConfig.mjs';
 import {
-  authorizeCapabilityOnSupabase, authorizeSettingsManager, readIntegrationRows, readMediaStorageSettings,
+  authorizeCapabilityOnSupabase, authorizePlatformOwner, authorizeSettingsManager, readIntegrationRows, readMediaStorageSettings,
 } from './server/integrationSettings.mjs';
+import { handleDeploymentRequest, ownsDeploymentPath } from './server/deploymentRoutes.mjs';
 import { renderDocumentInjections, renderEditorInjections } from './server/seo.mjs';
 import { handlePluginRequest, resolveOrigin } from './server/plugins.mjs';
 import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActivePluginIds } from './server/pluginFiles.mjs';
 import { InstallError, installPlugin, MAX_ZIP_BYTES } from './server/pluginInstaller.mjs';
 import { handleAdminRequest } from './server/adminRoutes.mjs';
-import { handleUpdateRequest } from './server/updateRoutes.mjs';
+import { handleUpdateRequest, installedVersion as buildInstalledVersion } from './server/updateRoutes.mjs';
 import { centralConfigFrom, centralPlatformConfig, handleCentralUpdateRequest } from './server/centralUpdates.mjs';
 import { platformInstallHandler } from './server/platformInstaller.mjs';
 import { handleSecurityRequest } from './server/securityRoutes.mjs';
@@ -614,6 +615,28 @@ const server = http.createServer(async (request, response) => {
         json(request, response, 405, { success: false, ok: false, error: `Only ${allowed} is supported at ${url.pathname}.` }, { Allow: allowed });
         return;
       }
+      json(request, response, result.status, result.body);
+      return;
+    }
+
+    // Settings → Integrations → GitHub & Vercel: the client's own repository and Vercel project, deployment
+    // status, and Git-based core updates. Shared with the Hono app (`src/server/deployment.ts`). Every route
+    // needs the platform owner, and nothing here talks to react-wp.com.
+    if (ownsDeploymentPath(url.pathname)) {
+      const siteConfig = await currentConfig();
+      const file = await readConfig();
+      const result = await handleDeploymentRequest({
+        method: request.method,
+        pathname: url.pathname,
+        query: Object.fromEntries(url.searchParams),
+        headers: request.headers,
+        body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
+        config: { ...siteConfig, dbType: file?.dbType || siteConfig?.dbType },
+        siteConfig: { ...siteConfig, ...(file || {}) },
+        env: process.env,
+        installedVersion: buildInstalledVersion,
+        authorize: (token) => authorizePlatformOwner(siteConfig?.supabaseUrl, siteConfig?.supabasePublishableKey, token),
+      });
       json(request, response, result.status, result.body);
       return;
     }

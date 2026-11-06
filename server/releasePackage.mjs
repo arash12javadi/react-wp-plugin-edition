@@ -69,11 +69,15 @@ class ReleasePackageError extends Error {
   }
 }
 
+const utf8 = new TextDecoder('utf-8');
+
 /** A NUL-terminated utf8 field of a tar header. */
 function tarField(header, start, length) {
   const slice = header.subarray(start, start + length);
   const end = slice.indexOf(0);
-  return slice.subarray(0, end === -1 ? slice.length : end).toString('utf8');
+  // TextDecoder, not toString: fflate hands back a Uint8Array, whose toString ignores 'utf8' and joins
+  // the byte values with commas — every name would come out as '112,97,99,…' and no file would match.
+  return utf8.decode(slice.subarray(0, end === -1 ? slice.length : end));
 }
 
 /** A tar header's size: octal, or GNU's base-256 encoding when the high bit of the first byte is set. */
@@ -94,9 +98,9 @@ function paxRecords(data) {
   while (offset < data.length) {
     const space = data.indexOf(0x20, offset);
     if (space === -1) break;
-    const length = Number(data.subarray(offset, space).toString('utf8'));
+    const length = Number(utf8.decode(data.subarray(offset, space)));
     if (!Number.isInteger(length) || length <= 0 || offset + length > data.length) break;
-    const record = data.subarray(space + 1, offset + length - 1).toString('utf8');
+    const record = utf8.decode(data.subarray(space + 1, offset + length - 1));
     const equals = record.indexOf('=');
     if (equals > 0) records.set(record.slice(0, equals), record.slice(equals + 1));
     offset += length;
@@ -274,3 +278,36 @@ export async function buildCoreReleaseZip({ repo, token, version, fetchImpl = fe
     return { ok: false, status: 502, error: error instanceof Error ? error.message : 'The release package could not be built.' };
   }
 }
+
+/**
+ * The core files of one release, as a map — what the Git-based core updater (`server/gitDeploy/coreUpdate.mjs`)
+ * merges into a client's repository. The same fetch and the same safety rules as `buildCoreReleaseZip`: the
+ * tarball comes from api.github.com over https (redirects are followed only to GitHub hosts), entries with a
+ * `..` segment, an absolute path or an oversized body are dropped by `readTarFiles`, symlinks and other
+ * non-file entries are never produced, and `plugins/` is left out because plugins are the client's.
+ *
+ * @param {{ repo: string, token?: string, version: string, fetchImpl?: typeof fetch }} input
+ * @returns {Promise<Map<string, Uint8Array>>} throws a `ReleasePackageError` (with `status`) on any refusal
+ */
+export async function fetchCoreReleaseFiles({ repo, token = '', version, fetchImpl = fetch }) {
+  const target = trimmed(repo);
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(target)) {
+    throw new ReleasePackageError('The release repository is not owner/name.', 400);
+  }
+  if (!/^v?\d+\.\d+\.\d+/.test(trimmed(version))) {
+    throw new ReleasePackageError(`"${trimmed(version)}" is not a release tag.`, 400);
+  }
+  const files = stripArchiveRoot(readTarFiles(await fetchTarball(target, trimmed(version), trimmed(token), fetchImpl)));
+  const core = new Map();
+  for (const [name, bytes] of files) {
+    if (name === 'plugins' || name.startsWith('plugins/')) continue;
+    core.set(name, new Uint8Array(bytes));
+  }
+  if (!core.has('package.json')) {
+    throw new ReleasePackageError(`${target}@${trimmed(version)} has no package.json at its root, so it is not a release of this template.`, 502);
+  }
+  core.set('package.json', manifestAtVersion(core.get('package.json'), trimmed(version)));
+  return core;
+}
+
+export { ReleasePackageError };

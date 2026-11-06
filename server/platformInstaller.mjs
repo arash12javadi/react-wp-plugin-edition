@@ -1,55 +1,31 @@
 /**
- * The platform half of `POST /api/v1/updates/install`: handing one provisioned site's redeploy to the
- * installer plugin.
+ * `POST /api/v1/updates/install` on react-wp.com — retired.
  *
- * `server/centralUpdates.mjs` owns the route and the credential, but not the pipeline. Building a release and
- * uploading it to a Vercel project is `plugins/rwp-saas-installer`'s job — it holds the GitHub template, the
- * prebuilt bundle, the upload loop and the failure sentences — and this module is the seam between the two.
- * It exists so that neither side has to import the other's world: the route stays free of Vercel code, and the
- * plugin stays free of `/api/v1` path names.
+ * This route used to make the platform rebuild a customer's site: it looked up the customer's Vercel
+ * project, opened the customer's Vercel token that the platform had stored, built the release and uploaded
+ * it to the customer's project. That made react-wp.com a holder of customer deployment credentials and a
+ * deployment service for customer projects, which the platform no longer is.
  *
- * The import is **dynamic**, for the reason `server/plugins.mjs` gives for its own: a plugin folder removed
- * from the Plugins screen must not stop the server from starting, and it must not stop a platform from
- * answering the rest of its update routes either. No installer means a sentence on this one path, and every
- * other route behaves exactly as before.
+ * react-wp.com is now a **release source only**: it publishes core and plugin releases (`/api/v1/updates/check`
+ * and the release files), and each client installation updates itself — it commits the release to its own
+ * GitHub repository and its own Vercel project deploys that commit (`server/gitDeploy/*`, Settings →
+ * Integrations → GitHub & Vercel). No customer token is needed or accepted here.
  *
- * `supabase` is where this deployment's own PostgREST lives, needed to read the `saas_installer_installations`
- * row that maps a site's address to its Vercel project. It may be a value or an async function, because the
- * Hono host resolves its runtime config lazily; when it is null the plugin falls back to the environment
- * (`SUPABASE_URL` / `SUPABASE_SECRET_KEY`), which is how a classic `server.mjs` deployment is configured.
- *
- * @param {{
- *   env?: Record<string, string | undefined>,
- *   supabase?: { url?: string, publishableKey?: string, secretKey?: string } | (() => Promise<{ url?: string, publishableKey?: string, secretKey?: string }>) | null,
- * }} [runtime]
+ * The path still answers, with 410 Gone and a sentence a site can show, so an older site that asks is told
+ * what to do instead of getting a 404 that reads like a misconfiguration. The request body is never read
+ * for a credential and nothing is stored.
  */
-export function platformInstallHandler({ env, supabase = null } = {}) {
-  return async ({ body = {} } = {}) => {
-    let installer = null;
-    try {
-      installer = await import('../plugins/rwp-saas-installer/server.mjs');
-    } catch (error) {
-      console.error(`[updates/install] the saas installer plugin could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (typeof installer?.platformInstall !== 'function') {
-      return {
-        status: 501,
-        body: {
-          success: false,
-          ok: false,
-          error: 'This platform has no installer, so it cannot redeploy a site. Activate rwp-saas-installer in Plugins, or deploy the release from its own card.',
-        },
-      };
-    }
-    const resolved = typeof supabase === 'function' ? await supabase().catch(() => null) : supabase;
-    const answer = await installer.platformInstall({
-      env: env || globalThis.process?.env || {},
-      supabase: resolved,
-      siteUrl: typeof body?.site === 'string' ? body.site : '',
-      projectName: typeof body?.projectName === 'string' ? body.projectName : '',
-      // The site says `to` (the version it wants, from its last check); an operator may say `version`.
-      version: typeof body?.to === 'string' ? body.to : (typeof body?.version === 'string' ? body.version : ''),
-    });
-    return { status: Number(answer?.status) || 200, body: answer?.body ?? {} };
-  };
+export const PLATFORM_INSTALL_RETIRED_MESSAGE = 'React-WP.com no longer builds or deploys customer sites, and it does not keep hosting credentials. Update this site from its own admin: connect it to its GitHub repository and Vercel project under Settings → Integrations → GitHub & Vercel, then use Update core there.';
+
+/**
+ * Kept as a factory so both engines mount it exactly as before. The runtime options they pass (the
+ * environment, the Supabase location) are accepted and ignored: nothing is looked up any more.
+ *
+ * @param {Record<string, unknown>} [_runtime]
+ */
+export function platformInstallHandler(_runtime = {}) {
+  return async () => ({
+    status: 410,
+    body: { success: false, ok: false, code: 'platform_install_retired', error: PLATFORM_INSTALL_RETIRED_MESSAGE },
+  });
 }

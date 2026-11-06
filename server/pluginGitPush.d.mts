@@ -51,6 +51,8 @@ export interface GithubCommitResult {
   deletions: number;
   /** Deletions GitHub refused; they are still on the branch, and the caller reports them. */
   deletionsSkipped: string[];
+  /** True when the branch already held exactly this tree, so no commit was made (a retry that had landed). */
+  unchanged?: boolean;
 }
 
 /**
@@ -88,5 +90,19 @@ export function commitFiles(
     base: GithubBranchBase;
     deletions?: string[];
     allowPaths?: string[];
+    /** Replaces the plugin-folder rule with the caller's own; must throw for a path it refuses. */
+    pathPolicy?: (path: string) => void;
+    /** `{ create: 'branch' }` commits onto a new branch instead of moving `target.branch`. */
+    ref?: { create: string } | null;
   },
 ): Promise<GithubCommitResult>;
+
+/** Moves `branch` forward to `sha`; a branch that moved since it was read is a 409, never overwritten. */
+export function fastForwardBranch(target: GithubCommitTarget, branch: string, sha: string): Promise<void>;
+
+/** Creates a branch at `sha`; an existing branch is a 409. */
+export function createBranch(target: GithubCommitTarget, branch: string, sha: string): Promise<void>;
+
+/** One paced GitHub REST call with this module's error sentences. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function githubRequest(target: GithubCommitTarget, method: string, path: string, body?: unknown): Promise<any>;

@@ -398,6 +398,8 @@ export function updatePlan(input: {
   selfUpdate: boolean;
   latestVersion: string;
   installedVersion: string;
+  /** True when the site deploys from its own GitHub repository: the plan points to the Git core update. */
+  gitDeploy?: boolean;
 }): UpdatePlan;
 
 export function applyDeployHookUpdate(options: {

@@ -42,6 +42,7 @@ import {
   type PluginInstallStep,
 } from '../../../server/pluginInstaller.mjs';
 import { installPluginFromGit } from '../../../server/pluginGitInstaller.mjs';
+import { gitDeploysFor } from '../deployment';
 
 export const pluginsRouter = new Hono();
 
@@ -101,6 +102,7 @@ async function upload(c: Context): Promise<Response> {
   let source: PluginInstallSource;
   let deployHook: string;
   let mode: PluginHostMode | undefined;
+  let gitDeploys = false;
   try {
     const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
     config = await getRuntimeConfig();
@@ -120,6 +122,8 @@ async function upload(c: Context): Promise<Response> {
     // it — a host that writes `plugins/<id>/` asks its deploy hook to rebuild too, and the installer's own
     // warning says that the platform's build only picks the folder up once it is committed and pushed.
     deployHook = await deployHookUrl(config);
+    // A project connected to the repository deploys every commit itself; the hook would build it twice.
+    if (plan.mode === 'github') gitDeploys = await gitDeploysFor(config, token);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : statusOf(error) ?? 500;
     // `mode`, once the host question is answered, says which path refused: a host with no disk and no
@@ -135,7 +139,7 @@ async function upload(c: Context): Promise<Response> {
       const onStep = (step: PluginInstallStep) => send({ type: 'step', step, mode: plan.mode });
       try {
         const result = plan.mode === 'github'
-          ? await installPluginFromGit({ source, target: plan.target, optionStore, deployHook, onStep })
+          ? await installPluginFromGit({ source, target: plan.target, optionStore, deployHook, onStep, gitDeploys })
           : await installPlugin(source, null, onStep, { optionStore, deployHook });
         send({ type: 'result', result: { ...result, mode: plan.mode } });
       } catch (error) {

@@ -28,6 +28,7 @@
  * `handleAdminRequest` has, so `server.mjs` chains the two.
  */
 import { readFile } from 'node:fs/promises';
+import { VERCEL_DEPLOY_CONFIG_KEY, deploymentConnectionFrom, isGitDeployConnected, settingsIo } from './gitDeploy/connection.mjs';
 import { authorizePluginManager } from './pluginFiles.mjs';
 import { currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
 import {
@@ -61,6 +62,23 @@ import {
   selfUpdateSupport,
   startSelfUpdate,
 } from './selfUpdate.mjs';
+
+/**
+ * Whether this site deploys from its own GitHub repository through a connected Vercel project — read with
+ * the caller's own session. Any failure is `false`, which keeps the plan this route always made.
+ */
+async function gitDeployConnectedFor(config, headers) {
+  try {
+    const io = settingsIo({
+      supabaseUrl: config?.supabaseUrl,
+      supabaseKey: config?.supabasePublishableKey,
+      accessToken: String(headers?.authorization || '').replace(/^Bearer\s+/i, ''),
+    });
+    return isGitDeployConnected(deploymentConnectionFrom(await io.read(VERCEL_DEPLOY_CONFIG_KEY)));
+  } catch {
+    return false;
+  }
+}
 
 /** The status code a refusal carries, in step with `SchemaError`'s in `server/adminRoutes.mjs`. */
 const fail = (error) => ({
@@ -312,6 +330,7 @@ async function applyUpdate(body, headers, config, readOptions, readDeployHook, o
     selfUpdate: support.supported,
     latestVersion: answer.app.latest,
     installedVersion: installed,
+    gitDeploy: await gitDeployConnectedFor(config, headers),
   });
 
   if (plan.up_to_date) return { status: 200, body: { ...plan, check: reported } };

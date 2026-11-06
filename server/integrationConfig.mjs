@@ -65,7 +65,10 @@ export const INTEGRATION_CONFIG_KEYS = [
  * A key added here is therefore refused to every role but those two, so it is a deliberate decision
  * rather than a description: `admin`, `storage` and `theme_settings` are *not* in it.
  */
-export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY];
+/** The client's sealed Vercel token and connected project (`server/gitDeploy/connection.mjs`). */
+export const VERCEL_DEPLOY_CONFIG_KEY = 'vercel_deploy_config';
+
+export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, VERCEL_DEPLOY_CONFIG_KEY];
 
 // -- Normalising ---------------------------------------------------------------------------------
 //

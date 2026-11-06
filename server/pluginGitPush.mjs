@@ -335,9 +335,14 @@ function assertWritable(path, allowPaths) {
  * intermediate trees itself, which is what lets a first install be a single commit.
  */
 export async function commitFiles(target, options) {
-  const { message, files, base, deletions = [], allowPaths = [] } = options;
-  for (const file of files) assertWritable(file.path, allowPaths);
-  for (const path of deletions) assertWritable(path, allowPaths);
+  const { message, files, base, deletions = [], allowPaths = [], pathPolicy = null, ref = null } = options;
+  // `pathPolicy` replaces the plugin-folder rule for a caller that has its own, narrower list of what it
+  // may write (the core updater, `server/gitDeploy/coreUpdate.mjs`). The segment checks still apply.
+  const check = typeof pathPolicy === 'function'
+    ? (path) => { assertSafeSegments(path); pathPolicy(path); }
+    : (path) => assertWritable(path, allowPaths);
+  for (const file of files) check(file.path);
+  for (const path of deletions) check(path);
   const where = `${target.owner}/${target.repo}@${target.branch}`;
 
   const writes = files.map((file) => ({
@@ -401,6 +406,20 @@ export async function commitFiles(target, options) {
   }
   const deletionsSkipped = droppedDeletions ? deletions : [];
 
+  // Idempotency: a retry of an install or update that already landed produces exactly the tree the branch
+  // already has. Committing it again would add an empty commit and start a second, identical deployment.
+  if (treeSha === base.treeSha) {
+    return {
+      sha: base.commitSha,
+      url: `https://github.com/${target.owner}/${target.repo}/commit/${base.commitSha}`,
+      repository: where,
+      files: writes.length,
+      deletions: 0,
+      deletionsSkipped: [],
+      unchanged: true,
+    };
+  }
+
   const commit = await request(target, 'POST', `/repos/${target.owner}/${target.repo}/git/commits`, {
     message,
     tree: treeSha,
@@ -409,12 +428,16 @@ export async function commitFiles(target, options) {
   const sha = asString(commit?.sha);
   if (!sha) throw new InstallError('GitHub created the commit but returned no id for it. The branch was not moved; try again.', 502);
 
-  await request(target, 'PATCH', `/repos/${target.owner}/${target.repo}/git/refs/heads/${encodeURIComponent(target.branch)}`, {
-    sha,
-    force: false,
-  });
+  // `ref: { create: 'name' }` puts the commit on a new branch and leaves the production branch alone (the
+  // core updater fast-forwards it afterwards, or opens a pull request). The default moves `target.branch`.
+  if (ref && typeof ref.create === 'string') {
+    await createBranch(target, ref.create, sha);
+  } else {
+    await fastForwardBranch(target, target.branch, sha);
+  }
 
   return {
+    unchanged: false,
     sha,
     url: asString(commit?.html_url) || `https://github.com/${target.owner}/${target.repo}/commit/${sha}`,
     repository: where,
@@ -422,6 +445,50 @@ export async function commitFiles(target, options) {
     deletions: removed.length - deletionsSkipped.length,
     deletionsSkipped,
   };
+}
+
+/**
+ * Moves `branch` to `sha`, but only forward. `force: false` makes GitHub refuse (422 "Update is not a
+ * fast forward") when the branch gained a commit after it was read — someone pushed, or a second install
+ * finished first. That refusal is the stale-SHA check: nothing is overwritten, and the caller is told to
+ * try again against the branch as it now is.
+ */
+export async function fastForwardBranch(target, branch, sha) {
+  try {
+    await request(target, 'PATCH', `/repos/${target.owner}/${target.repo}/git/refs/heads/${encodeURIComponent(branch)}`, {
+      sha,
+      force: false,
+    });
+  } catch (error) {
+    if (error instanceof InstallError && /HTTP 422/.test(error.message) && /fast.?forward/i.test(error.message)) {
+      throw new InstallError(`Branch "${branch}" of ${target.owner}/${target.repo} changed while this change was being prepared, so it was not moved and nothing was overwritten. Try again: the next attempt starts from the branch as it is now.`, 409);
+    }
+    throw error;
+  }
+}
+
+/** Creates `refs/heads/<branch>` at `sha`; an existing branch of that name is a 409, never overwritten. */
+export async function createBranch(target, branch, sha) {
+  if (!branchPattern.test(branch)) throw new InstallError(`"${branch}" is not a branch name Git accepts.`, 400);
+  try {
+    await request(target, 'POST', `/repos/${target.owner}/${target.repo}/git/refs`, { ref: `refs/heads/${branch}`, sha });
+  } catch (error) {
+    if (error instanceof InstallError && /HTTP 422/.test(error.message) && /already exists/i.test(error.message)) {
+      throw new InstallError(`Branch "${branch}" already exists in ${target.owner}/${target.repo}, so it was left as it is. Delete it, or let the next attempt pick a new name.`, 409);
+    }
+    throw error;
+  }
+}
+
+/** One GitHub REST call with this module's pacing, retries and sentences — for the deployment engine. */
+export const githubRequest = (target, method, path, body) => request(target, method, path, body);
+
+/** The path rules every write obeys whatever else a caller allows: no absolute path, no `.`/`..` segment. */
+function assertSafeSegments(path) {
+  if (typeof path !== 'string' || !path) throw new InstallError('A file had no path.', 502);
+  if (path.startsWith('/') || path.includes('\\') || path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    throw new InstallError(`Refusing to commit "${path}": it does not name a file inside the repository.`, 500);
+  }
 }
 
 /** `POST /git/trees`, with the refusal GitHub deserves when a tree cannot be built. */

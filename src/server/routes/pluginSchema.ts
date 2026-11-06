@@ -39,6 +39,7 @@ import {
 import type { RuntimeConfig } from '../../lib/runtime';
 import { installPluginSchemaFor, pluginSchemaStatus, uninstallPlugin } from '../../../server/pluginUninstall.mjs';
 import { pluginFolderRemover } from '../../../server/pluginGitUninstall.mjs';
+import { gitDeploysFor } from '../deployment';
 
 export const pluginSchemaRouter = new Hono();
 
@@ -143,11 +144,13 @@ type PluginFolderRemover = ReturnType<typeof pluginFolderRemover>;
  * hook is lazy for the same reason and swallows its own failures (`deployHookUrl` answers ''), so an
  * uninstall never fails over a rebuild it could not ask for.
  */
-async function folderRemover(config: RuntimeConfig): Promise<PluginFolderRemover | undefined> {
+async function folderRemover(config: RuntimeConfig, accessToken = ''): Promise<PluginFolderRemover | undefined> {
   if (await detectPluginHostMode() === 'local') return undefined;
   return pluginFolderRemover({
     resolveTarget: () => githubTarget(config),
-    resolveDeployHook: () => deployHookUrl(config),
+    // A Vercel project connected to the repository deploys the removal commit itself; calling the hook as
+    // well would build that commit twice, so it is not called.
+    resolveDeployHook: async () => (await gitDeploysFor(config, accessToken) ? '' : deployHookUrl(config)),
   });
 }
 
@@ -253,7 +256,7 @@ async function uninstall(c: Context): Promise<Response> {
       catalogue: pluginCatalogueFromBuild(),
       readSetting: systemSettingReader(config),
       readActiveIds: () => readActiveIds(config),
-      removeFolder: body.deleteFolder === false ? undefined : await folderRemover(config),
+      removeFolder: body.deleteFolder === false ? undefined : await folderRemover(config, (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '')),
     }));
   } catch (error) {
     return fail(c, error);

@@ -29,7 +29,8 @@ import {
   unpack,
 } from './pluginInstaller.mjs';
 import { commitFiles, readBranch, readTextFile } from './pluginGitPush.mjs';
-import { addServerPluginImportToSource } from './serverPluginImports.mjs';
+import { addServerPluginImportToSource, removeServerPluginImportFromSource } from './serverPluginImports.mjs';
+import { PUBLIC_EDITION, currentEdition, isDevEditionPlugin } from '../src/lib/pluginEdition.js';
 
 /** Where a plugin's server routes are registered, as `plugins/README.md` documents. */
 const REGISTRY_PATH = 'server/plugins.mjs';
@@ -62,7 +63,7 @@ function pluginFolderIds(paths) {
  * the URL saved on Settings → Integrations → Deployments, resolved by the caller. The return value is the
  * shape that dialog renders.
  */
-export async function installPluginFromGit({ source, target, optionStore, deployHook, onStep = () => {} }) {
+export async function installPluginFromGit({ source, target, optionStore, deployHook, onStep = () => {}, expectedId = '', gitDeploys = false }) {
   if (installing) throw new InstallError('Another plugin is being installed right now. Wait for it to finish, then try again.', 409);
   installing = true;
   try {
@@ -81,6 +82,16 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
     if (!entries.has('index.tsx')) {
       throw new InstallError(`index.tsx is missing next to manifest.json. The build loads plugins from plugins/${manifest.id}/index.tsx.`);
     }
+    // The edition rule `registerPlugin` and `server/plugins.mjs` enforce at run time, enforced before the
+    // commit as well: a development-edition plugin must never enter a client's public-edition repository.
+    if (currentEdition() === PUBLIC_EDITION && isDevEditionPlugin(manifest.id)) {
+      throw new InstallError(`"${manifest.id}" is a development-edition plugin and is not installed on this edition of React-WP.`, 403);
+    }
+    // An update names the plugin it updates; a package for a different id is refused instead of being
+    // committed beside it (or over a different plugin's folder).
+    if (expectedId && manifest.id !== expectedId) {
+      throw new InstallError(`This package is plugin "${manifest.id}", not "${expectedId}", so it was not installed as an update of "${expectedId}". Nothing was committed.`, 409);
+    }
     const sql = sqlFiles(entries);
     // The function's own folder has no package.json; the repository the site is built from does.
     const rootPackage = await readTextFile(target, 'package.json').catch(() => null);
@@ -94,6 +105,24 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
     const files = [...entries].map(([name, bytes]) => ({ path: `${folder}/${name}`, content: bytes }));
 
     let registryChanged = false;
+    let registryRemoved = false;
+    if (!hasServer && previous.includes(`${folder}/server.mjs`)) {
+      // The previous version had server routes and this one has none: its import must leave the registry in
+      // the same commit, or the build would import a file the commit deletes. Only this plugin's line goes.
+      const current = await readTextFile(target, REGISTRY_PATH);
+      if (current !== null) {
+        let edit;
+        try {
+          edit = removeServerPluginImportFromSource(current, manifest.id);
+        } catch (error) {
+          throw new InstallError(`This version drops the plugin's server.mjs, but its import could not be removed from ${REGISTRY_PATH}, so nothing was committed: ${error?.message || error}`, 500);
+        }
+        if (edit.changed) {
+          registryRemoved = true;
+          files.push({ path: REGISTRY_PATH, content: encoder.encode(edit.source) });
+        }
+      }
+    }
     if (hasServer) {
       const current = await readTextFile(target, REGISTRY_PATH);
       if (current === null) {
@@ -120,7 +149,9 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
     const serverRoutes = { detected: hasServer, registered: hasServer && registryChanged };
     if (hasServer) onStep('registering-routes');
 
-    const warnings = [
+    const warnings = commit.unchanged ? [
+      `${commit.repository} already holds exactly this version of the plugin, so no commit was made — this is what a retried install looks like after the first attempt landed.`,
+    ] : [
       `${commit.repository} now has this plugin in one commit (${commit.sha.slice(0, 7)}): it becomes part of the site — and can be activated under Plugins — once that commit is built and deployed.`,
     ];
     if (previous.length) {
@@ -135,9 +166,22 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
     const pinWarning = await pinActivePluginsWithStore(optionStore, pluginFolderIds(base.paths.keys()));
     if (pinWarning) warnings.push(pinWarning);
 
+    if (registryRemoved) warnings.push(`This version has no server.mjs, so its import was removed from ${REGISTRY_PATH}; every other plugin's line was left as it was.`);
+
     onStep('triggering-rebuild');
-    const deploy = await triggerDeployHook(deployHook);
-    if (!deploy.configured) {
+    // A project connected to this repository through Vercel's Git integration deploys the commit by itself.
+    // Calling the deploy hook too would start a second build of the same commit, so it is skipped, and the
+    // dialog follows the deployment for this commit instead (GET /api/admin/deployment/status?sha=).
+    const deploy = gitDeploys
+      ? { configured: true, triggered: false, git: true, skipped: 'git-integration' }
+      : commit.unchanged
+        ? { configured: Boolean(deployHook), triggered: false, skipped: 'unchanged' }
+        : await triggerDeployHook(deployHook);
+    if (gitDeploys) {
+      warnings.push(commit.unchanged
+        ? 'No new deployment starts, because nothing was committed.'
+        : 'Vercel deploys this commit by itself (the project is connected to this repository). The plugin is part of the site once that deployment is READY; Settings → Integrations → GitHub & Vercel shows its state, and Plugins lists it as inactive until you activate it.');
+    } else if (!deploy.configured) {
       warnings.push('No rebuild was triggered: this deployment has no deploy hook, so a platform that builds from the repository does not know this commit exists. The plugin is in the repository already, so building or redeploying from there installs it. Create one (Vercel → the project → Settings → Git → Deploy Hooks) and paste it under Settings → Integrations → Deployments to have uploads redeploy themselves.');
     }
 
@@ -153,7 +197,10 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
         reason: `Nothing on this host has to be restarted: it is built from ${target.owner}/${target.repo}, and that platform redeploys when it builds the commit this upload just made.`,
       },
       warnings,
-      commit: { sha: commit.sha, url: commit.url, repository: commit.repository, branch: target.branch, deletions: commit.deletions },
+      commit: { sha: commit.sha, url: commit.url, repository: commit.repository, branch: target.branch, deletions: commit.deletions, unchanged: Boolean(commit.unchanged) },
+      // Only "pending": the commit exists, nothing is known about its deployment yet. The real state comes
+      // from Vercel (GET /api/admin/deployment/status?sha=), never from this answer.
+      deployment: gitDeploys && !commit.unchanged ? { sha: commit.sha, state: 'pending' } : null,
     };
   } finally {
     installing = false;

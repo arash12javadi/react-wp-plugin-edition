@@ -76,6 +76,9 @@ async function writeChecked(source) {
 
 export const readServerPluginImports = async () => parseRegistry(await readFile(registryPath, 'utf8')).folders;
 
+/** The plugin folders a registry source imports — what the core updater carries onto a new release's copy. */
+export const serverPluginImportsFromSource = (source) => parseRegistry(source).folders;
+
 /**
  * The edit, without touching the filesystem: returns the source that imports <folder>'s server.mjs.
  *

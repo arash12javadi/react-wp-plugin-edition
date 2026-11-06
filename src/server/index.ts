@@ -33,6 +33,7 @@ import { pluginSchemaRouter } from './routes/pluginSchema';
 import { updatesRouter } from './routes/updates';
 import { registerCentralUpdateRoutes } from './routes/centralUpdates';
 import { registerIntegrationRoutes } from './integrations';
+import { registerDeploymentRoutes } from './deployment';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
 import { PLATFORM_SETTING_KEYS } from '../../server/integrationConfig.mjs';
@@ -714,6 +715,10 @@ app.route('/api/admin', updatesRouter);
 // -- Settings → Integrations ---------------------------------------------------
 // The status read and the three credential tests, at the paths the shared module owns.
 registerIntegrationRoutes(app);
+
+// -- Settings → Integrations → GitHub & Vercel ------------------------------------
+// The client's own repository and Vercel project, deployment status and Git-based core updates.
+registerDeploymentRoutes(app);
 
 // -- The core AI assistant -----------------------------------------------------
 // The status read and the one rewrite, at the path the shared module owns. Mounted here rather than in

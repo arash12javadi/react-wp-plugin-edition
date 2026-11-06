@@ -124,7 +124,7 @@ export const MANAGED_MESSAGES = {
    * changed, so it is never an instruction. The screen hides a button it cannot honour, and this sentence is
    * what the space under it says instead.
    */
-  cannot_apply: 'React-WP.com publishes this site’s releases and installs them for you, so there is nothing to change here. If a release has not arrived within a day of being published, contact React-WP support.',
+  cannot_apply: 'This host cannot install a release by itself. The site owner applies it through the site’s own GitHub repository: Settings → Integrations → GitHub & Vercel → Update core. React-WP.com publishes releases but does not deploy sites.',
   /**
    * The same host, but this site *is* connected to a platform that can redeploy it (`mode: 'platform'`). This
    * is the reason line the button sits under, so it says what the button does and what it does not touch.
@@ -1080,7 +1080,10 @@ export const managedUpdateSupport = (support) => {
  *
  * @param {{ token?: string, central_url?: string }} config the `updates_config` row
  */
-export const platformRedeployFrom = (config) => Boolean(trimmed(config?.token));
+export const platformRedeployFrom = () => false;
+// Always false now: react-wp.com no longer rebuilds customer sites or holds their hosting credentials
+// (`server/platformInstaller.mjs` answers 410). A site whose host cannot install a package updates through
+// its own GitHub repository instead — Settings → Integrations → GitHub & Vercel → Update core.
 
 /**
  * The one plan a managed site has when its host cannot install anything: the platform rebuilds it.
@@ -1163,7 +1166,7 @@ export async function triggerDeployHookUrl(hook, { fetchImpl = fetch, env } = {}
  *
  * @param {{ config: any, deployHook: string, selfUpdate: boolean, latestVersion: string, installedVersion: string }} input
  */
-export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, installedVersion }) => {
+export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, installedVersion, gitDeploy = false }) => {
   if (!isVersion(latestVersion)) {
     return { mode: 'manual', reason: 'No release is known yet. Run a check for updates first, then try again.', steps: [] };
   }
@@ -1173,6 +1176,17 @@ export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, inst
       up_to_date: true,
       reason: `This site already runs ${installedVersion}, which is the latest release it can see.`,
       steps: [],
+    };
+  }
+  // A site that deploys from its own GitHub repository is updated by committing the release there; the
+  // deploy hook would only rebuild the commit it already runs. The card that does the commit plans the
+  // merge, asks about conflicts and follows the deployment, so this screen points to it.
+  if (gitDeploy) {
+    return {
+      mode: 'manual',
+      reason: `This site deploys from its own GitHub repository. Apply ${latestVersion} under Settings → Integrations → GitHub & Vercel → Update React-WP core: it commits the release there (keeping your plugins) and Vercel deploys it.`,
+      steps: [],
+      git: true,
     };
   }
   if (trimmed(deployHook)) {
@@ -1277,6 +1291,9 @@ export async function requestPlatformInstall({ config, site, version = '', env, 
   if (response.status === 404 && body?.success !== false) throw new UpdateError(MANAGED_MESSAGES.no_install_api, 502);
   // The platform names *why* it refused (`code`), and the two 404s are different problems with different
   // owners. Neither sentence carries a variable name or a project name: those belong to the operator.
+  if (response.status === 410 || body?.code === 'platform_install_retired') {
+    throw new UpdateError(String(body?.error || MANAGED_MESSAGES.cannot_apply), 410);
+  }
   if (body?.code === 'no_project_recorded') throw new UpdateError(MANAGED_MESSAGES.install_no_project, 502);
   if (body?.code === 'project_not_found') throw new UpdateError(MANAGED_MESSAGES.install_project_missing, 502);
   if (body?.code === 'no_credential') throw new UpdateError(MANAGED_MESSAGES.install_no_credential, 502);

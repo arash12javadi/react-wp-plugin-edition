@@ -1,0 +1,171 @@
+/* Settings → Integrations → GitHub & Vercel. Logical properties, so dir="rtl" mirrors it. */
+
+.card,
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.step {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.step legend {
+  padding-inline: 4px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.86rem;
+  color: #334155;
+}
+
+.field input,
+.field select {
+  max-width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.row button,
+.primary {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 7px 14px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary {
+  border-color: #2563eb;
+  color: #fff;
+  background: #2563eb;
+}
+
+.row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.choices {
+  display: grid;
+  gap: 6px;
+}
+
+.small {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+.errorText,
+.noticeText {
+  margin: 0;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.errorText {
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.noticeText {
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.steps {
+  margin: 0;
+  padding-inline-start: 20px;
+  font-size: 0.84rem;
+  color: #334155;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.facts dt {
+  color: #64748b;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.subhead {
+  margin: 8px 0 0;
+  font-size: 0.95rem;
+}
+
+.plan {
+  display: grid;
+  gap: 8px;
+}
+
+.conflict {
+  display: grid;
+  gap: 4px;
+  padding-block: 6px;
+  border-block-end: 1px solid #f1f5f9;
+}
+
+.watch p {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.ok {
+  color: #15803d;
+}
+
+.bad {
+  color: #b91c1c;
+}
+
+.wait {
+  color: #b45309;
+}
+
+@media (max-width: 560px) {
+  .facts {
+    grid-template-columns: 1fr;
+  }
+}

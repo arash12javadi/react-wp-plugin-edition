@@ -670,6 +670,15 @@ export default function SetupWizard({ onComplete, onAlreadyInstalled }: SetupWiz
                   </div>
                 )}
 
+                <div className={styles.guideBox}>
+                  <strong>Last step, after you sign in:</strong> connect this site to your own GitHub repository and
+                  Vercel project under <strong>Settings → Integrations → GitHub</strong> and then{' '}
+                  <strong>GitHub &amp; Vercel</strong>. You enter your GitHub and Vercel tokens there once; from then on
+                  plugin installs and core updates are committed to your repository and Vercel deploys them. Your tokens
+                  stay on this site — React-WP.com never receives them. This needs <code>RWP_SECRET_BOX_KEY</code> in
+                  this server&apos;s environment.
+                </div>
+
                 {verifyStatus && <p className={styles.guideBox}>{verifyStatus}</p>}
 
                 <div className={styles.buttonRow}>
