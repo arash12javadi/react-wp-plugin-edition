@@ -194,9 +194,11 @@ async function closeAdapter(db: DBAdapter | null): Promise<void> {
 
 /** GET /api/health — probes the configured backend. Bounded, and always JSON. */
 app.get('/api/health', async (c) => {
-  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
-  const fileConfig = await readConfigFile();
-  const config = { ...bodyToConfig(env as Record<string, unknown>), ...(fileConfig ?? {}) };
+  // The resolver every other route uses: environment variables by their real names (VITE_SUPABASE_URL, …),
+  // then data/react-wp-config.json. It used to be `bodyToConfig(process.env)` — the Setup Wizard's request-body
+  // parser, which knows `supabaseUrl`, not `VITE_SUPABASE_URL` — so every site configured only by its
+  // environment (all Vercel sites) answered 503 "Supabase is not configured" while serving pages normally.
+  const config = await getRuntimeConfig();
   let db: DBAdapter | null = null;
   try {
     const opened = await createServerDbAdapter(config);

@@ -981,10 +981,15 @@ export async function checkForUpdates({ config, current, plugins, github = null,
   if (owner && !source && !config.token) {
     throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
   }
-  /** GitHub first when the administrator named the repository, and always when there is no token to ask. */
+  /**
+   * GitHub first when the administrator named the repository, and always when there is no token to ask.
+   * The central server comes after it even without a token: its check is public, and it is the only answer
+   * a site built from a *private* template can get — such a site cannot read the template's tags itself
+   * (GitHub answers 404/401), which used to end the check with that refusal.
+   */
   const order = owner
     ? (source && (source.explicit || !config.token)
-      ? ['github', ...(config.token ? ['central'] : [])]
+      ? ['github', 'central']
       : [...(config.token ? ['central'] : []), ...(source ? ['github'] : [])])
     : ['central'];
   /** `{ message, status }` per source that refused, in the order they were tried. */
@@ -999,7 +1004,8 @@ export async function checkForUpdates({ config, current, plugins, github = null,
         ...releases,
         current,
         plugins_installed: plugins,
-        error: failures.map((failure) => failure.message).join(' '),
+        // A source that refused before this one answered is a note, not the verdict.
+        error: failures.length ? `Answered by ${attempt === 'central' ? 'the central server' : 'GitHub'}; the first source could not be read: ${failures.map((failure) => failure.message).join(' ')}` : '',
         // End users see the core only. Plugin releases follow their own lifecycle, never this button.
         coreOnly: !owner,
       });
