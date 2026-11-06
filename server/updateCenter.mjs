@@ -334,7 +334,10 @@ export const githubUpdateSourceFrom = (env, stored, configured, fallbackRepo = '
     || trimmed(row.repository)
     || (repoFrom(installerTemplate) ? installerTemplate : '');
   const token = trimmed(environment.RWP_RELEASE_TOKEN) || trimmed(environment.GITHUB_TOKEN) || githubTokenFrom(row);
-  return repoFrom(repo) ? { repo, token, explicit } : null;
+  // `pinned`: the deployment's own environment names the repository (what the first-install page sets on a
+  // client's Vercel project), so the screen shows no field for it — a client has nothing to choose there.
+  const pinned = !explicit && trimmed(environment.RWP_RELEASE_REPO).length > 0 && repo === trimmed(environment.RWP_RELEASE_REPO);
+  return repoFrom(repo) ? { repo, token, explicit, pinned } : null;
 };
 
 /**
@@ -352,8 +355,9 @@ export const describeGithubSource = (source, owner = true) => (owner
     repo: trimmed(source?.repo),
     has_token: trimmed(source?.token).length > 0,
     configured: trimmed(source?.repo).length > 0,
+    pinned: source?.pinned === true,
   }
-  : { repo: '', has_token: false, configured: false });
+  : { repo: '', has_token: false, configured: false, pinned: false });
 
 /**
  * The stored configuration, read the way this deployment can read `system_settings` — through the

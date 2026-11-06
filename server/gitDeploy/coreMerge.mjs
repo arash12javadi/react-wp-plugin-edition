@@ -215,5 +215,13 @@ export function mergePackageJson({ releaseSource, repoSource, baseSource = null 
       carried.push(`${name}@${range}`);
     }
   }
+  // The installer chains the bundle lock (`node scripts/rwp-lock-bundle.mjs`) onto this repository's build.
+  // The release's own build script does not carry it, so replacing it would silently ship a readable bundle.
+  const lockStep = 'node scripts/rwp-lock-bundle.mjs';
+  const oursBuild = typeof ours?.scripts?.build === 'string' ? ours.scripts.build : '';
+  const nextBuild = typeof next?.scripts?.build === 'string' ? next.scripts.build : '';
+  if (oursBuild.includes('rwp-lock-bundle.mjs') && nextBuild && !nextBuild.includes('rwp-lock-bundle.mjs')) {
+    next.scripts = { ...next.scripts, build: `${nextBuild} && ${lockStep}` };
+  }
   return { ok: true, source: `${JSON.stringify(next, null, 2)}\n`, carried };
 }

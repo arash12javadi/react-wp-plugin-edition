@@ -99,6 +99,8 @@ export interface GithubSourceView {
   repo: string;
   has_token: boolean;
   configured: boolean;
+  /** The repository is fixed by this deployment's environment (a client site made by the installer). */
+  pinned?: boolean;
 }
 
 /** What this host can do with an update. `reason` is written to be shown, never parsed. */

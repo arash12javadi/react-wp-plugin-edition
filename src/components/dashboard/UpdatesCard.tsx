@@ -827,9 +827,11 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
                   {' '}A release is published by tagging it: <code>v1.2.3</code>.
                   {' '}
                   <span className={styles.muted}>
-                    {form?.repository
-                      ? 'Named on this screen; empty it to use the GitHub integration’s repository instead.'
-                      : 'Named by the GitHub integration; set it above to check a different repository.'}
+                    {overview.github.pinned
+                      ? 'Set when this site was installed.'
+                      : form?.repository
+                        ? 'Named on this screen; empty it to use the GitHub integration’s repository instead.'
+                        : 'Named by the GitHub integration; set it above to check a different repository.'}
                   </span>
                   {navigate && (
                     <>
@@ -854,6 +856,7 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
           <form className={styles.formFields} onSubmit={save}>
             {isOwner && (
               <>
+                {!overview?.github?.pinned && (
                 <label className={styles.field}>
                   Release repository
                   <input
@@ -868,6 +871,7 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
                     (a public repository needs none). Empty means the repository the GitHub integration names.
                   </span>
                 </label>
+                )}
 
                 <label className={styles.field}>
                   Update server
