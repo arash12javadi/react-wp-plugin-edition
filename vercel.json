@@ -16,7 +16,8 @@
   ],
   "functions": {
     "api/**": {
-      "includeFiles": "plugin-sources/**"
+      "includeFiles": "plugin-sources/**",
+      "maxDuration": 60
     }
   }
 }

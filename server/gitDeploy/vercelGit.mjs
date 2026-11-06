@@ -128,7 +128,7 @@ export async function createGitProject(token, { name, repository, teamId = '', e
     const message = String(error?.message || '');
     if (/install|github app|git ?integration|repository.*(not found|access)|login connection|connect/i.test(message)
       && Number(error?.status) >= 400 && Number(error?.status) < 500) {
-      throw new DeployError(424, `Vercel could not connect to ${repository}: ${message} This is the one step an API token cannot do. Install Vercel's GitHub App for the account that owns the repository and give it access to ${repository} (${VERCEL_GITHUB_APP_URL}), then press Connect again — nothing was created.`, { code: 'github_app_missing' });
+      throw new DeployError(424, `Vercel could not connect to ${repository}: ${message} An API token cannot do this part. Check both: your Vercel account has GitHub connected (Vercel → Account Settings → Authentication), and Vercel's GitHub App is installed on the account that owns the repository with access to ${repository} (${VERCEL_GITHUB_APP_URL}). Then press Connect again — nothing was created.`, { code: 'github_app_missing', details: { vercelMessage: message } });
     }
     if (Number(error?.status) === 409 || /already exists/i.test(message)) {
       throw new DeployError(409, `A Vercel project called "${name}" already exists on this account, so a new one was not created. Pick it from the list if it deploys this repository, or choose another name.`, { code: 'project_exists' });
