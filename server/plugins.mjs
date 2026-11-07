@@ -40,9 +40,11 @@
 import { readAiConfig } from './integrationAi.mjs';
 import { currentEdition, editionKeepsPlugin } from '../src/lib/pluginEdition.js';
 import {
-  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds, licensedActivePluginIds,
+  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, applyLicenseGrace, defaultActivePluginIds, licensedActivePluginIds,
   pluginLicenseAddonFor, pluginLicenseGate, pluginLicenseState, readPluginLicenses,
 } from './pluginLicense.mjs';
+import { ensureRevocations } from './licenseRevocations.mjs';
+import { readJsonState, writeJsonState } from './licenseStore.mjs';
 
 const loaded = await Promise.allSettled([
   // rwp:server-plugin-imports:start
@@ -86,11 +88,28 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
  * none of the sold ones is" (`defaultActivePluginIds`), so the four commercial plugins are off until
  * somebody activates them; when the option is present, `licensedActivePluginIds` drops any sold plugin
  * whose key does not verify, so "active" here is always a state the site is allowed to be in.
- * `licenses: null` means the license option could not be read at all, which the gate treats as
- * "unknown" rather than as "nothing licensed" - see pluginLicenseGate().
+ * `licenses: null` means the license option could not be read and no good verdict is held within the
+ * grace window (`LICENSE_GRACE_MS`, 72 h): the gate treats that as LOCKED, not as unknown-so-open -
+ * see pluginLicenseGate() and applyLicenseGrace(). `licensesAt` is when the held verdict was last read
+ * successfully; it is also persisted (`data/license-cache.json`, when the host can write) so a restart
+ * during a database outage does not forget it.
  */
-const optionCache = { at: 0, active: null, licenses: null };
+const optionCache = { at: 0, active: null, licenses: null, licensesAt: 0 };
 const OPTION_CACHE_MS = 30_000;
+const LICENSE_CACHE_FILE = 'license-cache.json';
+let licenseCacheLoaded = false;
+let lastPersistedAt = 0;
+
+/** Restores the last good verdict from disk once per process, so a cold start can still ride out an outage. */
+const loadLicenseCache = () => {
+  if (licenseCacheLoaded) return;
+  licenseCacheLoaded = true;
+  const saved = readJsonState(LICENSE_CACHE_FILE);
+  if (saved && typeof saved === 'object' && Number.isFinite(saved.at) && saved.licenses && typeof saved.licenses === 'object') {
+    optionCache.licenses = readPluginLicenses(saved.licenses);
+    optionCache.licensesAt = saved.at;
+  }
+};
 
 /**
  * Mirrors App.tsx: a missing rwp_active_plugins option means every free plugin is active and the four
@@ -117,19 +136,42 @@ async function readPluginOptions(supabaseUrl, supabaseKey, { fresh = false } = {
     }
   };
   // The activation option decides whether a plugin answers at all, so failing to read it is an error.
-  // The license option only decides whether a *commercial* plugin answers: taking a working shop down
-  // because the key store hiccuped would be worse than honouring what is already known, so that
-  // failure is logged and the previous answer (or "unknown") is kept.
+  // The license option only decides whether a *commercial* plugin answers. A failed read does NOT unlock
+  // anything: the last good verdict is honoured for the grace window (72 h) so a short database outage
+  // does not take a paying customer's shop down, and after that the sold plugins lock. The reason is
+  // logged; the keys never are.
+  loadLicenseCache();
+  let readOk = true;
   const [active, licenses] = await Promise.all([
     read('rwp_active_plugins'),
     read(PLUGIN_LICENSES_OPTION).catch((error) => {
-      console.error('The plugin license option could not be read:', error);
+      readOk = false;
+      console.error('The plugin license option could not be read:', error instanceof Error ? error.message : String(error));
       return undefined;
     }),
   ]);
-  optionCache.at = Date.now();
+  const now = Date.now();
+  optionCache.at = now;
   optionCache.active = Array.isArray(active) ? active : null;
-  if (licenses !== undefined) optionCache.licenses = readPluginLicenses(licenses);
+  const verdict = applyLicenseGrace(
+    { licenses: optionCache.licenses, at: optionCache.licensesAt },
+    readOk ? { ok: true, licenses: readPluginLicenses(licenses) } : { ok: false },
+    { now },
+  );
+  if (verdict.degraded && verdict.licenses === null && optionCache.licenses) {
+    console.error('The plugin license option has been unreadable for longer than the 72-hour grace window: sold plugins are locked until it can be read.');
+  }
+  const changed = JSON.stringify(verdict.licenses) !== JSON.stringify(optionCache.licenses);
+  optionCache.licenses = verdict.licenses;
+  optionCache.licensesAt = verdict.at;
+  // Persisted on change and at most hourly otherwise, so the stored clock stays close to the real one
+  // without a file write every 30 seconds.
+  if (!verdict.degraded && (changed || now - lastPersistedAt > 60 * 60 * 1000)) {
+    if (writeJsonState(LICENSE_CACHE_FILE, { licenses: verdict.licenses, at: verdict.at })) lastPersistedAt = now;
+  }
+  // Revocation list: a bounded wait on the first call of a process, background afterwards, and a failure
+  // never locks or unlocks anything (server/licenseRevocations.mjs).
+  await ensureRevocations();
   return optionCache;
 }
 
@@ -244,7 +286,7 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
           status: 'unknown',
           addon,
           pluginId: plugin.id,
-          message: `The stored license keys could not be read, so ${plugin.id} keeps answering as it did. Reload this screen in a moment.`,
+          message: `The stored license keys could not be read and no recent verdict is held, so ${plugin.id} is locked until they can be. Reload this screen in a moment.`,
         },
       };
     }

@@ -501,7 +501,8 @@ export default function UpdatesCard({ role, onStatus, navigate }: {
   // Owner view (the server sets `owner_commit_view` only for the owner on a deployment that names
   // `OWNER_GITHUB_REPO`): no Update now / source / schedule controls, just the latest dev-edition commit and
   // the latest release. One check runs on its own so both are filled without a click.
-  const ownerView = isOwner && Boolean(overview?.owner_commit_view);
+  // The server decides (platform owner, narrowed by RWP_OWNER_EMAIL), so a `super_admin` owner gets it too.
+  const ownerView = Boolean(overview?.owner_commit_view);
   useEffect(() => {
     if (!ownerView || check) return;
     let cancelled = false;

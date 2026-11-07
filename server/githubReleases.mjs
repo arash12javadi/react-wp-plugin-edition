@@ -246,7 +246,7 @@ export const releaseNotesText = (release) => (release?.notes || []).join('\n');
  * @param {{ name: string, url: string, token?: string, fetchImpl?: typeof fetch }} options
  * @returns {Promise<any[]>}
  */
-async function githubList({ name, url, token = '', fetchImpl = fetch }) {
+export async function githubList({ name, url, token = '', fetchImpl = fetch }) {
   const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': GITHUB_API_VERSION,

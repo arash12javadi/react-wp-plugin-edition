@@ -1,0 +1,97 @@
+/* Plugins → Plugin updates. Logical properties, so dir="rtl" mirrors it. */
+
+.panel {
+  display: grid;
+  gap: 10px;
+  margin-block: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.help,
+.small {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.button {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.primary {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notes {
+  margin: 0;
+  padding-inline-start: 18px;
+  font-size: 0.84rem;
+  color: #334155;
+}
+
+.ok {
+  color: #15803d;
+}
+
+.warn {
+  color: #b45309;
+}
+
+.error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.86rem;
+}

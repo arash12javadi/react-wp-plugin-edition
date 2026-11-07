@@ -42,7 +42,7 @@ const STATE_LABELS: Record<DeploymentState['state'], string> = {
 };
 
 /** Follows one commit until Vercel reports a final state. Polls every 5 s, stops after 30 minutes. */
-function DeploymentWatcher({ sha, since }: { sha: string; since: string }) {
+export function DeploymentWatcher({ sha, since }: { sha: string; since: string }) {
   const [state, setState] = useState<DeploymentState | null>(null);
   const [error, setError] = useState('');
   const started = useRef(Date.now());

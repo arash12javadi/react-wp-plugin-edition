@@ -998,13 +998,20 @@ const server = http.createServer(async (request, response) => {
       json(request, response, 405, { error: 'Method not allowed' });
       return;
     }
-    if (url.pathname.startsWith('/api/plugins/')) {
+    // The signed licence revocation list is published at a stable, vendor-neutral address
+    // (`/api/v1/licenses/revoked`, next to the update API) and answered by the marketplace plugin's own
+    // route, which holds the table and the signing key. It is the same handler on every host; Vercel does it
+    // with a rewrite in `vercel.json`. A GET only: anything else falls through to the 404 below.
+    const licensePluginPath = request.method === 'GET' && url.pathname === '/api/v1/licenses/revoked'
+      ? '/api/plugins/rwp-plugin-marketplace/licenses/revoked'
+      : url.pathname;
+    if (licensePluginPath.startsWith('/api/plugins/')) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const config = publicConfig(await readConfig());
       const result = await handlePluginRequest({
         method: request.method,
-        path: url.pathname.slice('/api/plugins/'.length),
+        path: licensePluginPath.slice('/api/plugins/'.length),
         query: Object.fromEntries(url.searchParams),
         headers: request.headers,
         // Kept raw: Stripe webhook signatures are computed over the exact bytes received.

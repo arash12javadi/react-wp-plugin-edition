@@ -6,6 +6,10 @@
       "destination": "/api/plugins?__path=:path*"
     },
     {
+      "source": "/api/v1/licenses/revoked",
+      "destination": "/api/plugins?__path=rwp-plugin-marketplace/licenses/revoked"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index"
     },

@@ -226,7 +226,7 @@ export default function MyPurchases() {
           className={styles.input}
           value={newKey}
           onChange={(event) => setNewKey(event.target.value)}
-          placeholder="RWPM-… or RWP1-…"
+          placeholder="RWPM-… or RWP2-…"
           onKeyDown={(event) => { if (event.key === 'Enter') void addKey(); }}
         />
         <button type="button" className={styles.primary} onClick={() => void addKey()} disabled={!newKey.trim()}>

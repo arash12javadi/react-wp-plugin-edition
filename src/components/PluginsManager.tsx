@@ -9,12 +9,14 @@ import {
   isCommercialPlugin,
   pluginActivationLocked,
   pluginLicenseAddonFor,
+  isLegacyPluginLicenseKey,
   pluginLicenseKeyFrom,
   pluginLicenseParts,
   readPluginLicenses,
 } from '../lib/pluginLicense';
 import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './BulkActions';
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
+import PluginUpdatesPanel from './PluginUpdatesPanel';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
 import { installPluginSchema } from '../lib/pluginSchema';
@@ -35,8 +37,8 @@ const SHOP_URL = PLUGIN_LICENSE_SHOP_URL;
  *
  * `required: false` is the common case - a plugin that is not one of the four sold ones - and it is
  * the server that decides, not this screen: the commercial set is `COMMERCIAL_PLUGIN_ADDONS`
- * (`src/lib/pluginLicense.js`), and the key it is checked against is verified there with a secret a
- * browser must never hold.
+ * (`src/lib/pluginLicense.js`), and the key it is checked against is verified there against the vendor's public key; a
+ * browser never needs the private half.
  */
 interface PluginLicenseReport {
   success: boolean;
@@ -435,7 +437,9 @@ export default function PluginsManager() {
     if (pasted) {
       const parts = pluginLicenseParts(pasted);
       if (!parts) {
-        setError('That is not a license key: a key reads RWP1-ADDON-YYYYMMDD-SIGNATURE, for example RWP1-SHOP-20270630-4K7QM2XZ8B.');
+        setError(isLegacyPluginLicenseKey(pasted)
+          ? 'That is an old-format (RWP1) key, which is no longer accepted. Request a replacement RWP2 key from your vendor or at react-wp.com/plugins.'
+          : 'That is not a license key: a key reads RWP2-ADDON-YYYYMMDD-SERIAL-SIGNATURE (about 140 characters). Paste it whole.');
         return;
       }
       const addon = pluginLicenseAddonFor(plugin.plugin_id);
@@ -648,6 +652,7 @@ export default function PluginsManager() {
           </div>
         </div>
       </div>
+      <PluginUpdatesPanel />
       {uploadOpen && (
         <PluginUploadModal
           initialResult={pendingInstall}
@@ -847,7 +852,7 @@ export default function PluginsManager() {
                                     ...current,
                                     [plugin.plugin_id]: event.target.value,
                                   }))}
-                                  placeholder={`RWP1-${pluginLicenseAddonFor(plugin.plugin_id)}-20270630-XXXXXXXXXX`}
+                                  placeholder={`RWP2-${pluginLicenseAddonFor(plugin.plugin_id)}-20270630-…`}
                                   autoComplete="off"
                                   spellCheck={false}
                                   inputMode="text"

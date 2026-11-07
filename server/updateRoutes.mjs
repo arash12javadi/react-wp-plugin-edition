@@ -30,7 +30,7 @@
 import { readFile } from 'node:fs/promises';
 import { VERCEL_DEPLOY_CONFIG_KEY, deploymentConnectionFrom, isGitDeployConnected, settingsIo } from './gitDeploy/connection.mjs';
 import { authorizePluginManager } from './pluginFiles.mjs';
-import { currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
+import { authorizePlatformOwner, currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
 import {
   AUTO_CHECK_KEYS,
   PLUGIN_DIRECTORY_PATH,
@@ -158,6 +158,18 @@ async function requireManager(config, headers) {
  * updates come from. A provisioned `super_admin` (or a role granted `manage_options`) is an end user, so
  * this answers `false` and the routes below redact GitHub and force the central source.
  */
+/**
+ * Who sees the owner's latest-commit view (Dashboard → Updates when OWNER_GITHUB_REPO is set): the platform owner
+ * — an administrator or super_admin, narrowed to RWP_OWNER_EMAIL when that is set — whatever the update-channel
+ * role is. Only the commit view widens; the GitHub source, deploy hook and Update now still follow viewerOwner.
+ */
+const viewerCommitOwner = async (config, headers) => {
+  if (!ownerCommitView(true)) return false;
+  const token = (headers?.authorization || '').replace(/^Bearer\s+/i, '');
+  const permission = await authorizePlatformOwner(config?.supabaseUrl, config?.supabasePublishableKey, token);
+  return permission.ok;
+};
+
 const viewerOwner = async (config, headers) => {
   const token = (headers?.authorization || '').replace(/^Bearer\s+/i, '');
   return isUpdateOwnerRole(await currentUserRole(config?.supabaseUrl, config?.supabasePublishableKey, token));
@@ -170,7 +182,7 @@ const viewerOwner = async (config, headers) => {
 const pluginList = (value) => installedPluginsFrom(value);
 
 /** GET /api/admin/updates — everything the screen needs before it offers a button. */
-async function overview({ readOptions, owner = true }) {
+async function overview({ readOptions, owner = true, commitOwner = owner }) {
   const stored = await readUpdatesConfig(readOptions);
   // An end user's site installs a package and nothing else: the probe behind `selfUpdateSupport` (a git
   // checkout, a deploy hook) describes ways of updating that are not theirs to choose, so the two branches
@@ -197,12 +209,12 @@ async function overview({ readOptions, owner = true }) {
     plugin_directory: PLUGIN_DIRECTORY_PATH,
     channels: UPDATE_CHANNELS,
     auto_check: AUTO_CHECK_KEYS,
-    owner_commit_view: ownerCommitView(owner),
+    owner_commit_view: ownerCommitView(commitOwner),
   };
 }
 
 /** POST /api/admin/updates/check { plugins?: [{ id, name?, version }], site? } */
-async function check(body, config, readOptions, owner = true) {
+async function check(body, config, readOptions, owner = true, commitOwner = owner) {
   const stored = await readUpdatesConfig(readOptions);
   const plugins = pluginList(body.plugins);
   const installed = await installedFor(stored, owner);
@@ -222,7 +234,7 @@ async function check(body, config, readOptions, owner = true) {
     config: describeUpdateConfig(stored.config, owner),
     github: describeGithubSource(stored.github, owner),
     readable: stored.readable,
-    latestCommit: await latestCommitFor({ owner }),
+    latestCommit: await latestCommitFor({ owner: commitOwner }),
   };
 }
 
@@ -394,7 +406,7 @@ export async function handleUpdateRequest({
     const owner = await viewerOwner(config, headers);
     if (pathname === '/api/admin/updates') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
-      return { status: 200, body: await overview({ config, readOptions, owner }) };
+      return { status: 200, body: await overview({ config, readOptions, owner, commitOwner: await viewerCommitOwner(config, headers) }) };
     }
     if (pathname === '/api/admin/system/update-status') {
       if (method !== 'GET') return { status: 405, body: { error: 'Method not allowed' } };
@@ -402,7 +414,7 @@ export async function handleUpdateRequest({
     }
     if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
     if (pathname === '/api/admin/updates/check') {
-      return { status: 200, body: await check(body, config, readOptions, owner) };
+      return { status: 200, body: await check(body, config, readOptions, owner, await viewerCommitOwner(config, headers)) };
     }
     return await applyUpdate(body, headers, config, readOptions, readDeployHook, owner);
   } catch (error) {

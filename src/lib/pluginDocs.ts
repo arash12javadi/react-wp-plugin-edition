@@ -425,7 +425,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
         items: [
           'Checkout reads the price from the database, never from the browser, opens a USDT invoice on NOWPayments for a paid plugin, and mints the license from the IPN webhook once the payment is confirmed.',
           'Free plugins skip the gateway entirely: a SQL function re-checks that the price is zero and issues the key immediately.',
-          'For the four plugins sold separately the key is the signed RWP1-… entitlement the plugin’s own offline gate verifies; for a third-party plugin it is an opaque RWPM-… token that is bound to one domain and drives one-click updates.',
+          'For the four plugins sold separately the key is the signed RWP2-… entitlement the plugin’s own offline gate verifies; for a third-party plugin it is an opaque RWPM-… token that is bound to one domain and drives one-click updates.',
           'Every transaction is recorded, so revenue, refunds and re-issued keys can be traced to a session id.',
         ],
       },
@@ -473,7 +473,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
     steps: [
       'Activate the plugin: the Plugins screen runs schema.sql, which creates the four tables, their Row Level Security and the functions the store depends on.',
       'Create a public Supabase Storage bucket named rwp-plugin-packages for the uploaded .zip packages.',
-      'Set NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET, SUPABASE_SECRET_KEY and PLUGIN_LICENSE_SECRET in the server environment (and SITE_URL if the return URLs must be absolute), then redeploy: the IPN secret is what lets the payment callback be verified.',
+      'Set NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET, SUPABASE_SECRET_KEY and PLUGIN_LICENSE_PRIVATE_KEY in the server environment (and SITE_URL if the return URLs must be absolute), then redeploy: the IPN secret is what lets the payment callback be verified.',
       'Each NOWPayments invoice carries its own ipn_callback_url (/api/plugins/rwp-plugin-marketplace/crypto/webhook), which marks the order paid and mints the key — the webhook, not the browser, is what mints a license.',
       'Add [rwp_marketplace] to a page, or add a page at the slug plugins and the storefront at /plugins picks up the site chrome.',
       'Approve or reject submissions in Marketplace → Inventory, feature the ones worth featuring, then watch Marketplace → Sales & analytics.',
@@ -483,7 +483,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Nothing is trusted from the browser: prices and statuses are read in SQL, and key minting, auto-approval and domain binding are service_role-only functions.',
       'server/vet.mjs is a static scanner, not a sandbox. It is the first gate; a person still has to review Inventory before something is listed.',
       'Uninstalling drops all four tables, and the transactions and licenses go with them. Packages already uploaded to Supabase Storage under rwp-plugin-packages/ are not deleted — remove that folder yourself.',
-      'A third-party key is bound to one domain, so moving a site to a new address means binding the key again. The four sold plugins use the shared RWP1-… entitlement and are activated on Plugins → License instead.',
+      'A third-party key is bound to one domain, so moving a site to a new address means binding the key again. The four sold plugins use the signed RWP2-… entitlement and are activated on Plugins → License instead.',
     ],
   },
   'rwp-saas-installer': {

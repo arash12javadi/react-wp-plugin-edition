@@ -147,3 +147,23 @@ export const applyCoreUpdate = (input: { version: string; fingerprint: string; r
     result: { applied: boolean; merged: boolean; upToDate?: boolean; commit: { sha: string; url: string; branch: string } | null; pullRequest: { number: number; url: string } | null };
     deployment: { sha: string; state: 'pending' } | null;
   }>(`${BASE}/core-update/apply`, { method: 'POST', body: input });
+
+export interface PluginUpdateRow {
+  id: string;
+  name: string;
+  installed: string;
+  latest: string;
+  state: 'up-to-date' | 'available' | 'unavailable' | 'no-release';
+  reason: string;
+  release: { tag: string; title: string; released: string; notes: string[]; url: string; prerelease: boolean } | null;
+}
+
+/** Plugins are released on their own tags, apart from core: see `server/pluginUpdates.mjs`. */
+export const checkPluginUpdates = () =>
+  call<{ repository: string; releaseRepository: string; plugins: PluginUpdateRow[] }>(`${BASE}/plugin-updates/check`, { method: 'POST', body: {} });
+
+export const applyPluginUpdate = (input: { id: string; version: string }) =>
+  call<{
+    result: { update: { id: string; from: string; to: string; tag: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[]; sql: Array<{ path: string }> };
+    deployment: { sha: string; state: 'pending' } | null;
+  }>(`${BASE}/plugin-updates/apply`, { method: 'POST', body: input });

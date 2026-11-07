@@ -13,6 +13,8 @@
  *   GET  /api/admin/deployment/status?sha=           Vercel's state for one commit (gitDeploy/deploymentStatus.mjs)
  *   POST /api/admin/deployment/core-update/plan      `{ version? }` → the merge plan and its fingerprint
  *   POST /api/admin/deployment/core-update/apply     `{ version, fingerprint, resolutions, mode }`
+ *   POST /api/admin/deployment/plugin-updates/check  every installed plugin against its own `<id>-v<version>` release
+ *   POST /api/admin/deployment/plugin-updates/apply  `{ id, version }` → one commit under plugins/<id>/ (no core change)
  *
  * Every route spends or reveals the shape of a credential, so every route requires the **platform owner**
  * (`administrator` / `super_admin`, `authorizePlatformOwner`) — not merely `manage_options`. Requests are
@@ -41,6 +43,7 @@ import {
 import { connectDeployment, deploymentEnvironment, inspectGithub, inspectRepository, inspectVercel, repositoryTarget } from './gitDeploy/setup.mjs';
 import { deploymentStatusForCommit } from './gitDeploy/deploymentStatus.mjs';
 import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/coreUpdate.mjs';
+import { applyPluginUpdate, checkPluginUpdates } from './pluginUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
 const PATHS = new Set([
@@ -52,6 +55,8 @@ const PATHS = new Set([
   `${PREFIX}/status`,
   `${PREFIX}/core-update/plan`,
   `${PREFIX}/core-update/apply`,
+  `${PREFIX}/plugin-updates/check`,
+  `${PREFIX}/plugin-updates/apply`,
 ]);
 
 /** The paths this module answers — the single list both engines route by. */
@@ -203,6 +208,26 @@ export async function handleDeploymentRequest(options) {
     const updatesRow = await io.read(UPDATE_CONFIG_KEY);
     const source = releaseSourceFrom(updatesRow, githubRow, env);
     const target = repositoryTarget(githubTokenFrom(githubRow), connection.repository, connection.branch);
+
+    // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
+    // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
+    if (pathname === `${PREFIX}/plugin-updates/check`) {
+      const answer = await checkPluginUpdates({ target, source, channel: str(updatesRow?.channel) || 'stable', fetchImpl });
+      return ok(200, answer);
+    }
+    if (pathname === `${PREFIX}/plugin-updates/apply`) {
+      const result = await applyPluginUpdate({
+        target,
+        source,
+        id: str(body.id),
+        version: str(body.version),
+        coreVersion: await installedVersion(),
+        channel: str(updatesRow?.channel) || 'stable',
+        fetchImpl,
+      });
+      return ok(200, { result, deployment: result.deployment });
+    }
+
     let version = str(body.version).replace(/^v/i, '');
     if (!version) {
       if (!source) return refuse(409, 'No release repository is configured. Name it on Settings → Updates (or set RWP_RELEASE_REPO).');

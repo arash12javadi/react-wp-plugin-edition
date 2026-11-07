@@ -1,5 +1,5 @@
 /**
- * Server-side plugin licenses: minted offline, verified offline, one key per commercial plugin.
+ * Server-side plugin licenses: signed by the vendor, verified offline against the vendor's PUBLIC key.
  *
  * A plugin listed in `COMMERCIAL_PLUGIN_ADDONS` (`src/lib/pluginLicense.js`) is locked until this file
  * says the key stored for it is genuine: `rwp-page-builder`, `rwp-shop`, `rwp-chat` and
@@ -7,66 +7,55 @@
  * provisioning, a plugin uploaded as a ZIP - is free and never touches this file, because the list is
  * the only place a requirement is read from.
  *
- * A key is self-describing: it names the plugin it unlocks and the last day it is valid, and carries
- * a signature over both, so this server can answer "is this plugin licensed, and until when?" from
- * the key alone - no license server, no network call, and no per-customer secret stored next to the
- * answer. The format and the reader that accepts a key however it survived being pasted live in
- * `src/lib/pluginLicense.js`, which the browser also imports; only the signature is here, because
- * only the server may see the secret.
+ * A key is self-describing: it names the plugin it unlocks, the last day it is valid and a serial, and
+ * carries an Ed25519 signature over all three (`RWP2-ADDON-YYYYMMDD-SERIAL-SIGNATURE`). A site answers
+ * "is this plugin licensed, and until when?" from the key and the vendor's public key alone - no network
+ * call per request. The format and the reader that accepts a key however it survived being pasted live in
+ * `src/lib/pluginLicense.js`, which the browser also imports.
  *
- * The honest limitation, stated once and identical to the installer's: an offline check runs on the
- * customer's own server, so the secret that signs keys ships with the site. The default secret below
- * is therefore not a cryptographic paywall - anyone holding this file can mint a key with it. What a
- * key buys is a single, reviewable place where an entitlement is written down and displayed (the
- * Plugins screen, `GET <plugin>/license`), and what the default buys is keys that work out of the box
- * for everyone running this code unmodified. An operator who sells plugins sets their own secret in
- * `PLUGIN_LICENSE_SECRET` on every deployment that should honour their keys; a key minted under a
- * different secret is invalid there, which is exactly what `invalid` means.
+ * **What this does and does not protect.** The private key exists only on the deployment that sells
+ * licences (`PLUGIN_LICENSE_PRIVATE_KEY`); a site holds the public key and can verify but never mint, so
+ * a customer cannot forge a key from the code they received. A serial can be revoked
+ * (`server/licenseRevocations.mjs`). What it cannot do: a customer who can edit this server's code can
+ * delete the check. The protection against that is not here - sold plugin source is never committed to a
+ * client's repository (`isCommercialPlugin` in `clientRepositoryFiles`) and is delivered built, not as
+ * source. This file is the entitlement record and the gate, not DRM.
  *
- * Mint a key from this repository:
- *
- *     node server/pluginLicense.mjs mint --plugin rwp-shop --days 365
- *     node server/pluginLicense.mjs mint --plugin rwp-shop --expires 2027-06-30
- *     node server/pluginLicense.mjs verify RWP1-SHOP-20270630-4K7QM2XZ8B
+ *     node server/pluginLicense.mjs keygen                          (once, by the owner)
+ *     node server/pluginLicense.mjs mint --plugin rwp-shop --days 365   (needs PLUGIN_LICENSE_PRIVATE_KEY)
+ *     node server/pluginLicense.mjs verify RWP2-SHOP-...            (uses the public key)
  *
  * Plain ESM for the same reason `server/plugins.mjs` is: it runs as it is under `npm start`, on
  * Vercel, and under `node -e`, and never reaches the browser bundle.
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSE_PREFIX, PLUGIN_LICENSE_SHOP_URL, PLUGIN_LICENSES_OPTION,
-  defaultActivePluginIds, isCommercialPlugin, maskPluginLicense, pluginIdForSlug, pluginLicenseAddon,
-  pluginLicenseAddonFor, pluginLicenseKeyFrom, pluginLicenseParts, readPluginLicenses,
+  defaultActivePluginIds, isCommercialPlugin, isLegacyPluginLicenseKey, maskPluginLicense, pluginIdForSlug,
+  pluginLicenseAddon, pluginLicenseAddonFor, pluginLicenseParts, readPluginLicenses,
 } from '../src/lib/pluginLicense.js';
+import {
+  PLUGIN_LICENSE_PRIVATE_KEY_ENV, PLUGIN_LICENSE_PUBLIC_KEY_ENV, generateLicenseKeyPair, licensePrivateKey,
+  licensePublicKey, newLicenseSerial, signPayload, verifyPayload,
+} from './licenseCrypto.mjs';
+import { revokedSerials } from './licenseRevocations.mjs';
 
 export {
   COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds,
   isCommercialPlugin, maskPluginLicense, pluginIdForSlug, pluginLicenseAddonFor, readPluginLicenses,
+  PLUGIN_LICENSE_PRIVATE_KEY_ENV, PLUGIN_LICENSE_PUBLIC_KEY_ENV,
 };
-
-/** Where an operator's own signing secret is read from. Empty means the default below. */
-export const PLUGIN_LICENSE_SECRET_ENV = 'PLUGIN_LICENSE_SECRET';
-
-/**
- * The secret keys are signed with when nothing is configured.
- *
- * It is in the repository on purpose (see the file header): keys work out of the box, and a vendor
- * overrides it. Changing this string invalidates every key ever minted under it.
- */
-const DEFAULT_SECRET = 'rwp-plugin-license-v1';
-
-/** Crockford base32: no I, L, O or U, so a signature cannot be misread as a word. */
-const SIGNATURE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const SIGNATURE_LENGTH = 10;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const str = (value) => (typeof value === 'string' ? value.trim() : '');
+/**
+ * How long a site keeps its last good licence verdict when the `rwp_plugin_licenses` option cannot be read.
+ * After this the sold plugins lock (fail closed) until the option can be read again. 72 hours survives a
+ * weekend database outage without handing a paid customer a broken shop on Monday.
+ */
+export const LICENSE_GRACE_MS = 72 * 60 * 60 * 1000;
 
-/** The secret in force: `PLUGIN_LICENSE_SECRET` when set, the default above otherwise. */
-export const pluginLicenseSecret = (secret) =>
-  str(secret) || str(typeof process !== 'undefined' ? process.env?.[PLUGIN_LICENSE_SECRET_ENV] : '') || DEFAULT_SECRET;
+const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
 /** `YYYYMMDD` from a `YYYY-MM-DD`, `YYYYMMDD` or `Date`, or `''` when it is not a calendar date. */
 export const pluginExpiryStamp = (value) => {
@@ -86,50 +75,30 @@ export const pluginExpiryStamp = (value) => {
     : '';
 };
 
-/** The first `length` characters of `buffer` in Crockford base32. */
-const base32 = (buffer, length) => {
-  let bits = 0;
-  let value = 0;
-  let out = '';
-  for (const byte of buffer) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      out += SIGNATURE_ALPHABET[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-    if (out.length >= length) return out.slice(0, length);
-  }
-  return out.slice(0, length);
-};
+/**
+ * What the signature covers: format version, addon, last day and serial, delimiter-separated, so a
+ * signature cannot move between plugins, days, serials or format versions.
+ */
+export const pluginLicensePayload = ({ addon, expiresOn, serial }) =>
+  `${PLUGIN_LICENSE_PREFIX}|${addon}|${expiresOn}|${serial}`;
 
 /**
- * The signature over the fields a key names.
+ * A key for one plugin: `RWP2-SHOP-20270630-<serial>-<signature>`.
  *
- * The payload is delimiter-separated with the format version in front, so a signature cannot be moved
- * from a `SHOP` key to a `CHAT` one, and cannot be moved between format versions.
+ * Needs the private key (`privateKey`, else `PLUGIN_LICENSE_PRIVATE_KEY`) and throws a sentence saying so
+ * when there is none - there is no default key and no fallback. `plugin` may be an id (`rwp-shop`) or an
+ * addon (`SHOP`). `expiresOn` defaults to a year out; `serial` is random unless a test pins one.
  */
-export const pluginLicenseSignature = ({ addon, expiresOn }, secret) => base32(
-  createHmac('sha256', pluginLicenseSecret(secret))
-    .update(`${PLUGIN_LICENSE_PREFIX}|${addon}|${expiresOn}`, 'utf8')
-    .digest(),
-  SIGNATURE_LENGTH,
-);
-
-/**
- * A key for one plugin: `RWP1-SHOP-20270630-4K7QM2XZ8B`.
- *
- * `plugin` may be an id (`rwp-shop`) or an addon (`SHOP`); both normalise to the same code, so a
- * vendor does not have to remember which one a key wants. `expiresOn` defaults to a year out.
- */
-export const signPluginLicense = ({ plugin, expiresOn, days, secret } = {}) => {
+export const signPluginLicense = ({ plugin, expiresOn, days, privateKey, serial } = {}) => {
   const addon = pluginLicenseAddon(plugin);
   if (!addon) throw new Error('A plugin key needs a plugin: pass --plugin rwp-shop (or --plugin SHOP).');
   const stamp = expiresOn
     ? pluginExpiryStamp(expiresOn)
     : pluginExpiryStamp(new Date(Date.now() + (Number(days) > 0 ? Number(days) : 365) * DAY_MS));
   if (!stamp) throw new Error(`"${expiresOn}" is not a calendar date: write it as YYYY-MM-DD, for example 2027-06-30.`);
-  return `${PLUGIN_LICENSE_PREFIX}-${addon}-${stamp}-${pluginLicenseSignature({ addon, expiresOn: stamp }, secret)}`;
+  const id = serial || newLicenseSerial();
+  const signature = signPayload(pluginLicensePayload({ addon, expiresOn: stamp, serial: id }), licensePrivateKey(privateKey));
+  return `${PLUGIN_LICENSE_PREFIX}-${addon}-${stamp}-${id}-${signature}`;
 };
 
 /**
@@ -137,8 +106,8 @@ export const signPluginLicense = ({ plugin, expiresOn, days, secret } = {}) => {
  *
  * The marketplace lists plugins by `slug` (`rwp-shop`, or a slug whose addon is `SHOP`), not by the
  * id `pluginLicenseAddonFor` keys off. Matching a slug to its commercial addon here is what lets the
- * marketplace mint the same `RWP1-…` key the plugin's own gate verifies, without the browser or the
- * database ever holding the signing secret. A slug that is not a sold plugin returns `''`, and the
+ * marketplace mint the same `RWP2-…` key the plugin's own gate verifies, without the browser or the
+ * database ever holding the signing key. A slug that is not a sold plugin returns `''`, and the
  * marketplace keeps issuing its opaque `RWPM-…` update token for it.
  *
  * The slug is first translated to a plugin id (`pluginIdForSlug`), because a listing may be named for
@@ -157,15 +126,20 @@ export const marketplaceAddonFor = (slug) => {
 /**
  * The key the marketplace hands a buyer for one plugin, and the addon it unlocks.
  *
- * For a sold plugin this is the signed `RWP1-ADDON-YYYYMMDD-SIGNATURE` key `pluginLicenseState`
- * verifies, so pasting it into a site's Plugins screen lifts the gate immediately - no restart, no
- * re-upload. For any other plugin both fields are empty and the caller keeps its opaque token.
+ * For a sold plugin this is the signed `RWP2-…` key `pluginLicenseState` verifies, so pasting it into a
+ * site's Plugins screen lifts the gate immediately - no restart, no re-upload. For any other plugin both
+ * fields are empty and the caller keeps its opaque token. For a sold plugin with no private key
+ * configured this THROWS: handing out an opaque token for a plugin that has a gate would be a licence
+ * that unlocks nothing.
  */
-export const marketplacePluginKey = ({ slug, days, expiresOn, secret } = {}) => {
+export const marketplacePluginKey = ({ slug, days, expiresOn, privateKey } = {}) => {
   const addon = marketplaceAddonFor(slug);
   if (!addon) return { addon: '', key: '' };
-  return { addon, key: signPluginLicense({ plugin: addon, days, expiresOn, secret }) };
+  return { addon, key: signPluginLicense({ plugin: addon, days, expiresOn, privateKey }) };
 };
+
+/** The serial a key carries, or `''`. Used by the marketplace to record and revoke a key. */
+export const pluginLicenseSerial = (key) => pluginLicenseParts(key)?.serial || '';
 
 /**
  * The verdict on one plugin's stored key, in one object, so every caller says the same thing about the
@@ -174,16 +148,18 @@ export const marketplacePluginKey = ({ slug, days, expiresOn, secret } = {}) => 
  * `key` is masked here and never returned whole: the answer may reach a browser. `licensed` is the
  * only field a caller has to branch on; `status` and `message` exist so it can say why.
  *
+ * Checked in this order: shape, retired format, addon, public key present, signature, revoked, expiry.
+ *
  * @param {object} options
  * @param {string} options.pluginId   The plugin the key is being checked for, e.g. rwp-shop.
  * @param {string} [options.key]      The stored key, as it came out of the option.
  * @param {string} [options.addon]    What the plugin declares; defaults to the addon of `pluginId`.
  * @param {Date}   [options.now]      Injectable clock, for tests and for the CLI.
- * @param {string} [options.secret]   Defaults to PLUGIN_LICENSE_SECRET, then the built-in secret.
+ * @param {string} [options.publicKey]  Defaults to PLUGIN_LICENSE_PUBLIC_KEY, then the built-in key.
+ * @param {Iterable<string>} [options.revoked]  Revoked serials; defaults to the verified list this site holds.
  */
-export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), secret } = {}) => {
+export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), publicKey, revoked } = {}) => {
   const required = addon || pluginLicenseAddon(pluginId);
-  const mint = `node server/pluginLicense.mjs mint --plugin ${pluginId || 'PLUGIN'} --days 365`;
   const empty = {
     pluginId: pluginId || '',
     addon: required,
@@ -192,16 +168,23 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), sec
     status: 'missing',
     expiresOn: '',
     daysLeft: 0,
-    message: `${required || 'This plugin'} needs a license key, and this site has not stored one. Enter it under Plugins -> License, or buy one at ${PLUGIN_LICENSE_SHOP_URL}; a key is minted with \`${mint}\`.`,
+    message: `${required || 'This plugin'} needs a license key, and this site has not stored one. Enter it under Plugins -> License, or buy one at ${PLUGIN_LICENSE_SHOP_URL}.`,
   };
 
   const parts = pluginLicenseParts(key);
   if (!parts) {
     if (!str(key)) return empty;
+    if (isLegacyPluginLicenseKey(key)) {
+      return {
+        ...empty,
+        status: 'invalid',
+        message: `That is an old-format (RWP1) key, which this version no longer accepts. Request a replacement ${required} key at ${PLUGIN_LICENSE_SHOP_URL} or from your vendor; it starts with ${PLUGIN_LICENSE_PREFIX}-.`,
+      };
+    }
     return {
       ...empty,
       status: 'invalid',
-      message: `That is not a ${required} license key: a key reads ${PLUGIN_LICENSE_PREFIX}-ADDON-YYYYMMDD-SIGNATURE, for example ${PLUGIN_LICENSE_PREFIX}-${required}-20270630-4K7QM2XZ8B.`,
+      message: `That is not a ${required} license key: a key reads ${PLUGIN_LICENSE_PREFIX}-${required}-YYYYMMDD-SERIAL-SIGNATURE and is about 140 characters long. Paste it whole.`,
     };
   }
 
@@ -214,14 +197,36 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), sec
     };
   }
 
-  const expected = Buffer.from(pluginLicenseSignature({ addon: parts.addon, expiresOn: parts.stamp }, secret), 'utf8');
-  const given = Buffer.from(parts.signature, 'utf8');
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+  const verdict = verifyPayload(
+    pluginLicensePayload({ addon: parts.addon, expiresOn: parts.stamp, serial: parts.serial }),
+    parts.signature,
+    licensePublicKey(publicKey),
+  );
+  if (verdict === 'no-key') {
+    return {
+      ...empty,
+      key: maskPluginLicense(parts.key),
+      status: 'unverifiable',
+      message: `This build has no license public key (${PLUGIN_LICENSE_PUBLIC_KEY_ENV} is not set and none is built in), so no key can be verified and ${pluginId || 'the plugin'} stays locked. Ask the vendor for a current release.`,
+    };
+  }
+  if (verdict !== 'ok') {
     return {
       ...empty,
       key: maskPluginLicense(parts.key),
       status: 'invalid',
       message: `That ${required} license key does not check out. Paste it again exactly as it was issued - a key is case-insensitive, but one character short is a different key.`,
+    };
+  }
+
+  const revokedSet = revoked ? new Set(revoked) : revokedSerials();
+  if (revokedSet.has(parts.serial)) {
+    return {
+      ...empty,
+      key: maskPluginLicense(parts.key),
+      expiresOn: parts.expiresOn,
+      status: 'revoked',
+      message: `That ${required} license was revoked by the vendor (refunded or withdrawn), so ${pluginId || 'the plugin'} stays locked. Contact the vendor or buy a new license at ${PLUGIN_LICENSE_SHOP_URL}.`,
     };
   }
 
@@ -251,44 +256,74 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), sec
  * What a gated request needs to know about one plugin, or `null` when the plugin is free.
  *
  * `licenses` is the parsed `PLUGIN_LICENSES_OPTION` (`{ [pluginId]: key }`), or `null` when the option
- * could not be read at all. A `null` means "unknown", and unknown is not the same as unlicensed: a
- * database hiccup must not take a working shop down, so the caller lets the request through and logs.
+ * could not be read and no verdict within the grace window is held. **That is a lock, not an unlock**:
+ * the answer is `licensed: false` with status `unknown`. A site that has never stored a key is `{}` and
+ * is locked the ordinary way (`missing`).
  */
-export const pluginLicenseGate = ({ plugin, licenses, now, secret } = {}) => {
+export const pluginLicenseGate = ({ plugin, licenses, now, publicKey, revoked } = {}) => {
   const addon = pluginLicenseAddonFor(plugin);
   if (!addon) return null;
-  if (licenses === null || licenses === undefined) return null;
-  return pluginLicenseState({ pluginId: plugin.id, key: licenses[plugin.id], addon, now, secret });
+  if (licenses === null || licenses === undefined) {
+    return {
+      pluginId: plugin.id,
+      addon,
+      key: '',
+      licensed: false,
+      status: 'unknown',
+      expiresOn: '',
+      daysLeft: 0,
+      message: `This site could not read its stored license keys and has no recent verdict to fall back on, so ${plugin.id} stays locked until it can. Reload in a moment; if it persists, check the database connection.`,
+    };
+  }
+  return pluginLicenseState({ pluginId: plugin.id, key: licenses[plugin.id], addon, now, publicKey, revoked });
 };
 
 /**
  * The active ids a site may actually run: every free plugin, plus a sold one only while its key holds.
  *
  * `rwp_active_plugins` is where an administrator's choice is written, but it is not the last word: a
- * commercial plugin whose key is missing, expired or for another addon is *inactive*, whatever that
- * option or the `plugins` row still says. `server/plugins.mjs` calls this before it answers a route,
- * so the forced state is what a request sees, and the Plugins screen writes the same verdict back so
- * the stored state stops disagreeing.
+ * commercial plugin whose key is missing, expired, revoked or for another addon is *inactive*, whatever
+ * that option or the `plugins` row still says. `server/plugins.mjs` calls this before it answers a route.
  *
- * `licenses === null` means the key store could not be read, and unknown is not unlicensed: the list
- * is returned untouched, because a database hiccup must not take a working shop down. A site that has
- * simply never stored a key is `{}` - not null - and every sold id in `activeIds` then drops out.
+ * `licenses === null` (unreadable, no verdict within grace) drops every sold id: fail closed.
  */
-export const licensedActivePluginIds = (activeIds, licenses, { now, secret } = {}) => {
+export const licensedActivePluginIds = (activeIds, licenses, { now, publicKey, revoked } = {}) => {
   if (!Array.isArray(activeIds)) return activeIds;
-  if (licenses === null || licenses === undefined) return activeIds;
   return activeIds.filter((pluginId) => {
-    const gate = pluginLicenseGate({ plugin: { id: pluginId }, licenses, now, secret });
+    const gate = pluginLicenseGate({ plugin: { id: pluginId }, licenses, now, publicKey, revoked });
     return !gate || gate.licensed;
   });
 };
 
 /**
- * The command line, for the vendor who issues keys.
+ * The licence-store read policy: which `licenses` value a request may use after a read attempt.
+ *
+ * - A successful read replaces the cache and restarts the grace clock.
+ * - A failed read keeps the last good value for `graceMs`, then falls to `null` (locked).
+ * - A site that never had a good read (`at === 0`) has nothing to keep: `null`.
+ *
+ * Pure and clock-injected, so the policy is testable without a database. `readFailed` carries only
+ * whether it failed; the caller logs the reason (never a key).
+ *
+ * @param {{ licenses: object|null, at: number }} cache  Last good verdict and when it was read (epoch ms).
+ * @param {{ ok: boolean, licenses?: object }} read      The result of this attempt.
+ * @returns {{ licenses: object|null, at: number, degraded: boolean }}
+ */
+export const applyLicenseGrace = (cache, read, { now = Date.now(), graceMs = LICENSE_GRACE_MS } = {}) => {
+  if (read.ok) return { licenses: read.licenses, at: now, degraded: false };
+  const held = cache?.licenses && cache.at > 0 && now - cache.at <= graceMs;
+  return held
+    ? { licenses: cache.licenses, at: cache.at, degraded: true }
+    : { licenses: null, at: cache?.at || 0, degraded: true };
+};
+
+/**
+ * The command line, for the owner who issues keys.
  *
  * Argv is parsed by hand rather than with `util.parseArgs` so `node server/pluginLicense.mjs mint
  * --days 30` works on every Node the site supports. Output is text a person reads, not JSON: this is
- * a command run rarely, by hand, and the key it prints is pasted into an email.
+ * a command run rarely, by hand, and the key it prints is pasted into an email. The private key is read
+ * from the environment only - never from an argument, which would land in shell history.
  */
 function cli(argv) {
   const [command = '', ...rest] = argv;
@@ -311,32 +346,39 @@ function cli(argv) {
   if (command === 'help' || command === '--help' || command === '-h'
     || options.help === 'true' || options.h === 'true') return usage(0);
 
+  if (command === 'keygen') {
+    const pair = generateLicenseKeyPair();
+    console.log('Public key (safe to commit: paste into BUILT_IN_PUBLIC_KEY in server/licenseCrypto.mjs):');
+    console.log(pair.publicKey);
+    console.log('');
+    console.log(`Private key (SECRET: set it as ${PLUGIN_LICENSE_PRIVATE_KEY_ENV} on the deployment that sells licenses, and nowhere else; it is not stored anywhere):`);
+    console.log(pair.privateKey);
+    return 0;
+  }
+
   if (command === 'mint') {
     if (!str(options.plugin)) {
       console.error('Name the plugin the key is for: --plugin rwp-shop (or --plugin SHOP).');
+      return 1;
+    }
+    if (!licensePrivateKey()) {
+      console.error(`Refusing to mint: ${PLUGIN_LICENSE_PRIVATE_KEY_ENV} is not set in this shell. Only the vendor holds it. Run "node server/pluginLicense.mjs keygen" once to create a pair.`);
       return 1;
     }
     const key = signPluginLicense({
       plugin: options.plugin,
       expiresOn: options.expires,
       days: options.days,
-      secret: options.secret,
     });
-    const state = pluginLicenseState({ pluginId: pluginLicenseAddon(options.plugin), key, secret: options.secret });
+    const state = pluginLicenseState({ pluginId: pluginLicenseAddon(options.plugin), key });
     console.log(key);
     console.log('');
-    console.log(`Plugin: ${state.addon}`);
-    console.log(`Valid through: ${state.expiresOn} (${state.daysLeft} days)`);
-    // Which secret signed it matters to the vendor: a key minted under PLUGIN_LICENSE_SECRET verifies
-    // on no deployment that does not set the same value, and one minted under the default verifies
-    // everywhere this file is unmodified.
-    let signedWith = 'the built-in default';
-    if (options.secret) signedWith = 'the --secret you supplied';
-    else if (str(process.env?.[PLUGIN_LICENSE_SECRET_ENV])) signedWith = `${PLUGIN_LICENSE_SECRET_ENV} from this shell`;
-    console.log(`Signed with: ${signedWith}`);
-    // A key that is already dead is a typo in --expires far more often than a deliberate choice, so it
-    // is said out loud; it is still printed, because `mint` is also how a date is checked.
-    if (!state.licensed) console.log(`Warning: this key is already ${state.status}, so it unlocks nothing.`);
+    console.log(`Plugin: ${pluginLicenseParts(key).addon}`);
+    console.log(`Serial: ${pluginLicenseSerial(key)} (record it: a revocation names this)`);
+    console.log(`Valid through: ${pluginLicenseParts(key).expiresOn}`);
+    // A key that is already dead, or that this build cannot verify, is a typo in --expires or a
+    // public key that does not match the private one far more often than a deliberate choice.
+    if (!state.licensed) console.log(`Warning: this key does not verify here (${state.status}): ${state.message}`);
     return 0;
   }
 
@@ -345,7 +387,6 @@ function cli(argv) {
     const state = pluginLicenseState({
       pluginId: str(options.plugin) || pluginLicenseAddon(parts?.addon || ''),
       key: positional[0],
-      secret: options.secret,
     });
     console.log(`${state.status}: ${state.message}`);
     // ASCII only, like every other console line in this repository: a middle dot or an arrow survives
@@ -363,11 +404,12 @@ function cli(argv) {
 /** The commands, in one place, so `--help` on any of them prints the same text. */
 function usage(exitCode = 0) {
   console.log('Usage:');
+  console.log('  node server/pluginLicense.mjs keygen');
   console.log('  node server/pluginLicense.mjs mint --plugin rwp-shop --days 365');
   console.log('  node server/pluginLicense.mjs mint --plugin rwp-shop --expires 2027-06-30');
-  console.log('  node server/pluginLicense.mjs verify RWP1-SHOP-20270630-4K7QM2XZ8B');
+  console.log('  node server/pluginLicense.mjs verify RWP2-SHOP-20270630-<serial>-<signature>');
   console.log('');
-  console.log(`Keys are signed with ${PLUGIN_LICENSE_SECRET_ENV} when it is set, and with the built-in default otherwise.`);
+  console.log(`mint needs ${PLUGIN_LICENSE_PRIVATE_KEY_ENV} in the environment and refuses without it. verify uses the public key (${PLUGIN_LICENSE_PUBLIC_KEY_ENV}, else the one built in).`);
   return exitCode;
 }
 

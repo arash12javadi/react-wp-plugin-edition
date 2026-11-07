@@ -7,21 +7,22 @@
  * each has a different build step. Nothing here may touch `node:crypto` or `process`, because this
  * file ships to the browser.
  *
- * A plugin license is deliberately the same format `plugins/rwp-saas-installer/license.mjs` mints,
- * scoped to one plugin instead of one site, so there is one thing to learn and one thing to paste:
+ * A plugin license names the plugin it unlocks, its last valid day and a serial, and carries an Ed25519
+ * signature over all three:
  *
- *     RWP1-SHOP-20270630-4K7QM2XZ8B
- *     ^^^^ ^^^^ ^^^^^^^^ ^^^^^^^^^^
- *     |    |    |        signature: 10 characters of Crockford base32 (no I, L, O or U)
+ *     RWP2-SHOP-20270630-4K7QM2XZ8B3R-<103 characters>
+ *     ^^^^ ^^^^ ^^^^^^^^ ^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^
+ *     |    |    |        |            signature: Ed25519, Crockford base32 (no I, L, O or U)
+ *     |    |    |        serial: 12 characters, what a revocation names
  *     |    |    last valid day, inclusive, in UTC
  *     |    the plugin it unlocks: "SHOP" for plugins/rwp-shop
- *     version of the key format
+ *     version of the key format (RWP1 was a shared-secret HMAC and is no longer accepted)
  *
  * What this file answers is "is this shaped like a key, which plugin does it name, and when does it
  * expire?" - enough for a settings screen to refuse an obvious typo before a round trip, and for the
  * server to know which stored key belongs to the plugin it is about to serve. Whether a key is
- * *genuine* is only ever answered on the server, because the signing secret must never reach a
- * browser.
+ * *genuine* is only ever answered on the server (`server/pluginLicense.mjs`), against the vendor's
+ * public key.
  *
  * Which plugins need a key at all is answered here too, by `COMMERCIAL_PLUGIN_ADDONS` below: four sold
  * plugins, and every other plugin free - see that map before changing anything about licensing.
@@ -30,7 +31,7 @@
 /**
  * The option every plugin key is stored in, in `public.options`:
  *
- *     { "rwp-shop": "RWP1-SHOP-20270630-4K7QM2XZ8B" }
+ *     { "rwp-shop": "RWP2-SHOP-20270630-<serial>-<signature>" }
  *
  * One row rather than one row per plugin, so saving a key is the same single write the activation
  * option already makes, and reading every key is one request rather than one per plugin.
@@ -38,7 +39,7 @@
 export const PLUGIN_LICENSES_OPTION = 'rwp_plugin_licenses';
 
 /** Version of the key format, so a future one is told apart rather than rejected as junk. */
-export const PLUGIN_LICENSE_PREFIX = 'RWP1';
+export const PLUGIN_LICENSE_PREFIX = 'RWP2';
 
 /**
  * Where a key is bought.
@@ -67,7 +68,7 @@ export const PLUGIN_LICENSE_SHOP_URL = 'https://react-wp.com/plugins';
  * from the list or if a free plugin tries to claim a key.
  *
  * The addon is the id with the `rwp-` prefix dropped (`pluginLicenseAddon` below), so `rwp-shop` is
- * keyed by `RWP1-SHOP-…` and `rwp-page-builder` by `RWP1-PAGE-BUILDER-…`. The signature covers the
+ * keyed by `RWP2-SHOP-…` and `rwp-page-builder` by `RWP2-PAGE-BUILDER-…`. The signature covers the
  * addon, so a key cannot be re-scoped to another plugin by editing its text.
  */
 export const COMMERCIAL_PLUGIN_ADDONS = Object.freeze({
@@ -109,12 +110,16 @@ export const pluginIdForSlug = (slug) => {
 };
 
 /**
- * `RWP1-ADDON-YYYYMMDD-SIGNATURE`.
+ * `RWP2-ADDON-YYYYMMDD-SERIAL-SIGNATURE`.
  *
- * The addon is what ties a key to a plugin, and the signature covers it, so a key minted for one
- * plugin cannot be moved to another by editing the text: it simply stops verifying.
+ * The addon is what ties a key to a plugin, and the signature covers addon, day and serial, so a key
+ * minted for one plugin cannot be moved to another - or have its day extended - by editing the text: it
+ * simply stops verifying.
  */
-const PLUGIN_LICENSE_PATTERN = /^RWP1-([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)-(\d{8})-([0-9A-HJKMNP-TV-Z]{10})$/;
+const PLUGIN_LICENSE_PATTERN = /^RWP2-([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)-(\d{8})-([0-9A-HJKMNP-TV-Z]{12})-([0-9A-HJKMNP-TV-Z]{103})$/;
+
+/** The retired shared-secret format. Recognised only so a screen can say why it is refused. */
+const LEGACY_PLUGIN_LICENSE_PATTERN = /^RWP1-/;
 
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -146,6 +151,9 @@ export const pluginLicenseKeyFrom = (value) => str(value)
   .replace(/-{2,}/g, '-')
   .replace(/^-+|-+$/g, '');
 
+/** True for a key in the retired `RWP1-` format. It never verifies, whatever its signature. */
+export const isLegacyPluginLicenseKey = (value) => LEGACY_PLUGIN_LICENSE_PATTERN.test(pluginLicenseKeyFrom(value));
+
 /** `YYYY-MM-DD` from the eight-digit stamp a key carries. */
 const isoDate = (stamp) => `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}`;
 
@@ -167,12 +175,13 @@ export const pluginLicenseParts = (value) => {
   const key = pluginLicenseKeyFrom(value);
   const match = PLUGIN_LICENSE_PATTERN.exec(key);
   if (!match) return null;
-  const [, addon, stamp, signature] = match;
+  const [, addon, stamp, serial, signature] = match;
   const ends = expiryInstant(stamp);
   return {
     key,
     addon,
     stamp,
+    serial,
     signature,
     expiresOn: isoDate(stamp),
     expiresAt: ends.toISOString(),
@@ -187,7 +196,7 @@ export const isPluginLicenseKey = (value) => pluginLicenseParts(value) !== null;
 export const maskPluginLicense = (value) => {
   const parts = pluginLicenseParts(value);
   if (!parts) return str(value) ? `${str(value).slice(0, 4)}...` : '';
-  return `${PLUGIN_LICENSE_PREFIX}-${parts.addon}-...-${parts.signature.slice(-3)}`;
+  return `${PLUGIN_LICENSE_PREFIX}-${parts.addon}-...-${parts.serial.slice(-4)}`;
 };
 
 /**

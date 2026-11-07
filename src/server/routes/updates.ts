@@ -46,7 +46,7 @@ import {
   requirePluginManager,
   statusOf,
 } from '../pluginHostAccess';
-import { currentUserRole, isUpdateOwnerRole } from '../../../server/integrationSettings.mjs';
+import { authorizePlatformOwner, currentUserRole, isUpdateOwnerRole } from '../../../server/integrationSettings.mjs';
 import { gitDeploysFor } from '../deployment';
 import {
   AUTO_CHECK_KEYS,
@@ -144,6 +144,19 @@ async function prepare(c: Context): Promise<RuntimeConfig> {
  * Under Supabase the role is resolved from `public.profiles`; every other backend is a self-hosted
  * checkout, whose administrator is its owner.
  */
+/**
+ * Who sees the owner's latest-commit view (Dashboard → Updates when OWNER_GITHUB_REPO is set): the platform owner
+ * — an administrator or super_admin, narrowed to RWP_OWNER_EMAIL when that is set. Only the commit view widens;
+ * the GitHub source, deploy hook and Update now still follow `viewerOwner`.
+ */
+const viewerCommitOwner = async (config: RuntimeConfig, c: Context): Promise<boolean> => {
+  if (!ownerCommitView(true)) return false;
+  if (config.dbType !== 'supabase') return true;
+  const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+  const permission = await authorizePlatformOwner(config.supabaseUrl || '', config.supabasePublishableKey || '', token);
+  return permission.ok;
+};
+
 const viewerOwner = async (config: RuntimeConfig, c: Context): Promise<boolean> => {
   if (config.dbType !== 'supabase') return true;
   const token = (c.req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -231,7 +244,7 @@ async function overview(c: Context): Promise<Response> {
       plugin_directory: PLUGIN_DIRECTORY_PATH,
       channels: UPDATE_CHANNELS,
       auto_check: AUTO_CHECK_KEYS,
-      owner_commit_view: ownerCommitView(owner),
+      owner_commit_view: ownerCommitView(await viewerCommitOwner(config, c)),
     });
   } catch (error) {
     return fail(c, error);
@@ -265,7 +278,7 @@ async function check(c: Context): Promise<Response> {
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
-      latestCommit: await latestCommitFor({ owner }),
+      latestCommit: await latestCommitFor({ owner: await viewerCommitOwner(config, c) }),
     });
   } catch (error) {
     return fail(c, error);
