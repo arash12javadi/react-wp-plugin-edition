@@ -2,20 +2,26 @@
  * Updating React-WP core on a site that deploys from its own GitHub repository and Vercel project.
  *
  * One component, two places: Dashboard → Updates (for a connected site it *is* the update flow — there is
- * no second button) and Settings → Integrations → GitHub & Vercel → Update React-WP core. The steps are the
- * server's (`server/gitDeploy/coreUpdate.mjs`, unchanged): review a plan (nothing is written), decide any
- * conflicts, apply it as one commit, then follow Vercel's deployment of that commit.
+ * no second button) and Settings → Integrations → GitHub & Vercel → Update React-WP core.
  *
- * The version is chosen from the five most recent stable releases (`ReleasePicker`); the server accepts only
- * a tag from its own list, and asks for an explicit confirmation before it moves to an older one.
+ * One click does everything, in this order, with the stage shown as it happens:
+ *   checking → downloading (the release is read and merged with your repository, nothing written yet) →
+ *   committing (the commit lands on the branch Vercel deploys to Production — the server resolves a moved or
+ *   protected branch itself) → deploying → ready.
+ * The only thing that ever waits for a person is a file that was changed both in this repository and in the
+ * release: each one gets two buttons, "Keep my version" and "Use the release version".
  *
- * Progress is shown in order — checking, downloading, committing, deploying, ready — and "ready" is only
- * ever set from Vercel's own answer for the commit (`isDeploymentReady`), never because a request returned.
+ * "Ready" is set only from Vercel's own answer that the PRODUCTION deployment of the commit is live
+ * (`isDeploymentReady`), never because a request returned and never from a Preview build. A failed build
+ * leaves the previous version serving, and the panel shows Vercel's reason, a link to the build log and Retry.
+ * Applying only ever starts from the button below: nothing in this component runs on load.
  */
 import { useEffect, useState } from 'react';
 import {
   applyCoreUpdate,
   planCoreUpdate,
+  redeployCoreUpdate,
+  DeploymentRequestError,
   type CoreUpdatePlanView,
   type DeploymentState,
 } from '../../lib/gitDeployment';
@@ -24,99 +30,143 @@ import ReleasePicker, { DOWNGRADE_NOTICE, useRecentReleases } from './ReleasePic
 import UpdateStages, { type UpdateStage } from './UpdateStages';
 import styles from './Update.module.css';
 
+type Choice = 'release' | 'keep';
+
 const messageOf = (value: unknown, fallback: string): string =>
   value instanceof Error && value.message ? value.message : fallback;
 
 export default function CoreUpdatePanel({ onUpdated }: {
-  /** Called once Vercel reports the new deployment ready, so the surrounding screen can re-read its version. */
+  /** Called once Vercel reports the new Production deployment live, so the surrounding screen can re-read its version. */
   onUpdated?: () => void;
 }) {
   const picker = useRecentReleases();
   const [plan, setPlan] = useState<CoreUpdatePlanView | null>(null);
-  const [resolutions, setResolutions] = useState<Record<string, 'release' | 'keep'>>({});
-  const [mode, setMode] = useState<'direct' | 'pull_request'>('direct');
-  const [busy, setBusy] = useState<'' | 'plan' | 'apply'>('');
+  const [resolutions, setResolutions] = useState<Record<string, Choice>>({});
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [note, setNote] = useState('');
   const [stage, setStage] = useState<UpdateStage>('idle');
   const [stageDone, setStageDone] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [result, setResult] = useState<{ text: string; sha: string; since: string; url: string } | null>(null);
+  const [deploy, setDeploy] = useState<{ sha: string; since: string; url: string; round: number } | null>(null);
+  const [deployState, setDeployState] = useState<DeploymentState | null>(null);
   const [ready, setReady] = useState(false);
 
   // A plan belongs to the version it was made for: choosing another version starts over.
   useEffect(() => {
     setPlan(null);
     setError('');
+    setNote('');
   }, [picker.selected]);
 
-  const makePlan = async () => {
-    if (!picker.current) return;
-    setBusy('plan');
+  const reset = () => {
     setError('');
-    setResult(null);
-    setReady(false);
+    setNote('');
     setFailed(false);
-    // The release list was read (checked) when the picker loaded; the plan request is what downloads the
-    // release and reads the repository, so that is the stage while it runs.
+    setReady(false);
+    setDeploy(null);
+    setDeployState(null);
+  };
+
+  /** Commits the plan; a branch that moved since the plan was made is re-planned once, by itself. */
+  const commit = async (reviewed: CoreUpdatePlanView, chosen: Record<string, Choice>, again = false): Promise<void> => {
+    const tag = picker.current?.tag || '';
+    setStage('committing');
+    setStageDone(false);
+    try {
+      const answer = await applyCoreUpdate({ tag, fingerprint: reviewed.fingerprint, resolutions: chosen, confirmDowngrade: picker.confirmed });
+      const { result } = answer;
+      setPlan(null);
+      if (result.upToDate || !result.commit) {
+        setNote('Nothing to change: this site already has that release.');
+        setStage('idle');
+        return;
+      }
+      setDeploy({ sha: result.commit.sha, since: new Date().toISOString(), url: result.commit.url, round: 0 });
+      setNote(`Committed ${reviewed.toVersion} to ${result.productionBranch || reviewed.branch}. Vercel is building it for Production; the current version keeps serving until that build is live.`);
+      setStage('deploying');
+    } catch (applyError) {
+      const stale = applyError instanceof DeploymentRequestError && applyError.status === 409 && !('conflicts' in applyError.body);
+      if (stale && !again) {
+        // The repository or the release moved after the plan: read it again and, if nothing needs a decision, go on.
+        const fresh = await planCoreUpdate(tag);
+        if (!fresh.plan.conflicts.some((item) => !chosen[item.path])) {
+          await commit(fresh.plan, chosen, true);
+          return;
+        }
+        setPlan(fresh.plan);
+        setStageDone(true);
+        setNote('The repository changed while the update was being prepared. Review the files below, then continue.');
+        return;
+      }
+      setFailed(true);
+      setError(messageOf(applyError, 'The update was not applied. Nothing was changed on your site.'));
+    }
+  };
+
+  const start = async () => {
+    if (!picker.current) return;
+    setBusy(true);
+    reset();
     setStage('downloading');
     setStageDone(false);
     try {
       const answer = await planCoreUpdate(picker.current.tag);
-      setPlan(answer.plan);
       setResolutions({});
-      setStageDone(true);
+      if (answer.plan.upToDate) {
+        setNote(`Nothing to change: this site already has ${answer.plan.toVersion}.`);
+        setStage('idle');
+        return;
+      }
+      if (answer.plan.conflicts.length) {
+        setPlan(answer.plan);
+        setStageDone(true);
+        return;
+      }
+      await commit(answer.plan, {});
     } catch (planError) {
       setFailed(true);
-      setError(messageOf(planError, 'The update could not be planned. Nothing was changed.'));
+      setError(messageOf(planError, 'The update could not be prepared. Nothing was changed on your site.'));
     } finally {
-      setBusy('');
+      setBusy(false);
     }
   };
 
-  const apply = async () => {
-    if (!plan || !picker.current) return;
-    setBusy('apply');
+  const continueWithChoices = async () => {
+    if (!plan) return;
+    setBusy(true);
     setError('');
     setFailed(false);
-    setStage('committing');
-    setStageDone(false);
     try {
-      const answer = await applyCoreUpdate({
-        tag: picker.current.tag,
-        fingerprint: plan.fingerprint,
-        resolutions,
-        mode,
-        confirmDowngrade: picker.confirmed,
-      });
-      const { result: applied } = answer;
-      if (applied.upToDate) {
-        setResult({ text: 'Nothing to change: the repository already has this release.', sha: '', since: '', url: '' });
-        setStage('idle');
-      } else if (applied.pullRequest) {
-        setResult({ text: `Pull request #${applied.pullRequest.number} is open. Production changes only when it is merged; Vercel deploys it then.`, sha: '', since: '', url: applied.pullRequest.url });
-        setStageDone(true);
-      } else if (applied.commit) {
-        setResult({
-          text: `Committed ${plan.toVersion} to ${plan.branch}. Vercel is deploying it now; until that deployment is Ready the current version keeps serving.`,
-          sha: applied.commit.sha,
-          since: new Date().toISOString(),
-          url: applied.commit.url,
-        });
-        setStage('deploying');
-      }
-      setPlan(null);
-    } catch (applyError) {
-      setFailed(true);
-      setError(messageOf(applyError, 'The update was not applied. Nothing was committed.'));
+      await commit(plan, resolutions);
     } finally {
-      setBusy('');
+      setBusy(false);
+    }
+  };
+
+  const retryBuild = async () => {
+    if (!deploy) return;
+    setBusy(true);
+    setError('');
+    setFailed(false);
+    try {
+      await redeployCoreUpdate(deploy.sha);
+      setStage('deploying');
+      setDeploy({ ...deploy, since: new Date().toISOString(), round: deploy.round + 1 });
+    } catch (retryError) {
+      setFailed(true);
+      setError(messageOf(retryError, 'Vercel could not be asked to build again.'));
+    } finally {
+      setBusy(false);
     }
   };
 
   const onDeployment = (state: DeploymentState) => {
+    setDeployState(state);
     if (isDeploymentReady(state)) {
       setStage('ready');
       setReady(true);
+      setFailed(false);
       onUpdated?.();
     } else if (state.state === 'error' || state.state === 'canceled') {
       setFailed(true);
@@ -126,87 +176,80 @@ export default function CoreUpdatePanel({ onUpdated }: {
   const unresolved = plan ? plan.conflicts.filter((item) => !resolutions[item.path]).length : 0;
   const downgrade = picker.current?.move === 'downgrade';
   const same = picker.current?.move === 'current';
+  const buildFailed = Boolean(deploy) && !ready && (deployState?.state === 'error' || deployState?.state === 'canceled');
 
   return (
     <div className={styles.panel}>
       <p className={styles.small}>
-        This site’s code lives in your own GitHub repository and Vercel deploys it, so an update is a commit there:
-        you review exactly what changes first. Your plugins and your own files are kept.
+        Your plugins and your own files are kept. One click updates this site: it is applied to your repository and Vercel builds it.
       </p>
-      <ReleasePicker state={picker} disabled={busy !== ''} name="rwp-core-release" />
+      <ReleasePicker state={picker} disabled={busy} name="rwp-core-release" />
       <div className={styles.row}>
         <button
           type="button"
           className={`${styles.button} ${styles.buttonPrimary}`}
-          onClick={() => void makePlan()}
-          disabled={busy !== '' || picker.loading || !picker.current || picker.blocked || same}
+          onClick={() => void start()}
+          disabled={busy || picker.loading || !picker.current || picker.blocked || same || Boolean(plan)}
         >
-          {busy === 'plan' ? 'Preparing…' : downgrade ? 'Review the downgrade' : 'Review the update'}
+          {busy ? 'Updating…' : downgrade ? `Install ${picker.current?.tag || 'this version'} (older)` : picker.current ? `Update to ${picker.current.tag}` : 'Update'}
         </button>
         {picker.blocked ? <span className={styles.hint}>Tick the confirmation above to continue.</span> : null}
       </div>
 
       <UpdateStages stage={stage} failed={failed} completed={stageDone} />
+      {downgrade ? <p className={styles.small}>{DOWNGRADE_NOTICE}</p> : null}
 
       {plan ? (
         <div className={styles.plan}>
-          <p>
-            {plan.fromVersion || 'unknown'} → <strong>{plan.toVersion}</strong> from {plan.releaseRepository}.{' '}
-            {plan.upToDate ? 'Nothing to change.' : `${plan.updated.length} updated, ${plan.added.length} added, ${plan.deleted.length} deleted, ${plan.unchanged} unchanged.`} Plugins are not touched.
-          </p>
-          {downgrade ? <p className={styles.error}>{DOWNGRADE_NOTICE}</p> : null}
-          {plan.merged.map((item) => (
-            <p key={item.path} className={styles.small}>
-              <code>{item.path}</code> merged{item.carried.length ? `; kept: ${item.carried.join(', ')}` : ''}{item.dropped.length ? `; dropped imports of plugins not in this repository: ${item.dropped.join(', ')}` : ''}.
-            </p>
-          ))}
-          {plan.kept.length ? <details><summary>{plan.kept.length} file(s) you changed are kept</summary><ul>{plan.kept.map((item) => <li key={item.path}><code>{item.path}</code> — {item.reason}</li>)}</ul></details> : null}
-          {plan.warnings.map((warning) => <p key={warning} className={styles.small}>{warning}</p>)}
-          {plan.conflicts.length ? (
-            <fieldset className={styles.picker}>
-              <legend>{plan.conflicts.length} file(s) need your decision</legend>
-              {plan.conflicts.map((item) => (
-                <div key={item.path} className={styles.conflict}>
-                  <code>{item.path}</code> <span className={styles.small}>{item.reason}</span>
-                  <select
-                    aria-label={`Decision for ${item.path}`}
-                    value={resolutions[item.path] || ''}
-                    onChange={(event) => setResolutions((current) => ({ ...current, [item.path]: event.target.value as 'release' | 'keep' }))}
+          <fieldset className={styles.picker}>
+            <legend>{plan.conflicts.length} file(s) were changed here and in the release — choose what to do with each</legend>
+            {plan.conflicts.map((item) => (
+              <div key={item.path} className={styles.conflict}>
+                <code>{item.path}</code> <span className={styles.small}>{item.reason}</span>
+                <div className={styles.row} role="group" aria-label={`Decision for ${item.path}`}>
+                  <button
+                    type="button"
+                    className={`${styles.button} ${resolutions[item.path] === 'keep' ? styles.buttonPrimary : ''}`}
+                    aria-pressed={resolutions[item.path] === 'keep'}
+                    onClick={() => setResolutions((current) => ({ ...current, [item.path]: 'keep' }))}
                   >
-                    <option value="">Choose…</option>
-                    <option value="release">Use the release&apos;s version</option>
-                    <option value="keep">Keep this repository&apos;s version</option>
-                  </select>
+                    Keep my version
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.button} ${resolutions[item.path] === 'release' ? styles.buttonPrimary : ''}`}
+                    aria-pressed={resolutions[item.path] === 'release'}
+                    onClick={() => setResolutions((current) => ({ ...current, [item.path]: 'release' }))}
+                  >
+                    Use the release version
+                  </button>
                 </div>
-              ))}
-            </fieldset>
-          ) : null}
-          {!plan.upToDate ? (
-            <>
-              <div className={styles.choices} role="radiogroup" aria-label="How to apply">
-                <label className={styles.inline}><input type="radio" checked={mode === 'direct'} onChange={() => setMode('direct')} /> Apply to {plan.branch} now (Vercel deploys it)</label>
-                <label className={styles.inline}><input type="radio" checked={mode === 'pull_request'} onChange={() => setMode('pull_request')} /> Open a pull request to review first</label>
               </div>
-              <div className={styles.row}>
-                <button
-                  type="button"
-                  className={`${styles.button} ${styles.buttonPrimary}`}
-                  onClick={() => void apply()}
-                  disabled={busy !== '' || unresolved > 0 || picker.blocked}
-                >
-                  {busy === 'apply' ? 'Committing…' : unresolved ? `Decide ${unresolved} file(s) first` : downgrade ? 'Apply the downgrade' : 'Apply the update'}
-                </button>
-              </div>
-            </>
-          ) : null}
+            ))}
+          </fieldset>
+          {plan.warnings.map((warning) => <p key={warning} className={styles.small}>{warning}</p>)}
+          <div className={styles.row}>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonPrimary}`}
+              onClick={() => void continueWithChoices()}
+              disabled={busy || unresolved > 0}
+            >
+              {busy ? 'Updating…' : unresolved ? `Choose for ${unresolved} more file(s)` : 'Continue the update'}
+            </button>
+          </div>
         </div>
       ) : null}
 
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
-      {result ? (
-        <div>
-          <p className={styles.small}>{result.text} {result.url ? <a href={result.url} target="_blank" rel="noreferrer">View on GitHub</a> : null}</p>
-          {result.sha ? <DeploymentWatcher sha={result.sha} since={result.since} onState={onDeployment} /> : null}
+      {note ? <p className={styles.small} role="status">{note} {deploy?.url ? <a href={deploy.url} target="_blank" rel="noreferrer">View on GitHub</a> : null}</p> : null}
+      {deploy ? <DeploymentWatcher key={`${deploy.sha}-${deploy.round}`} sha={deploy.sha} since={deploy.since} onState={onDeployment} /> : null}
+      {buildFailed ? (
+        <div className={styles.row}>
+          <button type="button" className={`${styles.button} ${styles.buttonPrimary}`} onClick={() => void retryBuild()} disabled={busy}>
+            {busy ? 'Starting…' : 'Try the build again'}
+          </button>
+          {deployState?.inspectorUrl ? <a href={deployState.inspectorUrl} target="_blank" rel="noreferrer">Open the build log</a> : null}
         </div>
       ) : null}
       {ready ? (

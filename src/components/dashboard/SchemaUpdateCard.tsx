@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { client } from '../../lib/db';
 import { fetchProfile } from '../../lib/profiles';
 import { getUserRole, isPlatformOwner, type UserRole } from '../../lib/roles';
-import { fetchSchemaUpdate, runSchemaUpdateNow, type SchemaUpdateResult } from '../../lib/schemaUpdate';
+import { ensureSchemaUpdate, runSchemaUpdateNow, saveDatabaseConnection, type SchemaUpdateResult } from '../../lib/schemaUpdate';
 import styles from './SchemaUpdateCard.module.css';
 
 const messageOf = (value: unknown, fallback: string): string =>
@@ -32,7 +32,7 @@ function useOwnerRole(): boolean {
 const labels: Record<string, string> = {
   ok: 'Up to date',
   pending: 'Update waiting',
-  manual: 'Manual step needed',
+  manual: 'Held back',
   failed: 'Rolled back',
   needs_connection: 'Needs a connection',
 };
@@ -40,35 +40,44 @@ const labels: Record<string, string> = {
 /**
  * Dashboard → Updates → Database.
  *
- * After a release the site's own database must follow the code. The server does that by itself when it can
+ * After a release the site's own database must follow the code. The server does that by itself
  * (`server/schemaMigrate.mjs`: guarded so it can never drop or overwrite data, locked, one transaction, rolled
- * back on failure). On a serverless host the start-up run may be cut short, so when this card opens and an update
- * is waiting it applies it — the same safe path as the button. Platform owner only; the routes refuse everyone else.
+ * back on failure) — at start-up, and again here when an owner opens the admin and an update is waiting
+ * (`ensureSchemaUpdate`). The button is only a retry. A site with no direct database connection asks for it once
+ * here, in plain words; it is stored sealed and never shown again. Platform owner only; the routes refuse everyone else.
  */
 export default function SchemaUpdateCard() {
   const owner = useOwnerRole();
   const [result, setResult] = useState<SchemaUpdateResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [connection, setConnection] = useState('');
 
-  const run = useCallback(async (apply: boolean) => {
+  const run = useCallback(async (retry: boolean) => {
     setBusy(true);
     setError('');
     try {
-      // Opening the card applies a waiting update (guarded and rolled back on failure, like the button); a
-      // manual, failed or connection problem is only reported, never retried on its own.
-      if (apply) {
-        setResult(await runSchemaUpdateNow());
-      } else {
-        const status = await fetchSchemaUpdate();
-        setResult(status.state === 'pending' && status.status === 'pending' ? await runSchemaUpdateNow() : status);
-      }
+      setResult(retry ? await runSchemaUpdateNow() : await ensureSchemaUpdate());
     } catch (failure) {
-      setError(messageOf(failure, 'The database status could not be read.'));
+      setError(messageOf(failure, 'The database status could not be read. Reload this page to try again.'));
     } finally {
       setBusy(false);
     }
   }, []);
+
+  const saveConnection = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      setResult(await saveDatabaseConnection(connection));
+      setConnection('');
+    } catch (failure) {
+      setError(messageOf(failure, 'The connection could not be saved.'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (owner) void run(false);
@@ -98,9 +107,26 @@ export default function SchemaUpdateCard() {
           )}
         </>
       )}
+      {result && ['needs_connection', 'failed'].includes(result.state) && ['needs_connection', 'unreachable'].includes(result.status) ? (
+        <form className={styles.action} onSubmit={(event) => void saveConnection(event)}>
+          <label>
+            Database connection string (Session pooler)
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={connection}
+              onChange={(event) => setConnection(event.target.value)}
+              placeholder="postgresql://postgres.…:[password]@…pooler.supabase.com:5432/postgres"
+              style={{ display: 'block', width: '100%', marginBlock: '6px' }}
+            />
+          </label>
+          <button type="submit" className={styles.button} disabled={busy || !connection.trim()}>Save and update the database</button>
+        </form>
+      ) : null}
       <div className={styles.buttons}>
         <button type="button" className={styles.button} disabled={busy} onClick={() => void run(true)}>
-          {busy ? 'Working…' : result?.state === 'ok' ? 'Check again' : 'Update database now'}
+          {busy ? 'Working…' : result?.state === 'ok' ? 'Check again' : 'Try again'}
         </button>
       </div>
     </section>

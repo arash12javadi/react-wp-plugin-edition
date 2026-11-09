@@ -104,33 +104,6 @@ export async function selfUpdateSupport() {
   };
 }
 
-/**
- * Whether this server can apply a *package* update — a release ZIP downloaded from the central server —
- * which needs a writable folder with a `package.json`, but no git checkout. That is the distinction from
- * `selfUpdateSupport()`: a site installed from a ZIP is exactly the one that cannot `git pull`, and this
- * is the path that updates it.
- */
-export async function packageUpdateSupport() {
-  try {
-    const raw = await readFile(path.join(process.cwd(), 'package.json'), 'utf8');
-    const manifest = JSON.parse(raw);
-    if (!manifest || typeof manifest !== 'object' || !manifest.name) throw new Error('no manifest');
-  } catch {
-    return {
-      supported: false,
-      reason: 'This server has no package.json at its root, so a package update cannot be applied here. Run it from the site\'s own folder, or update by hand.',
-      restart: 'manual',
-      app_name: '',
-    };
-  }
-  return {
-    supported: true,
-    restart: process.env.pm_id ? 'pm2' : 'manual',
-    app_name: process.env.name || '',
-    reason: '',
-  };
-}
-
 const runFile = (id) => path.join(SELF_UPDATE_DIR, `${id}.json`);
 
 /** A run id that sorts by time and cannot escape the directory it names. */
@@ -187,32 +160,18 @@ export const isSafeRef = (ref) => {
 };
 
 /**
- * Starts an update run and returns its record straight away.
+ * Starts an update run and returns its record straight away. `ref` names a branch, tag or `origin/<branch>`;
+ * the runner fetches it and refuses a ref it cannot resolve, so a stale local branch is an answer with a log,
+ * not a silent no-op. Only ever called from a button click (`applyResponse` in server/updateFlow.mjs).
  *
- * Two sources, one runner:
- *
- *   - `git` (the default): `ref` names a branch, tag or `origin/<branch>`. The runner fetches it and
- *     refuses a ref it cannot resolve, so a stale local branch is an answer with a log, not a silent no-op.
- *   - `package`: a managed (end-user) site downloads the release ZIP from the central server
- *     (`package.url`, authenticated with `package.token`) and applies it to its own files. No git, no
- *     Vercel token.
- *
- * @param {{ to: string, from: string, ref?: string, source?: 'git' | 'package', package?: { url: string, token: string, site?: string } }} options
+ * @param {{ to: string, from: string, ref?: string }} options
  */
-export async function startSelfUpdate({ to, from, ref = '', source = 'git', package: pkg = null }) {
-  // Retired: a site no longer downloads a release package from react-wp.com. Updates are read from the public
-  // release repository on GitHub and applied from a git checkout (or through the site's own GitHub and Vercel).
-  if (source === 'package') {
-    throw new SelfUpdateError('Installing a release package from react-wp.com was retired. Updates are read from GitHub: use Update now on Dashboard → Updates, or the core update under Settings → Integrations → GitHub & Vercel.', 410);
-  }
-  const support = source === 'package' ? await packageUpdateSupport() : await selfUpdateSupport();
+export async function startSelfUpdate({ to, from, ref = '' }) {
+  const support = await selfUpdateSupport();
   if (!support.supported) throw new SelfUpdateError(support.reason, 409);
-  const targetRef = source === 'package' ? '' : (ref ? String(ref) : `origin/${support.branch}`);
-  if (source !== 'package' && !isSafeRef(targetRef)) {
+  const targetRef = ref ? String(ref) : `origin/${support.branch}`;
+  if (!isSafeRef(targetRef)) {
     throw new SelfUpdateError(`"${targetRef}" is not a branch or tag this server can check out.`, 400);
-  }
-  if (source === 'package' && (!pkg?.url || !pkg?.token)) {
-    throw new SelfUpdateError('A package update needs the central server URL and this site\'s update token.', 400);
   }
   const id = newRunId();
   const record = await writeSelfUpdateRun({
@@ -223,14 +182,9 @@ export async function startSelfUpdate({ to, from, ref = '', source = 'git', pack
     finished_at: '',
     from,
     to,
-    source,
     ref: targetRef,
-    previous: source === 'package' ? '' : support.head,
+    previous: support.head,
     target: '',
-    /** The central package source; empty for a git update. */
-    package_url: source === 'package' ? String(pkg.url) : '',
-    package_token: source === 'package' ? String(pkg.token) : '',
-    site: source === 'package' ? String(pkg.site || '') : '',
     /** PM2 restarts the app after the build; `manual` asks the administrator to. */
     restart: support.restart,
     app_name: support.app_name,

@@ -27,6 +27,27 @@
  */
 import { createHash } from 'node:crypto';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
+import { isCommercialPlugin, pluginIdForSlug } from '../src/lib/pluginLicense.js';
+
+/**
+ * Marks a file this module has already protected, so a second pass (a retried download, a package that went
+ * through the marketplace twice) leaves it as it is: obfuscating obfuscated code only makes it slower and larger.
+ */
+export const PROTECTED_MARK = '/*rwp:protected*/';
+
+/**
+ * Whether a listing is a paid plugin and therefore protected at delivery. The answer is `COMMERCIAL_PLUGIN_ADDONS`
+ * (via the marketplace slug alias) and nothing a package says about itself: core and every free plugin are
+ * shipped as readable source, by design.
+ */
+export const shouldProtectPlugin = (idOrSlug) => isCommercialPlugin(pluginIdForSlug(idOrSlug) || idOrSlug);
+
+/**
+ * Obfuscated TypeScript-family files carry compiled JavaScript under a `.tsx` name, which a type checker reads as
+ * TypeScript and answers with thousands of errors about names like `_0x5720`. This directive tells it to skip the
+ * file; the build (Vite) does not type-check, so nothing else changes.
+ */
+export const TS_NOCHECK = '// @ts-nocheck';
 
 const CODE_TS = /\.(?:tsx|ts|jsx)$/i;
 const CODE_JS = /\.(?:mjs|cjs|js)$/i;
@@ -119,13 +140,17 @@ const parses = (ts, name, text) => {
 
 /**
  * @param {Uint8Array|Buffer} zipBytes  the master package
- * @param {{ watermark?: string, label?: string }} [options]
+ * @param {{ watermark?: string, label?: string, pluginId?: string }} [options]
+ *   `pluginId`, when given, must be a paid plugin (`shouldProtectPlugin`); any other id is returned unchanged.
  *   `watermark` is any string naming the licence (an id, never the key itself); it is embedded in the entry
  *   file and in a small manifest field so a leaked copy can be traced.
  * @returns {Promise<{ zip: Uint8Array, report: { protected: string[], compiledOnly: string[], copied: number } }>}
  */
 export async function protectPluginZip(zipBytes, options = {}) {
   const watermark = String(options.watermark || '').slice(0, 64);
+  if (options.pluginId && !shouldProtectPlugin(options.pluginId)) {
+    return { zip: new Uint8Array(zipBytes), report: { protected: [], compiledOnly: [], copied: 0, skipped: 'free plugin: shipped as readable source' } };
+  }
   const ts = await loadTypeScript();
   const obfuscate = await loadObfuscator();
 
@@ -146,6 +171,12 @@ export async function protectPluginZip(zipBytes, options = {}) {
     }
 
     const source = strFromU8(bytes);
+    if (source.includes(PROTECTED_MARK)) {
+      // Already protected once: copied as it is.
+      out[name] = bytes;
+      report.copied += 1;
+      continue;
+    }
     const isServer = CODE_JS.test(name);
     let compiled = isServer ? source : compile(ts, name, source);
 
@@ -162,12 +193,12 @@ export async function protectPluginZip(zipBytes, options = {}) {
       // Fall through to the compiled text.
     }
     (obfuscated ? report.protected : report.compiledOnly).push(name);
-    out[name] = strToU8(result);
+    out[name] = strToU8(`${CODE_TS.test(name) ? `${TS_NOCHECK}\n` : ''}${PROTECTED_MARK}\n${result}`);
   }
 
   if (watermark) {
     const entry = Object.keys(out).find((name) => /(?:^|\/)index\.tsx$/.test(name));
-    if (entry) {
+    if (entry && !strFromU8(out[entry]).includes('__rwpLicensedTo')) {
       out[entry] = strToU8(`${strFromU8(out[entry])}\n;export const __rwpLicensedTo=${JSON.stringify(watermark)};\n`);
     }
   }

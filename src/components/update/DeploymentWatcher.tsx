@@ -1,5 +1,6 @@
 /**
- * Follows one commit until Vercel reports a final state for it. Polls every 5 s and stops after 30 minutes.
+ * Follows one commit until Vercel reports a final state for its PRODUCTION deployment. Polls every 5 s and stops
+ * after 30 minutes.
  *
  * It is the only thing in the update flow allowed to say a deployment is ready: the state comes from
  * `GET /api/admin/deployment/status?sha=` (Vercel's own deployment list for the commit, else GitHub's
@@ -17,15 +18,18 @@ export const STATE_LABELS: Record<DeploymentState['state'], string> = {
   not_started: 'Waiting for Vercel to start',
   queued: 'Queued at Vercel',
   building: 'Building at Vercel',
-  ready: 'Ready',
-  error: 'Failed — the previous deployment is still serving',
-  canceled: 'Canceled — the previous deployment is still serving',
+  ready: 'Live in Production',
+  error: 'Failed — the previous version is still serving',
+  canceled: 'Canceled — the previous version is still serving',
   unknown: 'Unknown',
 };
 
-/** True when Vercel says the deployment is built *and* serving production — the only "ready" there is. */
+/**
+ * True only when Vercel itself says the PRODUCTION deployment of the commit is built and serving — the only "ready"
+ * there is. GitHub's commit status (no `serving` answer) and a Preview build never count.
+ */
 export const isDeploymentReady = (state: DeploymentState | null): boolean =>
-  Boolean(state && state.state === 'ready' && state.serving !== false);
+  Boolean(state && state.state === 'ready' && state.serving === true);
 
 export function DeploymentWatcher({ sha, since, onState }: {
   sha: string;
@@ -61,8 +65,9 @@ export function DeploymentWatcher({ sha, since, onState }: {
     };
   }, [sha, since]);
 
-  const label = state ? STATE_LABELS[state.state] || state.state : 'Asking Vercel…';
-  const tone = state?.state === 'ready' ? styles.ok : state && ['error', 'canceled'].includes(state.state) ? styles.bad : styles.wait;
+  const unconfirmed = state?.state === 'ready' && state.serving !== true;
+  const label = state ? (unconfirmed ? 'Built — confirming that it is live' : STATE_LABELS[state.state] || state.state) : 'Asking Vercel…';
+  const tone = state?.state === 'ready' && !unconfirmed ? styles.ok : state && ['error', 'canceled'].includes(state.state) ? styles.bad : styles.wait;
   return (
     <div className={styles.watch} role="status" aria-live="polite">
       <p>

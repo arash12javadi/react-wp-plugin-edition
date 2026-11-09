@@ -230,7 +230,7 @@ export const authorizationFrom = (headers) => {
  * revoked site is still told so, and `/api/v1/updates/check` is never treated this way, because that path
  * belongs to the platform alone.
  *
- * `format` is the third fact, and it is only ever read as a safety net: `fetchCentralCheck` stamps every
+ * `format` is the third fact, and it is only ever read as a safety net: a client that asks this platform stamps every
  * request it makes with `format: 'rwp-update-center'`, so a caller speaking the site contract stays a site
  * even if the version it reports is blank — a site whose installed version could not be resolved must get a
  * refusal it can read, not this deployment's own dashboard route.
@@ -356,8 +356,7 @@ export async function centralCheckAnswer({ body, config, fetchImpl = fetch, now 
  *
  * This is the answer that replaces a 404 nobody could act on: a site reads 404 as "wrong address" and
  * stops asking, while the operator reads this sentence and sets the variable it names. The text names
- * environment variables, which is why it never reaches a customer as is — the site maps any non-OK answer
- * to `MANAGED_MESSAGES` before it reaches a screen.
+ * environment variables, so it is meant for the platform operator and is never shown to a customer.
  *
  * @param {ReturnType<typeof centralConfigFrom>} config
  * @param {'check'|'apply'|'install'} kind

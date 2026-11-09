@@ -47,7 +47,7 @@ const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
  * @param {string} version the tag, `v2.5.4` or `2.5.4`
  * @returns {Uint8Array}
  */
-function manifestAtVersion(bytes, version) {
+export function manifestAtVersion(bytes, version) {
   const plain = trimmed(version).replace(/^v/i, '');
   if (!/^\d+\.\d+\.\d+/.test(plain)) return bytes;
   try {

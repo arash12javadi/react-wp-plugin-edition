@@ -13,8 +13,10 @@
  *   GET  /api/admin/deployment/status?sha=           Vercel's state for one commit (gitDeploy/deploymentStatus.mjs)
  *   POST /api/admin/deployment/core-update/plan      `{ tag? }` → the merge plan and its fingerprint; `tag` must be one of
  *                                                    the five most recent stable releases (empty = latest)
- *   POST /api/admin/deployment/core-update/apply     `{ tag, fingerprint, resolutions, mode, confirmDowngrade? }`; an older
+ *   POST /api/admin/deployment/core-update/apply     `{ tag, fingerprint, resolutions, confirmDowngrade? }`; the commit lands on the
+ *                                                    branch Vercel deploys to PRODUCTION (read from Vercel); an older
  *                                                    tag than the repository runs needs `confirmDowngrade: true` (428)
+ *   POST /api/admin/deployment/core-update/redeploy  `{ sha }` — Retry after a failed build: only the production branch's head
  *   POST /api/admin/deployment/plugin-updates/check  every installed plugin against its own `<id>-v<version>` release
  *   POST /api/admin/deployment/plugin-updates/apply  `{ id, version }` → one commit under plugins/<id>/ (no core change)
  *
@@ -45,6 +47,8 @@ import {
 import { connectDeployment, deploymentEnvironment, inspectGithub, inspectRepository, inspectVercel, repositoryTarget } from './gitDeploy/setup.mjs';
 import { deploymentStatusForCommit } from './gitDeploy/deploymentStatus.mjs';
 import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/coreUpdate.mjs';
+import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
+import { readBranch } from './pluginGitPush.mjs';
 import { applyPluginUpdate, checkPluginUpdates } from './pluginUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
@@ -57,6 +61,7 @@ const PATHS = new Set([
   `${PREFIX}/status`,
   `${PREFIX}/core-update/plan`,
   `${PREFIX}/core-update/apply`,
+  `${PREFIX}/core-update/redeploy`,
   `${PREFIX}/plugin-updates/check`,
   `${PREFIX}/plugin-updates/apply`,
 ]);
@@ -87,6 +92,29 @@ function githubTargetOrNull(githubRow, connection) {
  * token is the site's own optional GitHub token and only lifts GitHub's anonymous rate limit.
  */
 const releaseSourceFor = (updatesRow, githubRow, env) => releaseSourceFrom({ updates: updatesRow, github: githubRow, env });
+
+/**
+ * The branch Vercel deploys to PRODUCTION, read from the project itself — never assumed to be `main`.
+ * A commit anywhere else is only ever a Preview. Refuses when the project deploys another repository, since
+ * the commit would then change nothing live. If Vercel cannot be asked, the branch recorded at connect time
+ * is used, because the update is still correct there and the status check will say what Vercel did with it.
+ */
+async function productionTarget({ githubRow, connection, env }) {
+  let branch = connection.branch;
+  try {
+    const project = await readProject(openVercelToken(connection, env), { project: connection.project_id, teamId: connection.team_id });
+    if (project) {
+      const linked = projectRepository(project);
+      if (linked && linked.toLowerCase() !== connection.repository.toLowerCase()) {
+        throw new InstallError(`Vercel project "${connection.project_name}" deploys ${linked}, not ${connection.repository}, so an update committed to ${connection.repository} would never go live. Connect the site to the project that deploys ${connection.repository} (Settings → Integrations → GitHub & Vercel).`, 409);
+      }
+      branch = describeProject(project).productionBranch || branch;
+    }
+  } catch (error) {
+    if (error instanceof InstallError) throw error;
+  }
+  return repositoryTarget(githubTokenFrom(githubRow), connection.repository, branch);
+}
 
 /**
  * @param {object} options
@@ -209,7 +237,7 @@ export async function handleDeploymentRequest(options) {
     }
     const updatesRow = await io.read(UPDATE_CONFIG_KEY);
     const source = releaseSourceFor(updatesRow, githubRow, env);
-    const target = repositoryTarget(githubTokenFrom(githubRow), connection.repository, connection.branch);
+    const target = await productionTarget({ githubRow, connection, env });
 
     // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
@@ -235,17 +263,18 @@ export async function handleDeploymentRequest(options) {
     // and an empty choice means the latest.
     const list = await listRecentReleases({ source, fetchImpl });
     const release = selectRelease(list, str(body.tag) || str(body.version));
+    // Older releases a site with no version record may be compared against (see resolveBase in coreUpdate).
+    const baseCandidates = list.releases.map((item) => item.tag);
     const version = release.version;
     const confirmedDowngrade = body.confirmDowngrade === true;
 
     if (pathname === `${PREFIX}/core-update/plan`) {
-      const plan = await planCoreUpdate({ target, source, toVersion: version, fetchImpl });
+      const plan = await planCoreUpdate({ target, source, toVersion: version, baseCandidates, fetchImpl });
       const downgrade = moveKindFor(plan.fromVersion, plan.toVersion) === 'downgrade';
       return ok(200, { plan: describeCorePlan(plan), downgrade, ...(downgrade ? { warning: DOWNGRADE_WARNING } : {}) });
     }
 
     if (pathname === `${PREFIX}/core-update/apply`) {
-      const mode = str(body.mode) === 'pull_request' ? 'pull_request' : 'direct';
       const resolutions = {};
       if (body.resolutions && typeof body.resolutions === 'object') {
         for (const [path, choice] of Object.entries(body.resolutions)) {
@@ -258,7 +287,7 @@ export async function handleDeploymentRequest(options) {
         toVersion: version,
         fingerprint: str(body.fingerprint),
         resolutions,
-        mode,
+        baseCandidates,
         fetchImpl,
         // Asked once the plan matches what the administrator reviewed and before anything is committed, with
         // the version the repository really runs (`plan.fromVersion`), not a guess.
@@ -271,9 +300,28 @@ export async function handleDeploymentRequest(options) {
       return ok(200, {
         result,
         // A commit on the production branch starts Vercel's build; the update is installed only once that
-        // deployment is READY, which the screen asks `status?sha=` about. Never reported as done here.
-        deployment: result.merged ? { sha: result.commit.sha, state: 'pending' } : null,
+        // PRODUCTION deployment is READY, which the screen asks `status?sha=` about. Never reported as done here.
+        deployment: result.merged && result.commit ? { sha: result.commit.sha, state: 'pending' } : null,
       });
+    }
+
+    if (pathname === `${PREFIX}/core-update/redeploy`) {
+      // Retry after a failed build. Only the head of the production branch may be rebuilt, so this can never
+      // be used to deploy some other commit from the repository's history.
+      const head = (await readBranch(target)).commitSha;
+      const sha = str(body.sha).toLowerCase();
+      if (!/^[0-9a-f]{7,40}$/.test(sha) || !head.toLowerCase().startsWith(sha)) {
+        throw new InstallError(`Only the newest commit on "${target.branch}" can be rebuilt, and that is not ${sha ? sha.slice(0, 7) : 'the commit you named'}. Press Update to start from its current state.`, 409);
+      }
+      const deployment = await deployCommit(openVercelToken(connection, env), {
+        projectId: connection.project_id,
+        projectName: connection.project_name,
+        repository: connection.repository,
+        branch: target.branch,
+        sha: head,
+        teamId: connection.team_id,
+      });
+      return ok(200, { deployment: { sha: head, state: 'pending', id: deployment.id } });
     }
 
     return refuse(404, `No deployment endpoint at ${pathname}.`);

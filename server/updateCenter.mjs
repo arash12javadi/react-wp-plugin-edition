@@ -23,18 +23,13 @@
  * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
  * never the `version` field of a `package.json`.
  *
- * Helpers for the retired "managed site" design (a customer site asking react-wp.com for its release list
- * and package: `fetchCentralCheck`, `requestPlatformInstall`, `managedUpdateSupport`, …) are still exported
- * because `scripts/checkUpdateEngine.mjs` exercises them, but no route calls them any more.
- *
  * Plain ESM with no `node:` imports: the same file is bundled into the Vercel function by
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
  * `environmentOf`, so a Workers deployment that has none does not crash on import.
  */
-import { centralFetch } from './centralFetch.mjs';
 import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
-import { fetchGithubReleases, fetchLatestCommit, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
+import { fetchLatestCommit, repoFrom } from './githubReleases.mjs';
 import {
   assertDowngradeConfirmed,
   describeRecentReleases,
@@ -51,14 +46,6 @@ export { compareVersions, isVersion, parseVersion } from './versions.mjs';
 
 /** `system_settings` rows this feature owns, in step with `src/lib/updateCenter.ts`. */
 export const UPDATE_CONFIG_KEY = 'updates_config';
-export const VERSION_STATE_KEY = 'version_state';
-
-/** How many past updates `version_state.history` keeps. */
-export const VERSION_STATE_HISTORY_LIMIT = 20;
-
-/** Where the central server lives when nothing says otherwise. */
-export const DEFAULT_CENTRAL_URL = 'https://react-wp.com';
-
 /**
  * The central endpoints, named once so the client, the docs and this file cannot disagree.
  *
@@ -83,8 +70,6 @@ export const CENTRAL_APPLY_PATH = '/api/v1/updates/apply';
  * it; no Vercel token and no deploy hook is involved on this side.
  */
 export const CENTRAL_INSTALL_PATH = '/api/v1/updates/install';
-/** How long one redeploy request waits before it gives up. A build plus an upload, not a link check. */
-export const CENTRAL_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 export const PLUGIN_DIRECTORY_PATH = '/api/v1/plugins';
 
 /** The release channels a site may follow. `beta` receives pre-releases, `stable` does not. */
@@ -92,58 +77,6 @@ export const UPDATE_CHANNELS = ['stable', 'beta'];
 
 /** The keys `auto_check` accepts, in step with `autoCheckIntervals` in `src/lib/updates.ts`. */
 export const AUTO_CHECK_KEYS = ['off', 'admin', 'daily', 'weekly', 'monthly'];
-
-/**
- * Everything a *managed* site is told when the one source it has does not answer.
- *
- * A customer's site has exactly one update channel — `react-wp.com` — so a failure there is not a
- * configuration problem it can fix: there is no token to re-enter, no repository to name and no deploy
- * hook to save. The owner-facing sentences this module already had ("paste a token on Settings →
- * Updates", "leave empty to use react-wp.com", "a public repository needs no token") are therefore wrong
- * on that screen, and would send someone looking for a switch that is not there. So the managed wording
- * lives here, in one place, and every managed refusal in this file uses it: `fetchCentralCheck` when the
- * platform refuses or is unreachable, and `managedUpdateSupport` when this host cannot install the package
- * the platform publishes.
- */
-export const MANAGED_MESSAGES = {
-  /** The platform would not answer without a token, and this site has none (or the row cannot be read). */
-  not_connected: 'React-WP.com could not confirm this site’s platform connection, so the release list is not available just now. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
-  /** The platform answered 401/403: the token it was given is not one it accepts. */
-  refused: 'React-WP.com did not accept this site’s platform connection. Contact React-WP support and they will restore it — nothing on this screen needs changing.',
-  /** Nothing answered at all: DNS, TLS, timeout, a firewall. */
-  unreachable: 'React-WP.com could not be reached from this server just now, so the release list is not available. Check again in a minute; if it keeps happening, contact React-WP support.',
-  /** The platform answered, but not with a release list. */
-  unavailable: (status) => `React-WP.com answered HTTP ${status} instead of this site’s release list. Check again in a minute; if it keeps happening, contact React-WP support.`,
-  /** The address this site asks has no update API behind it. */
-  no_api: 'React-WP.com has no update API at the address this site uses, so no release list could be read. Contact React-WP support and they will point it at the right one.',
-  /** The platform answered, but with nothing that names a release. */
-  no_release: 'React-WP.com answered without naming a release, so there is nothing to compare this site against just now. Contact React-WP support and they will check what it publishes for this site.',
-  /**
-   * A host that cannot install a package and has no platform to redeploy it: nothing on this screen can be
-   * changed, so it is never an instruction. The screen hides a button it cannot honour, and this sentence is
-   * what the space under it says instead.
-   */
-  cannot_apply: 'This host cannot install a release by itself. The site owner applies it through the site’s own GitHub repository: Settings → Integrations → GitHub & Vercel → Update core. React-WP.com publishes releases but does not deploy sites.',
-  /**
-   * The same host, but this site *is* connected to a platform that can redeploy it (`mode: 'platform'`). This
-   * is the reason line the button sits under, so it says what the button does and what it does not touch.
-   */
-  platform_applies: 'React-WP.com builds this site’s releases and uploads them to its project, so Update now asks React-WP.com to rebuild it. Your plugins, uploads and database are not touched.',
-  /** The platform has no redeploy API at the address this site uses: a version skew, not a configuration. */
-  no_install_api: 'React-WP.com has no update API at the address this site uses, so it could not be asked to rebuild this site. Contact React-WP support and they will point it at the right one.',
-  /** The platform answered, and its answer was a refusal. The status is all a customer may be told. */
-  install_failed: (status) => `React-WP.com could not rebuild this site just now (HTTP ${status}). Nothing has changed on it — try again in a few minutes, and contact React-WP support if it keeps failing.`,
-  /** The platform has no record of the address this site reports, and cannot work out which project it is. */
-  install_no_project: 'React-WP.com does not have this site’s address on file, so it could not tell which project to rebuild. Nothing has changed on it — contact React-WP support with this site’s address and they will link it.',
-  /** The platform knows the site but its own Vercel account cannot see the project. */
-  install_project_missing: 'React-WP.com found this site but cannot reach its hosting project, so it could not rebuild it. Nothing has changed on it — update once at react-wp.com/update with your hosting access details, which lets this button work from then on, or contact React-WP support.',
-  /** The platform holds no token of the owner's for that project (and its own cannot see it). */
-  install_no_credential: 'React-WP.com has no hosting access for this site, so it could not rebuild it. Nothing has changed on it — update once at react-wp.com/update with your hosting access details, and this button will work from then on.',
-  /** The owner's stored token was revoked, rotated or lost access at Vercel. */
-  install_token_rejected: 'The hosting access React-WP.com has stored for this site no longer works. Nothing has changed on it — update once at react-wp.com/update with fresh hosting access details, and this button will work again.',
-  /** The request itself never completed: a timeout, a reset, a platform that restarted mid-build. */
-  install_unreachable: 'React-WP.com could not be reached from this server while it was rebuilding this site, so it is not known whether the update finished. The site keeps running its current release either way — check again in a few minutes, and contact React-WP support if it stays on the old version.',
-};
 
 /** A refusal that carries the status code to answer with, the same way `InstallError` does. */
 export class UpdateError extends Error {
@@ -182,24 +115,19 @@ export const saasInstalledVersionFrom = (value) => {
 /**
  * Which version this host reports as installed. One order, shared by both hosts so they cannot disagree:
  *
- *   1. the deploy's own pin (`RWP_APP_VERSION`) — the tag the running code was built from, which cannot lag;
- *   2. the tag the SaaS installer recorded (`saas_installer_config.installed_version`);
- *   3. `release` — the newest release tag of the repository *this* deployment publishes, which is the only
- *      answer left for a platform that deploys itself from a branch (`latestPublishedVersion`);
- *   4. the `package.json` the build was compiled from.
+ *   1. `recorded` — the `.rwp-version` file the update itself writes in the same commit as the code
+ *      (`server/gitDeploy/coreMerge.mjs`), so it cannot lag the code it describes;
+ *   2. the deploy's own pin (`RWP_APP_VERSION`);
+ *   3. the tag the SaaS installer recorded (`saas_installer_config.installed_version`);
+ *   4. the `package.json` the build was compiled from — which need not match any tag.
  *
- * Step 3 exists because a template's manifest is not its release: a platform built from `main` carries
- * whatever number `package.json` happened to hold when the branch was last edited, and its own Updates
- * card then names a version the repository never tagged. It is a *guess* about which release is running,
- * so it sits below both records that actually name one — once the installer has deployed this site, or the
- * deploy pins the tag, that exact answer wins again and a real update is visible again.
- *
- * Each answer is normalised to a plain version (no `v`), the shape every comparison in this file expects.
+ * The newest published release is never a stand-in: a site with no record would then call itself up to date
+ * and hide the update this screen exists to offer. Each answer is normalised to a plain version (no `v`).
  */
-export const resolveInstalledVersion = ({ pinned = '', saas = '', release = '', fallback = '' }) =>
-  trimmed(pinned).replace(/^v/i, '')
+export const resolveInstalledVersion = ({ recorded = '', pinned = '', saas = '', fallback = '' }) =>
+  trimmed(recorded).replace(/^v/i, '')
+  || trimmed(pinned).replace(/^v/i, '')
   || trimmed(saas).replace(/^v/i, '')
-  || trimmed(release).replace(/^v/i, '')
   || trimmed(fallback).replace(/^v/i, '');
 
 /* -- Versions ------------------------------------------------------------------------------------ */
@@ -372,81 +300,6 @@ export async function readUpdatesConfig(options) {
 }
 
 
-/* -- `system_settings.version_state` ------------------------------------------------------------- */
-
-/**
- * The row the browser keeps after an update: which build is installed, when it was installed, and the
- * last few updates with their outcome.
- *
- * The server never writes it. `system_settings` is writable only by a signed-in administrator (RLS says
- * so, and the engine's `/api/db/query` enforces the same rule), so the screen that runs an update writes
- * the result through its own session — which is also the only client that can read it back on every
- * deployment. This function turns that row into something a screen can render.
- *
- * @param {unknown} value
- * @param {{ installed: string }} current the version this build reports
- */
-export const versionStateFrom = (value, current) => {
-  const row = value && typeof value === 'object' ? value : {};
-  const app = row.app && typeof row.app === 'object' ? row.app : {};
-  const lastUpdate = row.last_update && typeof row.last_update === 'object' ? row.last_update : null;
-  const history = Array.isArray(row.history) ? row.history.filter((entry) => entry && typeof entry === 'object') : [];
-  const stored = trimmed(app.installed);
-  return {
-    /** What the database says is installed; `current.installed` is what is actually running. */
-    app_installed: stored,
-    app_installed_at: trimmed(app.installed_at),
-    /** True when the stored row and the running build disagree — a deploy that has not happened yet. */
-    pending: Boolean(stored) && stored !== trimmed(current.installed),
-    last_checked_at: trimmed(row.last_checked_at),
-    last_update: lastUpdate
-      ? {
-        at: trimmed(lastUpdate.at),
-        from: trimmed(lastUpdate.from),
-        to: trimmed(lastUpdate.to),
-        mode: trimmed(lastUpdate.mode),
-        status: trimmed(lastUpdate.status),
-        error: trimmed(lastUpdate.error),
-      }
-      : null,
-    history: history.slice(0, VERSION_STATE_HISTORY_LIMIT),
-  };
-};
-
-/**
- * The next `version_state` value after an update, ready for the browser to `setSystemSetting`.
- *
- * `mode` says how it was applied (`deploy-hook`, `self`, `manual`) and `status` how it ended:
- * `started`, `triggered`, `completed` or `failed`. A failed update leaves the recorded installed version
- * alone — that is the whole point of recording it — so a half-applied release cannot be reported as
- * installed.
- *
- * @param {unknown} previous the stored row
- * @param {{ at: string, from: string, to: string, mode: string, status: string, error?: string }} entry
- */
-export const versionStateAfter = (previous, entry) => {
-  const row = previous && typeof previous === 'object' ? previous : {};
-  const history = Array.isArray(row.history) ? row.history.filter((item) => item && typeof item === 'object') : [];
-  const current = row.app && typeof row.app === 'object' ? row.app : {};
-  const record = {
-    at: entry.at,
-    from: entry.from,
-    to: entry.to,
-    mode: entry.mode,
-    status: entry.status,
-    ...(entry.error ? { error: entry.error } : {}),
-  };
-  return {
-    ...row,
-    app: entry.status === 'failed'
-      ? { ...current }
-      : { installed: entry.to, installed_at: entry.at },
-    last_checked_at: trimmed(row.last_checked_at) || entry.at,
-    last_update: record,
-    history: [record, ...history].slice(0, VERSION_STATE_HISTORY_LIMIT),
-  };
-};
-
 /* -- Releases ------------------------------------------------------------------------------------ */
 
 /**
@@ -509,63 +362,6 @@ export const publicRelease = (release) => (release
   }
   : null);
 
-/**
- * The bearer header a central request carries. The token never appears in a response or a log line.
- *
- * A request built here is *sent* through `centralFetch` rather than `fetch`, never directly: the
- * platform redirects its apex domain to `www`, and a redirect `fetch` follows itself drops this very
- * header (`server/centralFetch.mjs`). That is why an update failed with `HTTP 401` while the check on
- * the same screen worked — a release list is public, a rebuild is not.
- */
-const centralHeaders = (config, appVersion) => ({
-  Accept: 'application/json',
-  'Content-Type': 'application/json',
-  'User-Agent': `react-wp/${trimmed(appVersion) || 'unknown'}`,
-  ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
-});
-
-/** One request header, from a `Headers` (Hono, fetch) or a plain Node record. */
-const headerOf = (headers, name) => {
-  if (!headers) return '';
-  if (typeof headers.get === 'function') return trimmed(headers.get(name));
-  const key = Object.keys(headers).find((entry) => entry.toLowerCase() === name);
-  return key ? trimmed(headers[key]) : '';
-};
-
-/**
- * This site's own public address — the name `react-wp.com` knows it by.
- *
- * A managed site's one credential is the token it was issued, and the platform finds the Vercel project
- * behind a site by matching `saas_installer_installations.site_url`. Something therefore has to state the
- * address, and the site itself is the party that has it: the browser is asked for `window.location.origin`
- * (`src/lib/updateCenter.ts`), and this is the server-side fallback for a request that did not carry one —
- * `X-Forwarded-Host` (what Vercel and Netlify put in front of `Host`), else `Host`, with the protocol from
- * `X-Forwarded-Proto`. An address taken from the request being answered cannot be another site's.
- *
- * `site` wins when it is present, so a caller that knows better than the headers (a script, a test, an
- * operator curling one deployment on behalf of another) is not overruled. The result is exactly the shape
- * the platform's `installationUrl` normalises to: `https://host`, no path, lower case.
- *
- * @param {unknown} headers the request's headers
- * @param {{ site?: string, fallback?: string }} [input]
- */
-export const siteAddressFrom = (headers, { site = '', fallback = '' } = {}) => {
-  const named = trimmed(site);
-  if (named) return named;
-  const host = headerOf(headers, 'x-forwarded-host').split(',')[0] || headerOf(headers, 'host').split(',')[0];
-  if (!host) return trimmed(fallback);
-  const proto = headerOf(headers, 'x-forwarded-proto').split(',')[0].toLowerCase();
-  return `${proto === 'http' ? 'http' : 'https'}://${host}`;
-};
-
-/** Turns a `fetch` refusal into a sentence an administrator can act on. */
-const networkMessage = (error, url) => {
-  const name = error?.name || '';
-  if (name === 'TimeoutError' || name === 'AbortError') return `${url} did not answer in time.`;
-  if (name === 'TypeError') return `${url} could not be reached. Check the address and this server's network access.`;
-  return `${url} could not be reached: ${error?.message || 'unknown error'}.`;
-};
-
 
 /* -- Checking ------------------------------------------------------------------------------------ */
 
@@ -609,183 +405,6 @@ export const installedPluginsFrom = (value) => {
     .slice(0, 200);
 };
 
-/**
- * Asks the central server for the latest releases.
- *
- * The body carries what the site runs, which is what lets `react-wp.com` answer for the plugins *this*
- * site has rather than for the whole catalogue.
- *
- * The token is *sent* whenever this site has one, and its absence is no longer a reason to refuse before
- * asking: the release list is public on a platform that publishes it, so a site provisioned before this
- * feature existed — or one whose token was never written into its environment — still learns the newest
- * version instead of being told its platform connection is broken. A platform that wants a token for a
- * check answers 401, which is handled below.
- *
- * `managed` changes only what a failure *says*. A customer cannot save a token, name a repository or
- * publish a release, so every refusal is one of `MANAGED_MESSAGES`; the owner keeps the sentences that
- * name the screen where the missing half is configured. The request itself is identical either way —
- * this is not a second code path, just the same one told to a different reader.
- *
- * The answer is read in either of the two shapes the platform may speak — the release list below, and the
- * four-field contract (`installedVersion`, `latestVersion`, `updateAvailable`, `releaseNotes`,
- * `releaseUrl`). Both are accepted so that upgrading the platform never strands a site that has not
- * upgraded yet, and the other way round.
- *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, version: string }>, fetchImpl?: typeof fetch, managed?: boolean }} options
- */
-export async function fetchCentralCheck({ config, current, plugins, fetchImpl = fetch, managed = false }) {
-  const base = trimmed(config.central_url) || DEFAULT_CENTRAL_URL;
-  const request = {
-    method: 'POST',
-    headers: centralHeaders(config, current.app),
-    body: JSON.stringify({
-      format: 'rwp-update-center',
-      version: 1,
-      channel: config.channel,
-      site: trimmed(current.site),
-      app: { id: 'react-wp', version: current.app },
-      /** The same fact in the contract's spelling, for a platform that reads only that. */
-      installedVersion: current.app,
-      plugins: plugins.map((plugin) => ({ id: plugin.id, version: plugin.version })),
-    }),
-    signal: AbortSignal.timeout(15_000),
-    cache: 'no-store',
-  };
-  let missing = '';
-  for (const path of CENTRAL_CHECK_PATHS) {
-    const url = `${base}${path}`;
-    let response;
-    try {
-      // Through `centralFetch`: the platform's apex domain redirects to `www`, and the token has to survive
-      // that hop or a revoked credential would go unreported (`server/centralFetch.mjs`).
-      response = await centralFetch(url, request, { fetchImpl });
-    } catch (error) {
-      throw new UpdateError(managed ? MANAGED_MESSAGES.unreachable : networkMessage(error, url), 502);
-    }
-    if (response.status === 404) {
-      // Not this path. A platform that publishes only one of the two answers 404 for the other, so this
-      // is the next path's cue rather than a refusal to report.
-      missing = url;
-      continue;
-    }
-    if (response.status === 401 || response.status === 403) {
-      // A managed site's token is the platform's own connection, issued and revoked by it: asking a
-      // customer to re-enter it is asking them for a value they were never given. A site that sent *no*
-      // token is told the connection could not be confirmed, which is exactly what happened — the platform
-      // would not answer a check without one.
-      throw new UpdateError(managed
-        ? (config.token ? MANAGED_MESSAGES.refused : MANAGED_MESSAGES.not_connected)
-        : 'The central server refused this site\'s update token. Check it on Settings → Updates: a token is issued per site and can be revoked.', 401);
-    }
-    if (!response.ok) {
-      throw new UpdateError(managed
-        ? MANAGED_MESSAGES.unavailable(response.status)
-        : `The central server answered HTTP ${response.status} at ${url}.`, 502);
-    }
-    const body = await response.json().catch(() => {
-      throw new UpdateError(managed ? MANAGED_MESSAGES.unavailable(response.status) : `${url} did not return valid JSON.`, 502);
-    });
-    return centralReleasesFrom(body, managed);
-  }
-  throw new UpdateError(managed
-    ? MANAGED_MESSAGES.no_api
-    : `The central server has no update API at ${missing}. A platform deployment answers ${CENTRAL_CHECK_PATHS.join(' or ')}.`, 404);
-}
-
-/**
- * The endpoint a managed (end-user) site downloads its release package from. The package itself is
- * applied by `scripts/selfUpdateRun.mjs` in a detached run — nothing here downloads a ZIP in a request,
- * because the request that starts the download is the request the build would replace.
- */
-export const centralApplyUrl = (config) =>
-  `${trimmed(config.central_url) || DEFAULT_CENTRAL_URL}${CENTRAL_APPLY_PATH}`;
-
-/**
- * The endpoint a site that cannot install anything asks to be rebuilt.
- *
- * Same address as `centralApplyUrl` — one `central_url`, one platform — and the same token, so a site that
- * can already check for updates can already install them.
- */
-export const centralInstallUrl = (config) =>
-  `${trimmed(config.central_url) || DEFAULT_CENTRAL_URL}${CENTRAL_INSTALL_PATH}`;
-
-/**
- * The releases inside a central answer, in either shape the platform may answer with.
- *
- * Reading both costs one `||`: a site whose platform has been upgraded, and a site that has not, both keep
- * working. A body with no release at all is refused with the sentence an administrator can act on rather
- * than a half-filled screen — or, for a managed site, one sentence that does not quote the JSON contract
- * back at a customer.
- *
- * @param {any} body
- * @param {boolean} [managed=false]
- */
-export const centralReleasesFrom = (body, managed = false) => {
-  const app = releaseFrom(body?.app) || releaseFrom({
-    version: body?.latestVersion ?? body?.latest_version,
-    tag: body?.latestVersion ?? body?.latest_version ?? body?.release?.tag,
-    title: body?.release?.title,
-    notes: body?.releaseNotes ?? body?.release_notes ?? body?.release?.notes,
-    released: body?.release?.released ?? body?.publishedAt ?? body?.published_at,
-    changelog_url: body?.releaseUrl ?? body?.release_url ?? body?.html_url,
-    critical: body?.release?.critical,
-  });
-  if (!app) {
-    throw new UpdateError(managed
-      ? MANAGED_MESSAGES.no_release
-      : 'The central server\'s answer has no release with a version. Expected {"format":"rwp-update-center","version":1,"app":{"version":"1.2.3"}}, or {"latestVersion":"v1.2.3","releaseNotes":"…","releaseUrl":"…"}.', 502);
-  }
-  return { app, plugins: pluginReleasesFrom(body?.plugins) };
-};
-
-
-
-/** How long "the newest release of this repository" is reused when it answers which version is installed. */
-const PUBLISHED_VERSION_CACHE_MS = 60_000;
-
-/** The last answer `latestPublishedVersion` gave, keyed by repository and channel. */
-let publishedVersion = { at: 0, key: '', value: '' };
-
-/** Drops the remembered release. Exported for the self-check, and for a screen that just changed the repository. */
-export const clearPublishedVersion = () => {
-  publishedVersion = { at: 0, key: '', value: '' };
-};
-
-/**
- * The newest release tag of the repository this deployment publishes, as a plain version — or `''` when
- * there is no repository to read, or the read did not answer.
- *
- * This is the `release` input of `resolveInstalledVersion`, and it exists for one deployment: a platform
- * that deploys *itself* from a branch. It has no `RWP_APP_VERSION` pin and no installer record, so the only
- * statement about which release it runs is the release it publishes — which is what Settings → Integrations
- * → SaaS Installer already shows as "Latest". Reading it here makes the two screens name one version.
- *
- * Never throws, and caches for a minute: this is one input to a version string, not a check of its own, so
- * a rate limit or a private repository with no credential must leave the caller on its previous answer
- * (`package.json`) rather than on an error screen.
- *
- * @param {{ source?: { repo?: string, token?: string } | null, channel?: string, fetchImpl?: typeof fetch, now?: number }} [input]
- * @returns {Promise<string>} `2.5.4`, or `''`
- */
-export async function latestPublishedVersion({ source, channel = 'stable', fetchImpl = fetch, now = Date.now() } = {}) {
-  const repo = trimmed(source?.repo);
-  if (!repo) return '';
-  const token = trimmed(source?.token);
-  const key = `${repo}|${channel}|${token ? 'token' : 'anonymous'}`;
-  if (publishedVersion.key === key && now - publishedVersion.at < PUBLISHED_VERSION_CACHE_MS) {
-    return publishedVersion.value;
-  }
-  let version = '';
-  try {
-    const fetched = await fetchGithubReleases({ repo, token, fetchImpl });
-    version = trimmed(latestReleaseFrom(fetched.releases, { channel })?.version).replace(/^v/i, '');
-  } catch {
-    version = '';
-  }
-  publishedVersion = { at: now, key, value: version };
-  return version;
-}
-
 /** True for the owner on a deployment that sets `OWNER_GITHUB_REPO`: the screen then shows only the latest commit and release. */
 export function ownerCommitView(owner = true, env = process.env) {
   return Boolean(owner && trimmed(env.OWNER_GITHUB_REPO));
@@ -804,21 +423,6 @@ export async function latestCommitFor({ owner = true, fetchImpl = fetch, env = p
   const repo = trimmed(env.OWNER_GITHUB_REPO);
   if (!owner || !repo) return null;
   return fetchLatestCommit({ repo, token: trimmed(env.OWNER_GITHUB_TOKEN_FOR_COMMIT_READING), fetchImpl });
-}
-
-/**
- * The newest stable release of the release repository, as a check answer's `{ app, plugins }` — the same
- * thing `checkForUpdates` builds on, kept for callers that want only the release.
- *
- * @param {{ source: { repo: string, token?: string }, fetchImpl?: typeof fetch }} options
- */
-export async function fetchGithubCheck({ source, fetchImpl = fetch }) {
-  try {
-    const list = await listRecentReleases({ source, fetchImpl });
-    return { app: list.releases[0], plugins: {} };
-  } catch (error) {
-    throw toUpdateError(error);
-  }
 }
 
 /**
@@ -942,106 +546,6 @@ export const toUpdateError = (error) => {
 };
 
 /* -- Applying an update -------------------------------------------------------------------------- */
-
-/**
- * What a managed site can do about a release, from `packageUpdateSupport()` — the capability its host
- * actually has, and nothing about a repository.
- *
- * A customer's site never pulls its own checkout and never calls a deploy hook: the release reaches it as
- * a package `react-wp.com` built, which `server/selfUpdate.mjs` downloads and applies (source `package`).
- * So the caller passes the package check in and this shapes it for the screen — `available` and `repo`
- * are kept because every support answer has them, and `repo` is always false: an end user has no
- * repository to name.
- *
- * Two answers are possible when that probe says no, and they are not the same fact:
- *
- *   - **`mode: 'platform'`** — this site holds a token for the platform that publishes its releases, so the
- *     button is real and the work happens there: `POST /api/v1/updates/install` names this site, and the
- *     platform rebuilds the release and uploads it to this site's own project. That is the only path a
- *     prebuilt Vercel deployment has, because its files are read-only and its repository never carries
- *     `dist/`.
- *   - **`mode: 'manual'`** — neither. `MANAGED_MESSAGES.cannot_apply` says so without naming anything this
- *     reader has no access to, and the support route is what actually resolves it.
- *
- * The caller marks the first case by setting `platform` on the probe (`platformRedeployFrom(config)`),
- * which is why this stays pure: the probe needs `node:fs`, and this module is bundled for runtimes that
- * have neither.
- *
- * @param {{ supported: boolean, reason: string, restart?: 'pm2' | 'manual', app_name?: string, platform?: boolean }} support
- */
-export const managedUpdateSupport = (support) => {
-  if (support.supported) {
-    return {
-      available: true,
-      repo: false,
-      supported: true,
-      mode: 'self',
-      reason: '',
-      restart: support.restart,
-      app_name: support.app_name,
-    };
-  }
-  if (support.platform) {
-    return {
-      available: true,
-      repo: false,
-      supported: true,
-      mode: 'platform',
-      reason: MANAGED_MESSAGES.platform_applies,
-      // The platform restarts the deployment when it promotes the new build; a customer has nothing to run.
-      restart: 'manual',
-      app_name: '',
-    };
-  }
-  return { available: false, repo: false, supported: false, mode: 'manual', reason: MANAGED_MESSAGES.cannot_apply, restart: 'manual', app_name: '' };
-};
-
-/**
- * Whether this site may ask its platform to redeploy it: it needs a token for one, and nothing else.
- *
- * A managed site's `central_url` falls back to `DEFAULT_CENTRAL_URL`, which is exactly the platform that
- * holds its `saas_installer_installations` row — so the token is the whole test. A site pointed at a
- * platform build that predates the route gets `MANAGED_MESSAGES.no_install_api` from
- * `requestPlatformInstall`, which is the honest answer for a version skew rather than a hidden button.
- *
- * @param {{ token?: string, central_url?: string }} config the `updates_config` row
- */
-export const platformRedeployFrom = () => false;
-// Always false now: react-wp.com no longer rebuilds customer sites or holds their hosting credentials
-// (`server/platformInstaller.mjs` answers 410). A site whose host cannot install a package updates through
-// its own GitHub repository instead — Settings → Integrations → GitHub & Vercel → Update core.
-
-/**
- * The one plan a managed site has when its host cannot install anything: the platform rebuilds it.
- *
- * `mode` is `'platform'` and the steps are the platform's, not this server's — nothing here downloads,
- * extracts or builds, so a screen that showed the self-updater's steps would be describing work that never
- * happens. The reason names what the button does and says the two things that are *not* touched, because a
- * customer about to press an update button is owed that.
- *
- * `up_to_date` and the empty-version case are `manual`, exactly as in `updatePlan`: those are answers to the
- * question rather than failures, and every caller already renders `plan.reason`.
- *
- * @param {{ latestVersion: string, installedVersion: string }} input
- */
-export const platformUpdatePlan = ({ latestVersion, installedVersion }) => {
-  if (!isVersion(latestVersion)) {
-    return { mode: 'manual', reason: 'No release is known yet. Run a check for updates first, then try again.', steps: [] };
-  }
-  if (compareVersions(latestVersion, installedVersion) <= 0) {
-    return {
-      mode: 'manual',
-      up_to_date: true,
-      reason: `This site already runs ${installedVersion}, which is the latest release it can see.`,
-      steps: [],
-    };
-  }
-  return {
-    mode: 'platform',
-    reason: `React-WP.com builds this site’s releases and uploads them to its project, so Update now asks it to rebuild ${latestVersion}. Your plugins, uploads and database are not touched.`,
-    steps: ['building', 'uploading', 'triggering-rebuild'],
-  };
-};
 
 /**
  * Calls a deploy hook — Vercel's, Netlify's, or any host's "build this branch now" URL.
@@ -1177,95 +681,5 @@ export async function applyDeployHookUpdate({ deployHook, env, fetchImpl }) {
     message: deploy.triggered
       ? 'The deploy hook was called. The platform is checking out and building the new version now; this site switches over when that build is promoted.'
       : `The update could not be started: ${deploy.error}`,
-  };
-}
-
-/**
- * Asks `react-wp.com` to rebuild this site — the way a managed site whose host cannot install a package gets
- * a release.
- *
- * The request is deliberately small: this site's own address, and the release it means to run. The token it
- * already sends for `/check` is the authorisation, and the platform — not this server — decides which Vercel
- * project that address belongs to, spends its own `RWP_VERCEL_TOKEN`, and uploads the release with the same
- * payload path a first provision uses. Nothing here holds a Vercel credential or a deploy hook, which is why
- * a prebuilt deployment can have a working button at all.
- *
- * The wait is long by design (`CENTRAL_INSTALL_TIMEOUT_MS`): the platform builds the release and uploads it
- * before it answers, so a fifteen-second timeout would report a failure for work that then succeeded. Every
- * refusal is one of `MANAGED_MESSAGES`, because the platform's own text names environment variables and file
- * counts that belong to the operator, not to the customer reading this screen.
- *
- * @param {{
- *   config: { token?: string, central_url?: string },
- *   site: string,
- *   version?: string,
- *   env?: Record<string, string | undefined>,
- *   fetchImpl?: typeof fetch,
- *   timeoutMs?: number,
- * }} input
- */
-export async function requestPlatformInstall({ config, site, version = '', env, fetchImpl = fetch, timeoutMs = CENTRAL_INSTALL_TIMEOUT_MS }) {
-  const address = trimmed(site);
-  if (!address) {
-    // The platform matches on this address; without one it has nothing to match. Only reachable from a tab
-    // that was opened on some other hostname, so the sentence tells the reader what to do instead.
-    throw new UpdateError('This site has no address to give React-WP.com, so it cannot tell which project to rebuild. Open Settings → Updates from this site’s own address and try again.', 400);
-  }
-  if (!trimmed(config?.token)) {
-    throw new UpdateError(MANAGED_MESSAGES.not_connected, 409);
-  }
-  const url = centralInstallUrl(config);
-  let response;
-  try {
-    // `centralFetch`, not `fetch`: the platform's apex domain answers `308` to `www`, and a redirect
-    // followed by `fetch` itself drops the `Authorization` header — which the platform then reports as a
-    // missing token (HTTP 401) rather than as the rebuild it never started.
-    response = await centralFetch(url, {
-      method: 'POST',
-      headers: centralHeaders(config, environmentOf(env).RWP_APP_VERSION),
-      body: JSON.stringify({ site: address, ...(isVersion(version) ? { version: trimmed(version) } : {}) }),
-      signal: AbortSignal.timeout(timeoutMs),
-    }, { fetchImpl });
-  } catch {
-    throw new UpdateError(MANAGED_MESSAGES.install_unreachable, 502);
-  }
-  const body = await response.json().catch(() => null);
-  // A 404 that is *not* a refusal is a platform that publishes `/check` and `/apply` but not this route —
-  // an older build — and the answer is the same one a wrong address gets. Both shapes a missing route
-  // arrives in are covered: no body at all, and this deployment's own fallthrough
-  // (`{ error: 'No API endpoint at /api/v1/updates/install.' }`). A refusal from the platform carries
-  // `success: false` — `platformInstall` answering "no project is recorded for that address" — and that is
-  // a failed rebuild rather than a missing route.
-  if (response.status === 404 && body?.success !== false) throw new UpdateError(MANAGED_MESSAGES.no_install_api, 502);
-  // The platform names *why* it refused (`code`), and the two 404s are different problems with different
-  // owners. Neither sentence carries a variable name or a project name: those belong to the operator.
-  if (response.status === 410 || body?.code === 'platform_install_retired') {
-    throw new UpdateError(String(body?.error || MANAGED_MESSAGES.cannot_apply), 410);
-  }
-  if (body?.code === 'no_project_recorded') throw new UpdateError(MANAGED_MESSAGES.install_no_project, 502);
-  if (body?.code === 'project_not_found') throw new UpdateError(MANAGED_MESSAGES.install_project_missing, 502);
-  if (body?.code === 'no_credential') throw new UpdateError(MANAGED_MESSAGES.install_no_credential, 502);
-  if (body?.code === 'stored_token_rejected') throw new UpdateError(MANAGED_MESSAGES.install_token_rejected, 502);
-  // 401/403/409/501/500 all land here: the customer is told the rebuild did not happen and given the one
-  // action that is theirs. `response.status` is quoted because it is the only detail support will ask for.
-  if (!response.ok || !body || body.success === false) {
-    throw new UpdateError(MANAGED_MESSAGES.install_failed(response.status), 502);
-  }
-  const deployed = trimmed(body.version) || trimmed(version);
-  return {
-    mode: 'platform',
-    queued: true,
-    project: trimmed(body.projectName),
-    version: deployed,
-    deployment: body.deployment && typeof body.deployment === 'object'
-      ? {
-        id: trimmed(body.deployment.id),
-        url: trimmed(body.deployment.url || body.deployment.deploymentUrl),
-        ready_state: trimmed(body.deployment.readyState),
-      }
-      : null,
-    message: deployed
-      ? `React-WP.com rebuilt this site: ${deployed} was uploaded to its project. The new deployment replaces this one as soon as the platform promotes it — this screen reports the new version after that.`
-      : 'React-WP.com rebuilt this site. The new deployment replaces this one as soon as the platform promotes it — this screen reports the new version after that.',
   };
 }

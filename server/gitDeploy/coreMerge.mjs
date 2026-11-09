@@ -36,6 +36,7 @@
  * untouched. Everything here is pure: no network, no clock, no filesystem — `coreUpdate.mjs` does the I/O.
  */
 import { createHash } from 'node:crypto';
+import { VERSION_PATH, readVersionRecord } from '../versionRecord.mjs';
 import {
   addServerPluginImportToSource,
   removeServerPluginImportFromSource,
@@ -45,6 +46,7 @@ import {
 export const REGISTRY_PATH = 'server/plugins.mjs';
 export const PACKAGE_PATH = 'package.json';
 export const MERGED_PATHS = Object.freeze([REGISTRY_PATH, PACKAGE_PATH]);
+export { VERSION_PATH, readVersionRecord };
 
 const CLIENT_OWNED_PREFIXES = ['plugins/', 'data/', '.rwp-tmp/', '.vercel/', 'state/', '.state/', 'node_modules/', 'dist/', 'src/server-dist/'];
 
@@ -99,7 +101,7 @@ export function planCoreFiles({ repo, base, next, resolutions = {} }) {
   };
 
   for (const [path, bytes] of next) {
-    if (isClientOwnedPath(path) || MERGED_PATHS.includes(path)) continue;
+    if (isClientOwnedPath(path) || MERGED_PATHS.includes(path) || path === VERSION_PATH) continue;
     const nextSha = gitBlobSha(bytes);
     const oursSha = repo.get(path)?.sha || null;
     if (!oursSha) {
@@ -122,7 +124,7 @@ export function planCoreFiles({ repo, base, next, resolutions = {} }) {
 
   if (base) {
     for (const [path, bytes] of base) {
-      if (next.has(path) || isClientOwnedPath(path) || MERGED_PATHS.includes(path)) continue;
+      if (next.has(path) || isClientOwnedPath(path) || MERGED_PATHS.includes(path) || path === VERSION_PATH) continue;
       const oursSha = repo.get(path)?.sha || null;
       if (!oursSha) continue;
       if (oursSha === gitBlobSha(bytes)) {

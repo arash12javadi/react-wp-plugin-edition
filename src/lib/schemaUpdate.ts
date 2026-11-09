@@ -4,6 +4,7 @@
  * (`presentSchemaResult` in `server/schemaRoutes.mjs`), so the screen never invents a status.
  */
 import { client } from './db';
+import { sentenceForStatus } from './updateCenter';
 
 export type SchemaUpdateState = 'ok' | 'pending' | 'manual' | 'failed' | 'needs_connection';
 
@@ -28,15 +29,33 @@ export interface SchemaUpdateResult {
   lastAppliedAt: string | null;
 }
 
-const call = async (path: string, method: 'GET' | 'POST'): Promise<SchemaUpdateResult> => {
+const call = async (path: string, method: 'GET' | 'POST', body?: unknown): Promise<SchemaUpdateResult> => {
   const { data } = await client.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error('Your session has expired. Sign in again.');
-  const response = await fetch(path, { method, cache: 'no-store', headers: { Authorization: `Bearer ${token}` } });
-  const body = (await response.json().catch(() => ({}))) as { result?: SchemaUpdateResult; error?: string };
-  if (!response.ok || !body.result) throw new Error(body.error || `${path} returned HTTP ${response.status}.`);
-  return body.result;
+  const response = await fetch(path, {
+    method,
+    cache: 'no-store',
+    headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const parsed = (await response.json().catch(() => ({}))) as { result?: SchemaUpdateResult; error?: string };
+  if (!response.ok || !parsed.result) throw new Error(parsed.error || sentenceForStatus(response.status));
+  return parsed.result;
 };
 
 export const fetchSchemaUpdate = () => call('/api/admin/schema-update', 'GET');
+/** Applies whatever is waiting (and only that). Called when the admin opens; safe to call every time. */
+export const ensureSchemaUpdate = () => call('/api/admin/schema-update/ensure', 'POST');
+let ensuredThisSession = false;
+/** `ensureSchemaUpdate` once per page load, for the admin shell; a failure is left for the Updates screen to report. */
+export function ensureSchemaUpdateOnce(): void {
+  if (ensuredThisSession) return;
+  ensuredThisSession = true;
+  void ensureSchemaUpdate().catch(() => undefined);
+}
+/** The "Try again" button. */
 export const runSchemaUpdateNow = () => call('/api/admin/schema-update/run', 'POST');
+/** Saves the database connection once. The server seals it and never sends it back. */
+export const saveDatabaseConnection = (connectionString: string) => call('/api/admin/schema-update/connection', 'POST', { connectionString });
+export const removeDatabaseConnection = () => call('/api/admin/schema-update/connection', 'POST', { remove: true });

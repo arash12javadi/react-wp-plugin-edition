@@ -7,7 +7,8 @@ import PublicChrome from './components/PublicChrome';
 import PublicArchive, { archiveFromPath } from './components/PublicArchive';
 import { preloadSiteTemplates } from './components/SiteTemplate';
 import BootSplash from './components/BootSplash';
-import { canAccessAdmin, canManageSettings } from './lib/roles';
+import { canAccessAdmin, canManageSettings, isPlatformOwner } from './lib/roles';
+import { ensureSchemaUpdateOnce } from './lib/schemaUpdate';
 import { loadCapabilityGrants } from './lib/capabilityGrants';
 import { installDefaultContent } from './lib/defaultContent';
 import { pageViewLink } from './lib/contentBulk';
@@ -342,6 +343,9 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
     if (!ready || !canAccessAdmin(role)) return;
     // Home (the front page), Sample Post, the account pages…, once per site (src/lib/defaultContent.ts).
     if (canManageSettings(role)) void installDefaultContent();
+    // The database follows the release by itself: when the owner opens the admin, anything waiting is applied
+    // (guarded, in one transaction, rolled back on failure). Never throws; the Updates screen reports the state.
+    if (isPlatformOwner(role)) ensureSchemaUpdateOnce();
     rwp.actions.do('rwp_admin_ready', role);
   }, [ready, role]);
 

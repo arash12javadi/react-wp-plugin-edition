@@ -93,9 +93,23 @@ export async function deploymentStatusForCommit({ connection, sha, githubTarget 
       try {
         const deployments = await deploymentsForCommit(token, { projectId: row.project_id, sha: commit, teamId: row.team_id });
         const production = deployments.filter((deployment) => str(deployment?.target) === 'production');
-        const chosen = production[0] || deployments[0];
+        // Only a PRODUCTION deployment can be the result of an update. A Preview of the same commit (what a
+        // commit on a side branch gets) never changes the live site, so it is never reported as the answer.
+        const chosen = production[0];
         if (chosen) {
           return { sha: commit, source: 'vercel', project: row.project_name, ...describeVercelDeployment(chosen) };
+        }
+        if (deployments.length) {
+          return {
+            sha: commit,
+            source: 'vercel',
+            state: 'not_started',
+            production: false,
+            serving: false,
+            previewOnly: true,
+            project: row.project_name,
+            reason: `Vercel built this commit only as a Preview, which does not change the live site. Project "${row.project_name}" must deploy "${row.branch}" to Production (Vercel → Project → Settings → Git → Production Branch). The previous version is still serving.`,
+          };
         }
         const age = committedAt ? now() - Date.parse(committedAt) : 0;
         return {
@@ -123,11 +137,13 @@ export async function deploymentStatusForCommit({ connection, sha, githubTarget 
         return {
           sha: commit,
           source: 'github-status',
-          state: reported.state,
+          // GitHub's status cannot say Production from Preview, so it can say "building" or "failed" but
+          // never "ready": that word is reserved for a production deployment Vercel itself reported.
+          state: reported.state === 'ready' ? 'building' : reported.state,
           production: null,
           serving: null,
           url: reported.url,
-          reason: `Reported by Vercel's commit status on GitHub${reported.description ? `: ${reported.description}` : ''}.${notes.length ? ` ${notes.join(' ')}` : ''}`,
+          reason: `Reported by Vercel's commit status on GitHub${reported.description ? `: ${reported.description}` : ''}.${reported.state === 'ready' ? ' This site still cannot confirm that the build is live in Production, because Vercel itself could not be asked.' : ''}${notes.length ? ` ${notes.join(' ')}` : ''}`,
         };
       }
       notes.push('GitHub has no Vercel status on this commit yet.');

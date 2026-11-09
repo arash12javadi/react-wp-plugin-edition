@@ -80,7 +80,7 @@ export default function PluginUpdatesPanel() {
         since: new Date().toISOString(),
         warnings: [
           ...warnings,
-          ...(sql.length ? [`This version ships SQL (${sql.map((file) => file.path).join(', ')}). It is not run for you: deactivate and activate the plugin, or run it in the Supabase SQL Editor, once the deployment is Ready.`] : []),
+          ...(sql.length ? ['This version includes database changes. They are applied automatically, and safely, as soon as the new version is live — you do not need to do anything.'] : []),
         ],
       });
       setRows((current) => (current || []).map((item) => (item.id === row.id ? { ...item, state: 'up-to-date', installed: done.to, release: null } : item)));

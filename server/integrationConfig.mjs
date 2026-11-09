@@ -74,7 +74,10 @@ export const LICENSE_LINK_SETTING_KEY = 'license_link_config';
 /** Where `server/schemaMigrate.mjs` records the outcome of automatic database updates (hashes, statuses, one sentence). */
 export const SCHEMA_STATE_SETTING_KEY = 'schema_migration_state';
 
-export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, VERCEL_DEPLOY_CONFIG_KEY, LICENSE_LINK_SETTING_KEY, SCHEMA_STATE_SETTING_KEY];
+/** The sealed direct database connection an owner pasted on Dashboard → Updates → Database (`server/schemaRoutes.mjs`). */
+export const DB_CONNECTION_SETTING_KEY = 'db_connection_config';
+
+export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, VERCEL_DEPLOY_CONFIG_KEY, LICENSE_LINK_SETTING_KEY, SCHEMA_STATE_SETTING_KEY, DB_CONNECTION_SETTING_KEY];
 
 // -- Normalising ---------------------------------------------------------------------------------
 //

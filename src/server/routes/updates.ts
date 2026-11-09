@@ -51,9 +51,9 @@ import {
   latestCommitFor,
   ownerCommitView,
   readUpdatesConfig,
-  resolveInstalledVersion,
 } from '../../../server/updateCenter.mjs';
 import { applyResponse, checkResponse, refusalBody, releasesResponse } from '../../../server/updateFlow.mjs';
+import { installedVersionFor } from '../../../server/installedVersion.mjs';
 import {
   listSelfUpdateRuns,
   readSelfUpdateLog,
@@ -63,25 +63,14 @@ import {
 
 export const updatesRouter = new Hono();
 
-/**
- * The version this build reports: `RWP_APP_VERSION` when the deployment pins it to the release tag it was
- * built from — the only value that cannot lag behind the code actually running — else the tag the installer
- * recorded, else `package.json`, which the release workflow writes immediately before pushing the tag.
- * Read on the server, never sent by the browser.
- *
- * The newest published release is never a stand-in for "installed": a site built without a pin would then
- * always report itself up to date.
- */
-const pinnedAppVersion = String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
-const packageAppVersion = String(packageVersion || '').trim();
-
 /** What `readUpdatesConfig` answers, as far as the version question is concerned. */
 interface StoredUpdateConfig {
   installed: string;
 }
 
-const installedFor = (stored: StoredUpdateConfig): string =>
-  resolveInstalledVersion({ pinned: pinnedAppVersion, saas: stored.installed, fallback: packageAppVersion });
+/** The version this build reports — `server/installedVersion.mjs`, the same answer the classic host gives. */
+const installedFor = (stored: StoredUpdateConfig): Promise<string> =>
+  installedVersionFor({ saas: stored.installed, fallback: String(packageVersion || '') });
 
 /**
  * Everything that can be refused with a status before any work starts: whether this site is installed,
@@ -173,7 +162,7 @@ async function overview(c: Context): Promise<Response> {
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     const support = await selfSupport();
     return c.json({
-      installed: installedFor(stored),
+      installed: await installedFor(stored),
       config: describeUpdateConfig(stored.config, owner),
       github: describeGithubSource(stored.github, owner),
       readable: stored.readable,
@@ -205,7 +194,7 @@ async function check(c: Context): Promise<Response> {
     const stored = await readUpdatesConfig(integrationReadOptions(config));
     return c.json(await checkResponse({
       stored,
-      installed: installedFor(stored),
+      installed: await installedFor(stored),
       plugins: installedPluginsFrom(body.plugins),
       owner,
       latestCommit: await latestCommitFor({ owner: await viewerCommitOwner(config, c) }),
@@ -225,7 +214,7 @@ async function releases(c: Context): Promise<Response> {
     }
     const body = await readJson(c);
     const stored = await readUpdatesConfig(integrationReadOptions(config));
-    return c.json(await releasesResponse({ stored, installed: installedFor(stored), owner, force: body.refresh === true }));
+    return c.json(await releasesResponse({ stored, installed: await installedFor(stored), owner, force: body.refresh === true }));
   } catch (error) {
     return fail(c, error);
   }
@@ -249,7 +238,7 @@ async function applyUpdate(c: Context): Promise<Response> {
     const answer = await applyResponse({
       body,
       stored,
-      installed: installedFor(stored),
+      installed: await installedFor(stored),
       plugins: installedPluginsFrom(body.plugins),
       owner,
       deployHook,

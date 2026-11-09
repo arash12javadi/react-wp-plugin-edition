@@ -3106,7 +3106,7 @@ revoke insert, update, delete on table public.rwp_translations from anon;
 -- template release older than this rule is gated by the next install or update, not left open.
 create or replace function public.rwp_platform_setting(setting_key text)
 returns boolean language sql immutable set search_path = public as $$
-  select $1 in ('github_config', 'deploy_config', 'saas_installer_config', 'vercel_deploy_config', 'license_link_config', 'schema_migration_state');
+  select $1 in ('github_config', 'deploy_config', 'saas_installer_config', 'vercel_deploy_config', 'license_link_config', 'schema_migration_state', 'db_connection_config');
 $$;
 
 grant execute on function public.rwp_platform_setting(text) to anon, authenticated;

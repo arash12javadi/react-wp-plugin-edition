@@ -54,6 +54,18 @@ const isBareSpecifier = (id) =>
  */
 const supabaseSchema = readFileSync(fileURLToPath(new URL('supabase/schema.sql', import.meta.url)), 'utf8')
 
+/**
+ * `.rwp-version` as text (or ''), inlined as `__RWP_VERSION_RECORD__`: the bundled function has no repository on
+ * disk, and the record is what the Updates screen reads first (`server/versionRecord.mjs`).
+ */
+const versionRecord = (() => {
+  try {
+    return readFileSync(fileURLToPath(new URL('.rwp-version', import.meta.url)), 'utf8')
+  } catch {
+    return ''
+  }
+})()
+
 export default defineConfig(async () => ({
   /**
    * Both inlined texts: the Setup Wizard's Step 5 DDL (`__RWP_SCHEMA_SQL__` in `src/server/index.ts`)
@@ -64,6 +76,7 @@ export default defineConfig(async () => ({
    */
   define: {
     __RWP_SCHEMA_SQL__: JSON.stringify(supabaseSchema),
+    __RWP_VERSION_RECORD__: JSON.stringify(versionRecord),
     ...await pluginCatalogueDefine(),
     // The same edition the browser bundle inlines (`vite.config.js`), so the bundled API and the SPA of
     // one build agree on which plugins exist. A self-hosted `npm start` reads `RWP_EDITION` directly

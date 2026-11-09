@@ -12,6 +12,7 @@ import { getRuntimeConfig } from './config';
 import { version as packageVersion } from '../../package.json';
 import { handleDeploymentRequest, ownsDeploymentPath } from '../../server/deploymentRoutes.mjs';
 import { authorizePlatformOwner } from '../../server/integrationSettings.mjs';
+import { installedVersionFor } from '../../server/installedVersion.mjs';
 import {
   VERCEL_DEPLOY_CONFIG_KEY,
   deploymentConnectionFrom,
@@ -22,9 +23,7 @@ import {
 const serverEnvironment = (): Record<string, string | undefined> =>
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
-/** The deploy's pinned release tag when there is one, else the build's own package.json. */
-const installedVersion = async (): Promise<string> =>
-  String(serverEnvironment().RWP_APP_VERSION || packageVersion || '').trim().replace(/^v/i, '');
+const installedVersion = (): Promise<string> => installedVersionFor({ fallback: String(packageVersion || '') });
 
 async function handle(c: Context): Promise<Response> {
   const url = new URL(c.req.url);

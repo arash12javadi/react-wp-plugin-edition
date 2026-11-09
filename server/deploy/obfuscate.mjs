@@ -44,14 +44,15 @@
  *     node plugins/rwp-saas-installer/obfuscate.mjs ./dist --out ./locked # obfuscate one directory to another
  *     node plugins/rwp-saas-installer/obfuscate.mjs ./dist --all          # obfuscate every JS file, not only built assets
  *
- * `RWP_SAAS_OBFUSCATE=off` disables the installer-time transform entirely (development escape hatch).
+ * `RWP_SAAS_OBFUSCATE=on` enables the installer-time transform (it is off by default: core and free plugins ship
+ * plain, and paid plugins are protected once, at delivery, by `server/pluginProtect.mjs`).
  */
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-/** Set `RWP_SAAS_OBFUSCATE=off` to skip the installer-time transform. */
+/** Set `RWP_SAAS_OBFUSCATE=on` to run the installer-time transform. */
 const OBFUSCATE_ENV = 'RWP_SAAS_OBFUSCATE';
 
 /** The file extensions that are plain, obfuscatable JavaScript. `.ts/.tsx/.jsx` are not. */
@@ -197,8 +198,14 @@ export const SUPABASE_RESERVED_STRINGS = Object.freeze([
   'storageKey',
 ]);
 
-/** True while the installer should obfuscate what it deploys (everything except the explicit off). */
-export const obfuscationEnabled = () => str(process.env?.[OBFUSCATE_ENV] || 'on').toLowerCase() !== 'off';
+/**
+ * True only when an operator explicitly turns whole-bundle obfuscation on (`RWP_SAAS_OBFUSCATE=on`).
+ *
+ * Off by default: core and the free plugins are shipped as readable source, and the paid plugins are obfuscated
+ * exactly once, when they are delivered (`server/pluginProtect.mjs`). A second pass over the built bundle would
+ * obfuscate that code again and put readable-source projects (a client's own repository) on an obfuscated build.
+ */
+export const obfuscationEnabled = () => str(process.env?.[OBFUSCATE_ENV] || 'off').toLowerCase() === 'on';
 
 /**
  * The obfuscation profile. Deliberately strong but not the slowest knobs: `controlFlowFlattening` and

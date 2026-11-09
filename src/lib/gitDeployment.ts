@@ -6,6 +6,7 @@
  * no answer ever carries it back. Nothing here talks to react-wp.com, GitHub or Vercel directly.
  */
 import { client } from './db';
+import { sentenceForStatus } from './updateCenter';
 
 export interface DeploymentConnectionView {
   connected: boolean;
@@ -41,6 +42,8 @@ export interface DeploymentState {
   inspectorUrl?: string;
   error?: string;
   reason?: string;
+  /** Vercel built the commit only as a Preview: it never changed the live site. */
+  previewOnly?: boolean;
 }
 
 export interface CoreUpdatePlanView {
@@ -96,14 +99,14 @@ async function call<T>(path: string, init: { method?: string; body?: unknown } =
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
   } catch {
-    throw new Error(`This site's server could not be reached for ${path}. In development, is the API server running?`);
+    throw new Error('This site’s server could not be reached, so nothing was changed. Check your internet connection and try again.');
   }
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
     if (response.status === 404 && !body.error) {
-      throw new DeploymentRequestError(`This host has no ${path} endpoint. It needs the API server that answers /api (npm start, npm run start:hono, or the deployed functions).`, 404, body);
+      throw new DeploymentRequestError(sentenceForStatus(404), 404, body);
     }
-    throw new DeploymentRequestError(String(body.error || `The request failed (HTTP ${response.status}).`), response.status, body);
+    throw new DeploymentRequestError(String(body.error || sentenceForStatus(response.status)), response.status, body);
   }
   return body as T;
 }
@@ -147,12 +150,20 @@ export const fetchDeploymentState = (sha: string, since = '') =>
 export const planCoreUpdate = (tag = '') =>
   call<{ plan: CoreUpdatePlanView; downgrade: boolean; warning?: string }>(`${BASE}/core-update/plan`, { method: 'POST', body: tag ? { tag } : {} });
 
-/** Applies the reviewed plan. An older `tag` than the repository runs needs `confirmDowngrade: true` (the server answers 428 without it). */
-export const applyCoreUpdate = (input: { tag: string; fingerprint: string; resolutions: Record<string, 'release' | 'keep'>; mode: 'direct' | 'pull_request'; confirmDowngrade?: boolean }) =>
+/**
+ * Applies the reviewed plan: the commit lands on the branch Vercel deploys to PRODUCTION, resolved by the server
+ * (never a pull request left for a person). An older `tag` than the repository runs needs `confirmDowngrade: true`
+ * (the server answers 428 without it).
+ */
+export const applyCoreUpdate = (input: { tag: string; fingerprint: string; resolutions: Record<string, 'release' | 'keep'>; confirmDowngrade?: boolean }) =>
   call<{
-    result: { applied: boolean; merged: boolean; upToDate?: boolean; commit: { sha: string; url: string; branch: string } | null; pullRequest: { number: number; url: string } | null };
+    result: { applied: boolean; merged: boolean; upToDate?: boolean; landedBy?: string; productionBranch?: string; commit: { sha: string; url: string; branch: string } | null };
     deployment: { sha: string; state: 'pending' } | null;
   }>(`${BASE}/core-update/apply`, { method: 'POST', body: input });
+
+/** Retry after a failed build: asks Vercel to build the production branch's newest commit again. */
+export const redeployCoreUpdate = (sha: string) =>
+  call<{ deployment: { sha: string; state: 'pending'; id: string } }>(`${BASE}/core-update/redeploy`, { method: 'POST', body: { sha } });
 
 export interface PluginUpdateRow {
   id: string;

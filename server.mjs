@@ -655,6 +655,9 @@ const server = http.createServer(async (request, response) => {
         method: request.method,
         pathname: url.pathname,
         headers: request.headers,
+        body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
+        config: siteConfig,
+        env: process.env,
         updater: schemaUpdater,
         authorize: (token) => authorizePlatformOwner(siteConfig?.supabaseUrl, siteConfig?.supabasePublishableKey, token),
       });

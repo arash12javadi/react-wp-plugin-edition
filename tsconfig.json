@@ -26,5 +26,14 @@
     "src/lib/storage/**/*.ts",
     "src/server/**/*.ts",
     "declarations.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/server-dist",
+    "plugins/rwp-page-builder",
+    "plugins/rwp-shop",
+    "plugins/rwp-chat",
+    "plugins/rwp-code-snippets"
   ]
 }

@@ -281,11 +281,11 @@ export class UpdateRequestError extends Error {
 export const sentenceForStatus = (status: number): string => {
   if (status === 401) return 'Your session has expired. Sign in again.';
   if (status === 403) return 'Your account is not allowed to do this. Only the site owner (the Administrator account) can apply updates.';
-  if (status === 404) return 'This site does not have the update service at this address. Reload the page; if it keeps happening, the site needs the API server that answers /api.';
+  if (status === 404) return 'The update service did not answer. Reload the page. If it keeps happening, tell whoever looks after this site.';
   if (status === 409) return 'The update could not start because the site is not in a state that allows it. Reload the page and try again; the Updates screen shows what to do next.';
   if (status === 428) return 'The update needs your confirmation first. Review it on the Updates screen and confirm.';
   if (status === 429) return 'Too many requests just now. Wait a minute and try again.';
-  if (status >= 500) return 'The site’s server hit a problem while handling the update request. Nothing was changed. Try again in a minute; if it repeats, check the server log.';
+  if (status >= 500) return 'The site’s server hit a problem while handling the request. Nothing was changed. Try again in a minute; if it repeats, tell whoever looks after this site.';
   return 'The update request was refused. Reload the page and try again.';
 };
 
@@ -319,11 +319,11 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<{ statu
       headers: { 'Content-Type': 'application/json', ...init.headers, Authorization: `Bearer ${token}` },
     });
   } catch {
-    throw new Error(`The update server could not be reached for ${path}. In development, is the API server running?`);
+    throw new Error('This site’s server could not be reached, so nothing was changed. Check your internet connection and try again.');
   }
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (response.status === 404 && !body.error) {
-    throw new Error(`This host has no ${path} endpoint, so updates cannot be managed from here. It needs the API server that answers /api: npm start, npm run start:hono, or the deployed functions.`);
+    throw new Error(sentenceForStatus(404));
   }
   return { status: response.status, body };
 };

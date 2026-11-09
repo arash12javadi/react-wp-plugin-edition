@@ -13,6 +13,7 @@
  * an `error` is a real answer from the universal API (an unknown plugin id, say) and is shown as one.
  */
 import { client } from './db';
+import { sentenceForStatus } from './updateCenter';
 
 export interface PluginSchemaStatus {
   plugin: string;
@@ -127,7 +128,7 @@ const request = async <T>(path: string, init: RequestInit): Promise<T> => {
       throw new EndpointUnavailableError(
         `This host has no ${path} endpoint. Resetting the site needs the Node server (npm start); a serverless deployment cannot drop the schema it is running on.`);
     }
-    throw new Error(body.error || `${path} returned HTTP ${response.status}.`);
+    throw new Error(body.error || sentenceForStatus(response.status));
   }
   return body;
 };

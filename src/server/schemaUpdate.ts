@@ -32,8 +32,8 @@ function schemaUpdater(): SchemaUpdater {
 
 /**
  * Called once from the adapters at start-up. A new deployment's first cold start runs the update in the
- * background; a serverless function may be frozen once it has answered, so the Dashboard card — which calls the
- * status route and offers "Update database now" — is the path that is guaranteed to complete.
+ * background; a serverless function may be frozen once it has answered, so the admin — which calls `ensure` when an
+ * owner opens it — is the path that is guaranteed to complete.
  */
 export async function runSchemaUpdateOnStart(): Promise<void> {
   try {
@@ -55,6 +55,9 @@ async function handle(c: Context): Promise<Response> {
     method: c.req.method,
     pathname: url.pathname,
     headers: c.req.header() ?? {},
+    body: c.req.method === 'POST' ? ((await c.req.json().catch(() => ({}))) as Record<string, unknown>) : {},
+    config: { supabaseUrl: config.supabaseUrl, supabasePublishableKey: config.supabasePublishableKey },
+    env: (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {},
     updater: schemaUpdater(),
     authorize: (token: string) => authorizePlatformOwner(config.supabaseUrl ?? '', config.supabasePublishableKey ?? '', token),
   });
@@ -66,4 +69,6 @@ async function handle(c: Context): Promise<Response> {
 export function registerSchemaUpdateRoutes(app: Hono): void {
   app.all('/api/admin/schema-update', (c) => handle(c));
   app.all('/api/admin/schema-update/run', (c) => handle(c));
+  app.all('/api/admin/schema-update/ensure', (c) => handle(c));
+  app.all('/api/admin/schema-update/connection', (c) => handle(c));
 }

@@ -40,7 +40,6 @@ import {
   latestCommitFor,
   ownerCommitView,
   readUpdatesConfig,
-  resolveInstalledVersion,
 } from './updateCenter.mjs';
 import { applyResponse, checkResponse, refusalBody, releasesResponse } from './updateFlow.mjs';
 import {
@@ -49,6 +48,7 @@ import {
   readSelfUpdateRun,
   selfUpdateSupport,
 } from './selfUpdate.mjs';
+import { installedVersionFor } from './installedVersion.mjs';
 
 /**
  * Whether this site deploys from its own GitHub repository through a connected Vercel project — read with
@@ -74,12 +74,6 @@ const fail = (error) => ({
 });
 
 /**
- * The deploy's own pin — `RWP_APP_VERSION`, the tag a release workflow checked out and exported in the
- * same step. It cannot lag behind the code actually running, so it wins over every other source.
- */
-const pinnedVersion = () => String(process.env.RWP_APP_VERSION || '').trim().replace(/^v/i, '');
-
-/**
  * The `package.json` this build was compiled from. The fallback of last resort: it is the template's
  * version for a provisioned site, which is exactly what the SaaS installer's record corrects.
  */
@@ -92,35 +86,10 @@ export async function packageVersion() {
   }
 }
 
-/**
- * The version this build reports when no SaaS installer record names a release tag.
- *
- * `RWP_APP_VERSION` wins when the deployment pins it to the release tag it was built from, which is the
- * only value that cannot lag: a release workflow that checks out `v2.4.1` can export `2.4.1` in the same
- * step. Otherwise the build's own `package.json` is the answer. Cached after the first read, because this
- * file cannot change while the process runs.
- */
-let installedVersionCache = '';
+/** The version this host reports as installed — `server/installedVersion.mjs`, with the installer's record when one is stored. */
+export const installedVersion = async () => installedVersionFor({ fallback: await packageVersion() });
 
-export async function installedVersion() {
-  if (installedVersionCache) return installedVersionCache;
-  installedVersionCache = pinnedVersion() || await packageVersion();
-  return installedVersionCache;
-}
-
-/**
- * The version this host reports as installed: the pin, the installer's record, else the manifest —
- * `resolveInstalledVersion`'s order, the same one `src/server/routes/updates.ts` applies.
- *
- * The newest published release is *never* used as a stand-in for "installed": that would make every site
- * built without a pin report itself up to date, hiding exactly the update this screen exists to offer.
- */
-const installedFor = async (stored) =>
-  resolveInstalledVersion({
-    pinned: pinnedVersion(),
-    saas: stored.installed,
-    fallback: await packageVersion(),
-  });
+const installedFor = async (stored) => installedVersionFor({ saas: stored.installed, fallback: await packageVersion() });
 
 /** The caller's permission, or a refusal. Every route below needs an administrator. */
 async function requireManager(config, headers) {
