@@ -1,40 +1,31 @@
 /**
- * The update centre: which version this site runs, which version is published, and how an update is
+ * The update centre: which version this site runs, which versions are published, and how an update is
  * applied.
  *
- * Three jobs, one file, because the two hosts (`server.mjs` and the universal engine's
- * `src/server/routes/updates.ts`) must answer with the same JSON:
+ * A client site reads its releases **directly from GitHub** — the public release repository
+ * (`arash12javadi/react-wp-plugin-edition` unless Dashboard → Updates names another) — and nothing in this
+ * file's route-facing half calls react-wp.com. Three jobs, one file, because the two hosts
+ * (`server.mjs` and the universal engine's `src/server/routes/updates.ts`) must answer with the same JSON:
  *
- *   1. **Ask the central server.** `POST {central}/api/v1/updates/check` reports this site's version and
- *      every installed plugin's, and answers with the releases. The bearer token it uses is
- *      `system_settings.updates_config.token` — written by the signed-in administrator, read here only.
- *      The browser never holds it and never calls GitHub: that is what keeps a private repository
- *      private while still telling an administrator that an update exists.
- *   2. **Read GitHub directly when this deployment owns the repository.** A site reads its release tags
- *      with the GitHub credential the Integrations hub already stores (`github_config`, or
- *      `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN`), from the repository named in `updates_config.repository` when
- *      Settings → Updates names one. One source of truth, the release tag, so a check cannot answer 404
- *      because a JSON file was not published, and a tag cannot disagree with it.
- *   3. **Apply the update.** A Vercel/Netlify host is told to rebuild (`deploy_config`, Settings →
- *      Integrations → Deployments); a host that runs `node server.mjs` runs `server/selfUpdate.mjs`.
- *      Which one is chosen, and why, is `updatePlan`. A managed site whose files are read-only — a prebuilt
- *      Vercel deployment — has neither, and asks the platform to rebuild it instead
- *      (`POST {central}/api/v1/updates/install`, `platformUpdatePlan` / `requestPlatformInstall`).
- *
- * A **managed site** — a customer's instance, whose signed-in account is not the update owner — is not
- * allowed to reach any of the owner paths. Its check is asked of `react-wp.com` and of nothing else: no
- * GitHub read, no deploy hook, no git checkout, and no sentence about a token or a repository, because
- * none of those are things a customer can act on. `checkForUpdates` forces the single source,
- * `managedUpdateSupport` reports the only way such a site installs a release (the package the platform
- * built, or the redeploy the platform runs for a host that cannot install one), and every refusal it can
- * meet is written in `MANAGED_MESSAGES` for the person who reads it rather than for the administrator who
- * runs the platform.
+ *   1. **Check.** `checkForUpdates` reads the stable release tags (`server/releaseList.mjs`: newest five,
+ *      cached a few minutes, plain sentences for a rate limit or a missing repository) and compares the
+ *      newest with what this site runs. A public repository needs no token; an optional GitHub token saved
+ *      under Settings → Integrations → GitHub only lifts GitHub's anonymous rate limit and never leaves the
+ *      server.
+ *   2. **Choose.** The browser may name one of those five tags to move to, newer or older. The server
+ *      accepts only a tag from its own re-read list, and an older one needs an explicit confirmation.
+ *   3. **Apply.** On a host that runs `node server.mjs` from a git checkout, `server/selfUpdate.mjs` fetches
+ *      the chosen tag, installs, builds and restarts. A host built from a git repository by a platform
+ *      (Vercel, Netlify) is rebuilt through its deploy hook; a site connected to its own GitHub repository
+ *      and Vercel project updates through the core update on Settings → Integrations → GitHub & Vercel
+ *      instead (`server/gitDeploy/coreUpdate.mjs`). Which one is chosen, and why, is `updatePlan`.
  *
  * A version is published by *tagging a release* on GitHub (`v2.4.1`) — that tag is the source of truth,
- * never the `version` field of a `package.json`. The tag travels with the release (`tag`), reaches this
- * file through `releaseFrom`, and is what the screen shows and the check compares; the platform's half of
- * that conversation lives in `server/githubReleases.mjs` and `server/centralUpdates.mjs`, and the direct
- * read in `fetchGithubCheck` below.
+ * never the `version` field of a `package.json`.
+ *
+ * Helpers for the retired "managed site" design (a customer site asking react-wp.com for its release list
+ * and package: `fetchCentralCheck`, `requestPlatformInstall`, `managedUpdateSupport`, …) are still exported
+ * because `scripts/checkUpdateEngine.mjs` exercises them, but no route calls them any more.
  *
  * Plain ESM with no `node:` imports: the same file is bundled into the Vercel function by
  * `vite.api.config.mjs` and imported directly by `server.mjs`. `process.env` is read through
@@ -44,6 +35,14 @@ import { centralFetch } from './centralFetch.mjs';
 import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
 import { fetchGithubReleases, fetchLatestCommit, latestReleaseFrom, repoFrom } from './githubReleases.mjs';
+import {
+  assertDowngradeConfirmed,
+  describeRecentReleases,
+  listRecentReleases,
+  moveKindFor,
+  releaseSourceFrom,
+  selectRelease,
+} from './releaseList.mjs';
 import { compareVersions, isVersion } from './versions.mjs';
 
 /** Re-exported so every caller of this module keeps one import, as it always has. */
@@ -156,6 +155,8 @@ export class UpdateError extends Error {
     super(message);
     this.name = 'UpdateError';
     this.status = status;
+    /** Extra fields a route adds to its `{ error }` body, such as `needs_confirmation`. */
+    this.extra = {};
   }
 }
 
@@ -215,37 +216,34 @@ export const resolveInstalledVersion = ({ pinned = '', saas = '', release = '', 
  * Whatever is stored in `system_settings.updates_config`, as a complete configuration.
  *
  * Every field falls back rather than throwing: this row is written by a browser, so a half-filled or
- * hand-edited value must still leave the Updates screen usable. The token is the one field with no
- * default — without it this site does not ask a central server, and the check reads this deployment's
- * own GitHub release tags instead (`githubUpdateSourceFrom`).
+ * hand-edited value must still leave the Updates screen usable.
+ *
+ * The row holds four settings: the release repository, how often to check, whether to show new releases, and
+ * whether this server may update its own checkout. Older versions also stored an update-server address, a
+ * bearer token and a channel. They are **not read** — nothing is sent to an update server, and releases are
+ * always stable ones — and the browser drops them from the row the next time the settings are saved
+ * (`saveUpdateConfig` in `src/lib/updateCenter.ts`), so a token never lingers in the database.
  *
  * @param {unknown} value
  */
 export const updateConfigFrom = (value) => {
   const row = value && typeof value === 'object' ? value : {};
-  const central = trimmed(row.central_url).replace(/\/+$/, '');
-  const channel = trimmed(row.channel).toLowerCase();
   const autoCheck = trimmed(row.auto_check).toLowerCase();
   const repository = trimmed(row.repository);
   return {
-    /** The origin of the update server, without a trailing slash. */
-    central_url: /^https?:\/\//i.test(central) ? central : DEFAULT_CENTRAL_URL,
-    /** The server-only bearer token. Never sent to the browser, never logged. */
-    token: trimmed(row.token),
     /**
-     * `owner/name` of the repository whose release tags this site is updated from, as named on
-     * Settings → Updates. Empty means "whichever repository the GitHub integration holds", and a value
-     * that is not a repository at all reads as empty rather than as a broken URL to fetch.
+     * `owner/name` of the repository whose release tags this site is updated from, as named on Dashboard →
+     * Updates. Empty means the default (`DEFAULT_RELEASE_REPOSITORY`), and a value that is not a repository
+     * reads as empty rather than as a broken URL to fetch.
      */
     repository: repoFrom(repository) ? repository : '',
-    channel: UPDATE_CHANNELS.includes(channel) ? channel : 'stable',
     auto_check: AUTO_CHECK_KEYS.includes(autoCheck) ? autoCheck : 'weekly',
     notify: row.notify !== false,
     /**
      * Whether `POST /api/admin/system/update` may run the updater on this server.
      *
      * Opt-in, because the updater rewrites the checkout this site runs from: an administrator has to
-     * tick it on Settings → Updates, and `server/selfUpdate.mjs` still refuses a checkout with
+     * tick it on Dashboard → Updates, and `server/selfUpdate.mjs` still refuses a checkout with
      * uncommitted changes. Absent means no — a site that never asked for this must not get it because
      * it happened to be a git clone.
      */
@@ -254,38 +252,21 @@ export const updateConfigFrom = (value) => {
 };
 
 /**
- * The same configuration, safe to show an administrator: the token becomes `has_token`.
+ * The same configuration, safe to show an administrator. It holds no secret, and no answer carries one.
  *
- * Every answer that names the configuration goes through here, so a token pasted into the wrong field
- * cannot travel back through the API it was meant for.
- *
- * `owner` is the one account that may see *where* updates come from. An end user — a provisioned site's
- * `super_admin`, or a role that was merely granted `manage_options` — receives a redacted view: the
- * GitHub repository, the central URL and the token's presence are none of their business, their check
- * is always answered by `react-wp.com`, and the only controls they keep are the scheduling ones below.
+ * `owner` is the one account that may see *where* updates come from and change them. Anyone else who can
+ * open the screen receives the two scheduling settings only.
  *
  * @param {ReturnType<typeof updateConfigFrom>} config
  * @param {boolean} [owner=true]
  */
 export const describeUpdateConfig = (config, owner = true) => ({
-  /** The origin of the central update server. Hidden from end users, whose updates are managed. */
-  central_url: owner ? config.central_url : '',
-  channel: owner ? config.channel : 'stable',
   auto_check: config.auto_check,
   notify: config.notify,
-  /** The server never self-updates an end user's managed instance; the platform deploys it. */
+  /** The server never lets a non-owner switch the self-updater on. */
   self_update: owner ? config.self_update : false,
-  /** The repository a check reads first, when Settings → Updates names one. Hidden from end users. */
+  /** The repository named on this screen; empty means the default. Hidden from non-owners. */
   repository: owner ? config.repository : '',
-  has_token: owner ? config.token.length > 0 : false,
-  /** Whether this site's updates are fetched and applied by the platform (`central`) or by the owner. */
-  managed: !owner,
-  /**
-   * Which source an update check asks first. For an end user this is always `central`: they must never
-   * read a GitHub repository, and `react-wp.com` answers on their behalf. For the owner the original rule
-   * holds — GitHub when a repository is named or no central token is stored, else the central server.
-   */
-  source: !owner ? 'central' : (!config.token || config.repository) ? 'github' : 'central',
 });
 
 /**
@@ -341,13 +322,12 @@ export const githubUpdateSourceFrom = (env, stored, configured, fallbackRepo = '
 };
 
 /**
- * The resolved GitHub source, safe to show an administrator: which repository, and whether a credential
- * came with it. The token itself never leaves the server, exactly as with the central one.
+ * The resolved release source, safe to show an administrator: which repository, where that name came from,
+ * and whether a GitHub token will be used to read it. The token itself never leaves the server.
  *
- * An end user is never told about GitHub at all: their answer is an empty, unconfigured source, because
- * the repository their site is built from is the platform's private template, not their business.
+ * An end user's answer is empty: the repository is the site owner's business.
  *
- * @param {{ repo: string, token: string } | null} [source]
+ * @param {{ repo: string, token?: string, custom?: boolean, origin?: string } | null} [source]
  * @param {boolean} [owner=true]
  */
 export const describeGithubSource = (source, owner = true) => (owner
@@ -355,58 +335,34 @@ export const describeGithubSource = (source, owner = true) => (owner
     repo: trimmed(source?.repo),
     has_token: trimmed(source?.token).length > 0,
     configured: trimmed(source?.repo).length > 0,
-    pinned: source?.pinned === true,
+    /** `saved` (named on this screen), `environment` (fixed by the deployment) or `default`. */
+    origin: ['saved', 'environment'].includes(source?.origin) ? source.origin : 'default',
   }
-  : { repo: '', has_token: false, configured: false, pinned: false });
+  : { repo: '', has_token: false, configured: false, origin: 'default' });
 
 /**
  * The stored configuration, read the way this deployment can read `system_settings` — through the
  * engine's adapter, a direct connection, or the service key (`server/integrationSettings.mjs`).
  *
- * The GitHub row is read in the same trip because a check may need it: a site with no central token
- * reads its own release tags, and reading both rows separately would mean two round trips to answer one
- * question.
+ * Three rows come back in one trip: `updates_config` (the schedule and, optionally, the release repository),
+ * `github_config` (an optional GitHub token that lifts GitHub's anonymous rate limit) and the installer's
+ * record of the release a site was built from. A token or an update-server address left in `updates_config`
+ * by an older version is ignored here (`updateConfigFrom` does not carry them) and is removed the next time
+ * the settings are saved.
  *
- * A row that cannot be read is reported as exactly that rather than as an unconfigured site: on a
- * Supabase deployment whose server has neither `DATABASE_URL` nor `SUPABASE_SECRET_KEY` the token is
- * stored and simply invisible here, and telling the administrator to paste it again would be a lie.
- *
- * `RWP_UPDATE_TOKEN` answers when the row holds no token, or when this server cannot read the row at all.
- * That is the escape hatch that keeps a *managed* site updating through `react-wp.com` on a host whose
- * database it can only reach through a key it was not given: the platform owns the environment of the
- * site it provisioned, so it can put the token there, and the site still asks the one place it is
- * supposed to ask. It never turns a configured site into a different one — an environment token only
- * fills a hole.
- *
- * `RWP_CENTRAL_URL` is the same hole for the address, and it is what lets a platform point the sites it
- * provisions at its own domain without editing a row in each of their databases.
+ * A row that cannot be read is reported as exactly that (`readable: false`) rather than as defaults that look
+ * like a choice: on a Supabase deployment whose server has neither `DATABASE_URL` nor `SUPABASE_SECRET_KEY`
+ * the rows are stored and simply invisible here.
  *
  * @param {import('./integrationSettings.mjs').IntegrationReadOptions} options
  */
 export async function readUpdatesConfig(options) {
   const rows = await readIntegrationRows([UPDATE_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY], options);
-  const environment = environmentOf(options?.env);
-  const stored = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
-  const row = rows.settings[UPDATE_CONFIG_KEY] && typeof rows.settings[UPDATE_CONFIG_KEY] === 'object' ? rows.settings[UPDATE_CONFIG_KEY] : {};
-  const environmentToken = trimmed(environment.RWP_UPDATE_TOKEN);
-  const environmentCentral = trimmed(environment.RWP_CENTRAL_URL).replace(/\/+$/, '');
-  const config = {
-    ...stored,
-    // Both environment values fill a hole only: a token or an address saved on Settings → Updates wins.
-    ...(stored.token || !environmentToken ? {} : { token: environmentToken }),
-    ...(trimmed(row.central_url) || !/^https?:\/\//i.test(environmentCentral) ? {} : { central_url: environmentCentral }),
-  };
-  const installer = saasInstallerConfigFrom(rows.settings[SAAS_INSTALLER_CONFIG_KEY]);
-  // The installer card names the template every site is built from, and on a platform that *is* the release
-  // repository. Reading it here is what makes the owner's own screen agree with Settings → Integrations →
-  // SaaS Installer, which has been listing those tags all along: without it a platform with an update token
-  // stored and no repository named asked *itself* for a version, and reported its `package.json` as the
-  // answer.
-  const github = githubUpdateSourceFrom(undefined, rows.settings[GITHUB_CONFIG_KEY], config.repository, installer.template_repo);
+  const config = updateConfigFrom(rows.settings[UPDATE_CONFIG_KEY]);
+  const github = releaseSourceFrom({ updates: config, github: rows.settings[GITHUB_CONFIG_KEY], env: options?.env });
   return {
-    // `repository` is filled from the resolved source so the screen shows the repository a check will read
-    // and `checkForUpdates` prefers it over the central server. A site that names one keeps its own answer.
-    config: { ...config, ...(config.repository || !github ? {} : { repository: github.repo }) },
+    config,
+    /** `{ repo, token, custom, origin }` — the repository and optional credential a release list is read with. */
     github,
     /** The release tag the SaaS installer recorded, as a plain version — or '' when it recorded none. */
     installed: saasInstalledVersionFrom(rows.settings[SAAS_INSTALLER_CONFIG_KEY]),
@@ -851,27 +807,18 @@ export async function latestCommitFor({ owner = true, fetchImpl = fetch, env = p
 }
 
 /**
- * Reads the release tags of the repository this site is updated from — the repository Settings → Updates
- * names, or the one the GitHub integration holds (`githubUpdateSourceFrom`).
+ * The newest stable release of the release repository, as a check answer's `{ app, plugins }` — the same
+ * thing `checkForUpdates` builds on, kept for callers that want only the release.
  *
- * The tag GitHub lists *is* the release: there is no file to forget to publish, no cache to go stale and
- * no second copy of a version number to disagree with the first. The whole conversation is
- * `server/githubReleases.mjs` — that file reads `/releases` and falls back to `/tags`, and this function
- * only picks the newest tag the configured channel may be offered and hands it to `checkAnswerFrom` in
- * the same shape a central answer has.
- *
- * A repository with no release tag yet is a *sentence*, not a 404: `null` back from
- * `latestReleaseFrom` means "tag a release" and the administrator is told exactly that.
- *
- * @param {{ source: { repo: string, token: string }, channel?: string, fetchImpl?: typeof fetch }} options
+ * @param {{ source: { repo: string, token?: string }, fetchImpl?: typeof fetch }} options
  */
-export async function fetchGithubCheck({ source, channel = 'stable', fetchImpl = fetch }) {
-  const fetched = await fetchGithubReleases({ repo: source.repo, token: source.token, fetchImpl });
-  const release = latestReleaseFrom(fetched.releases, { channel });
-  if (!release) {
-    throw new UpdateError(`${fetched.repo} has no published ${channel === 'beta' ? 'pre-release' : 'release'} tag yet. Tag a release on GitHub (for example v1.0.0) and the next check finds it.`, 404);
+export async function fetchGithubCheck({ source, fetchImpl = fetch }) {
+  try {
+    const list = await listRecentReleases({ source, fetchImpl });
+    return { app: list.releases[0], plugins: {} };
+  } catch (error) {
+    throw toUpdateError(error);
   }
-  return { app: release, plugins: {} };
 }
 
 /**
@@ -946,84 +893,53 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
 };
 
 /**
- * The check both hosts run: the repository Settings → Updates names, else the central server when this
- * site has a token for it, else the release tags of whichever repository the GitHub integration holds —
- * and a sentence naming what to configure when none of those applies.
+ * The check both hosts run: read the release tags of the release repository from GitHub, and compare the
+ * newest stable one with what this site runs.
  *
- * The order is deliberate, and it is what stops a check answering from the wrong repository:
+ * GitHub is the only source. A client site never asks react-wp.com — the release repository is public (or
+ * readable with the site owner's own GitHub token), so there is no platform token, no second source and no
+ * "the first source could not be read" note to show before a successful answer. `server/releaseList.mjs`
+ * owns the read (stable releases only, newest five, cached for a few minutes, a plain sentence for a rate
+ * limit or a 404) and this function only shapes it into the answer the screen already understands, with the
+ * five releases attached as `releases` for the version picker.
  *
- *   - A repository named on Settings → Updates is the administrator saying "these are the tags this site
- *     is released on", so it is asked first. A plugin or platform edition whose own repository publishes
- *     these releases must never be answered by the central server's list of the core releases instead.
- *   - A licensed site that names no repository asks the platform, which also answers for the plugins it
- *     sells; its own tags answer when that fails.
- *   - A site with no token has nothing to ask but GitHub.
+ * Nothing here reads `package.json`: this site's version is whatever the caller reports as installed, and
+ * the newest version is a release tag.
  *
- * A **managed site** (`owner: false`) has none of that order: it asks `react-wp.com` and nothing else.
- * `github` is not merely tried last there, it is never read at all — a customer's site is built from the
- * platform's template, so its release tags are not a release channel and a check must not be answered from
- * them even when a repository would have answered. There is no second source to fall back to, so a failure
- * is the `MANAGED_MESSAGES` sentence for it rather than a list of things to configure.
- *
- * Every attempt that failed is kept as a sentence on the answer (`error`), so an administrator can see
- * why the source they configured was not the one that replied. Both paths end in `checkAnswerFrom`, so
- * the screen cannot tell them apart except by the `source` it is told.
- *
- * Nothing here reads `package.json`: this site's version is whatever the caller reports as installed,
- * which comes from the build's own tag, and the newest version is a release tag. A file that is edited
- * while a release is being prepared can therefore never be mistaken for the release.
- *
- * @param {{ config: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token: string, explicit?: boolean } | null, fetchImpl?: typeof fetch, owner?: boolean }} options
+ * @param {{ config?: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token?: string } | null, fetchImpl?: typeof fetch, list?: Awaited<ReturnType<typeof listRecentReleases>> | null }} options
  */
-export async function checkForUpdates({ config, current, plugins, github = null, fetchImpl = fetch, owner = true }) {
-  // An end user's site is managed by the platform: it never reads GitHub directly. The owner's named
-  // repository is *their* release channel, but a provisioned instance has exactly one — react-wp.com.
-  const source = owner ? (github || githubUpdateSourceFrom(undefined)) : null;
-  // A managed site asks the platform with or without a token: a check is public, so a site that was never
-  // handed one still reads the newest release. Only the owner, who can choose a source and has none, is
-  // asked to configure one.
-  if (owner && !source && !config.token) {
-    throw new UpdateError('No update source is configured for this site. Name the repository the releases are tagged on under Settings → Updates (or Settings → Integrations → GitHub) — a public repository needs no token — or save an update token here to ask the central server.', 400);
-  }
-  /**
-   * GitHub first when the administrator named the repository, and always when there is no token to ask.
-   * The central server comes after it even without a token: its check is public, and it is the only answer
-   * a site built from a *private* template can get — such a site cannot read the template's tags itself
-   * (GitHub answers 404/401), which used to end the check with that refusal.
-   */
-  const order = owner
-    ? (source && (source.explicit || !config.token)
-      ? ['github', 'central']
-      : [...(config.token ? ['central'] : []), ...(source ? ['github'] : [])])
-    : ['central'];
-  /** `{ message, status }` per source that refused, in the order they were tried. */
-  const failures = [];
-  for (const attempt of order) {
+export async function checkForUpdates({ current, plugins, github = null, fetchImpl = fetch, list = null }) {
+  const source = github || releaseSourceFrom({});
+  let recent = list;
+  if (!recent) {
     try {
-      const releases = attempt === 'github'
-        ? await fetchGithubCheck({ source, channel: config.channel, fetchImpl })
-        : await fetchCentralCheck({ config, current, plugins, fetchImpl, managed: !owner });
-      return checkAnswerFrom({
-        source: attempt,
-        ...releases,
-        current,
-        plugins_installed: plugins,
-        // A source that refused before this one answered is a note, not the verdict.
-        error: failures.length ? `Answered by ${attempt === 'central' ? 'the central server' : 'GitHub'}; the first source could not be read: ${failures.map((failure) => failure.message).join(' ')}` : '',
-        // End users see the core only. Plugin releases follow their own lifecycle, never this button.
-        coreOnly: !owner,
-      });
+      recent = await listRecentReleases({ source, fetchImpl });
     } catch (error) {
-      failures.push({
-        message: error instanceof Error ? error.message : `The ${attempt === 'github' ? 'GitHub release tags' : 'central server'} could not be read.`,
-        status: Number(error?.status) || 0,
-      });
+      throw toUpdateError(error);
     }
   }
-  // Nothing answered. The last sentence is the most specific, so it is the one the status is taken from.
-  const message = failures.map((failure) => failure.message).filter(Boolean).join(' ');
-  throw new UpdateError(message || (owner ? 'No update source answered.' : MANAGED_MESSAGES.unreachable), failures[failures.length - 1]?.status || 502);
+  const answer = checkAnswerFrom({
+    source: 'github',
+    app: recent.releases[0],
+    plugins: {},
+    current,
+    plugins_installed: plugins,
+    // The list is a warning, not a failure, when GitHub could not be refreshed and the last answer is shown.
+    error: recent.stale ? recent.warning : '',
+    // Plugin releases follow their own lifecycle, never this button.
+    coreOnly: true,
+  });
+  return { ...answer, releases: describeRecentReleases(recent, current.app) };
 }
+
+/** A release-list refusal as the `UpdateError` every route already maps to a status and a sentence. */
+export const toUpdateError = (error) => {
+  if (error instanceof UpdateError) return error;
+  const message = error instanceof Error && error.message ? error.message : 'The release list could not be read.';
+  const wrapped = new UpdateError(message, Number(error?.status) || 502);
+  wrapped.extra = error?.extra && typeof error.extra === 'object' ? error.extra : {};
+  return wrapped;
+};
 
 /* -- Applying an update -------------------------------------------------------------------------- */
 
@@ -1176,25 +1092,29 @@ export async function triggerDeployHookUrl(hook, { fetchImpl = fetch, env } = {}
  *
  * @param {{ config: any, deployHook: string, selfUpdate: boolean, latestVersion: string, installedVersion: string }} input
  */
-export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, installedVersion, gitDeploy = false }) => {
+export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, installedVersion, gitDeploy = false, move = '' }) => {
   if (!isVersion(latestVersion)) {
     return { mode: 'manual', reason: 'No release is known yet. Run a check for updates first, then try again.', steps: [] };
   }
-  if (compareVersions(latestVersion, installedVersion) <= 0) {
+  // `move` is `moveKindFor`'s word for the chosen release against what is installed. Without it (an older
+  // caller) the release is the newest one, so only "same or older" means there is nothing to do.
+  const kind = move || (compareVersions(latestVersion, installedVersion) > 0 ? 'upgrade' : 'current');
+  if (kind === 'current') {
     return {
       mode: 'manual',
       up_to_date: true,
-      reason: `This site already runs ${installedVersion}, which is the latest release it can see.`,
+      reason: `This site already runs ${installedVersion}, which is the release you chose.`,
       steps: [],
     };
   }
   // A site that deploys from its own GitHub repository is updated by committing the release there; the
-  // deploy hook would only rebuild the commit it already runs. The card that does the commit plans the
-  // merge, asks about conflicts and follows the deployment, so this screen points to it.
+  // deploy hook would only rebuild the commit it already runs. The core update on Settings → Integrations →
+  // GitHub & Vercel plans the merge, asks about conflicts and follows the deployment, and Dashboard →
+  // Updates shows that same flow — so this answer exists only for a caller that did not use it.
   if (gitDeploy) {
     return {
       mode: 'manual',
-      reason: `This site deploys from its own GitHub repository. Apply ${latestVersion} under Settings → Integrations → GitHub & Vercel → Update React-WP core: it commits the release there (keeping your plugins) and Vercel deploys it.`,
+      reason: `This site deploys from its own GitHub repository, so ${latestVersion} is applied as a reviewed commit: use Update on Dashboard → Updates (or Settings → Integrations → GitHub & Vercel → Update React-WP core). Vercel then deploys it.`,
       steps: [],
       git: true,
     };
@@ -1216,11 +1136,29 @@ export const updatePlan = ({ config, deployHook, selfUpdate, latestVersion, inst
   return {
     mode: 'manual',
     reason: selfUpdate
-      ? 'Automatic updates are switched off for this site. Turn them on in Settings → Updates, and this server applies the release itself.'
-      : 'This deployment cannot update itself yet. Save the deploy hook its host builds from under Settings → Integrations → Deployments (Vercel → Project → Settings → Git → Deploy Hooks), and Update now starts that build.',
+      ? 'Automatic updates are switched off for this site. Turn on “Let this server update itself” under Dashboard → Updates → Where updates come from, and Update now applies the release on this server.'
+      : 'This site cannot update itself from here. Connect it to its own GitHub repository and Vercel project (Settings → Integrations → GitHub & Vercel), or save a deploy hook its host builds from (Settings → Integrations → Deployments).',
     steps: [],
   };
 };
+
+/**
+ * What a request to move to a release needs: the five-release list (re-read here, cached), the release the
+ * request named — which must be one of them — and a confirmation when it is older than what is installed.
+ * Anything refused is an `UpdateError` carrying a sentence, so a route never answers a bare status.
+ *
+ * @param {{ github: { repo: string, token?: string }, tag?: unknown, confirmDowngrade?: unknown, installed: string, fetchImpl?: typeof fetch }} input
+ */
+export async function resolveUpdateTarget({ github, tag, confirmDowngrade, installed, fetchImpl = fetch }) {
+  try {
+    const list = await listRecentReleases({ source: github, fetchImpl });
+    const release = selectRelease(list, tag);
+    assertDowngradeConfirmed({ installed, release, confirmed: confirmDowngrade === true });
+    return { list, release, move: moveKindFor(installed, release.version) };
+  } catch (error) {
+    throw toUpdateError(error);
+  }
+}
 
 /**
  * Runs the one thing a deployed site can do itself: call the hook that starts its build.

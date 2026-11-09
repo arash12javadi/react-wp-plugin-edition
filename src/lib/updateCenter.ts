@@ -1,22 +1,24 @@
 /**
- * Browser half of Dashboard → Updates: the check, the apply, and the progress of a self-update.
+ * Browser half of Dashboard → Updates: the check, the version picker, the apply, and the progress of a
+ * self-update.
  *
- * The four endpoints behind this file are served by both hosts — `server/updateRoutes.mjs` on
+ * The five endpoints behind this file are served by both hosts — `server/updateRoutes.mjs` on
  * `node server.mjs` and `src/server/routes/updates.ts` on the universal engine — and answer the same
- * JSON, because both call `server/updateCenter.mjs`. Nothing here talks to GitHub, and nothing here
- * ever sees the update token: the configuration lives in `system_settings.updates_config`, is read
- * server-side, and comes back masked as `has_token`. That is what keeps a private repository private.
+ * JSON, because both call the same shared modules. The server reads the release list from GitHub (the
+ * public release repository); nothing here talks to GitHub or react-wp.com, and nothing here ever sees a
+ * token: the answers carry `has_token` at most.
  *
- * The shapes below mirror the shared module's returns. They are declared here rather than imported
- * from a `.d.mts`, because the screen is what reads them and a change on the server must show up as a
- * type error in the component that renders it.
+ * The shapes below mirror the shared modules' returns. They are declared here rather than imported from a
+ * `.d.mts`, because the screen is what reads them and a change on the server must show up as a type error
+ * in the component that renders it.
  *
- * Two things this file deliberately does *not* do: it never guesses whether an update exists (the
- * server compares versions, and a browser-side comparison could disagree with the plan the apply step
- * would use), and it never reports an update as installed (the run record says what happened).
+ * Two things this file deliberately does *not* do: it never guesses whether an update exists (the server
+ * compares versions, and a browser-side comparison could disagree with the plan the apply step would use),
+ * and it never reports an update as installed (the run record says what happened).
  */
 import { client, getSystemSetting, setSystemSetting } from './db';
 import { rwp } from './rwp';
+import { LEGACY_UPDATE_CONFIG_KEYS, nextUpdateConfigRow } from './updateConfigRow';
 import {
   autoCheckIntervals,
   defaultUpdateSettings,
@@ -34,9 +36,6 @@ export { installedAppVersion };
 /** `system_settings` rows this feature owns, in step with `server/updateCenter.mjs`. */
 export const updateConfigKey = 'updates_config';
 export const versionStateKey = 'version_state';
-
-/** Where the central server lives when the saved configuration names no other. */
-export const defaultCentralUrl = 'https://react-wp.com';
 
 /** A release as the browser may see it: no download URL, which only an installer needs. */
 export interface UpdateRelease {
@@ -65,57 +64,39 @@ export interface AvailableUpdate {
   release: UpdateRelease | null;
 }
 
-/** `updates_config` as the server describes it back — the token is `has_token`, never the value. */
+/**
+ * `updates_config` as the server describes it back. It holds no secret. An update-server address, token or
+ * channel written by an older version is not part of it: they are ignored, and removed from the row the next
+ * time the settings are saved (`saveUpdateConfig`).
+ */
 export interface UpdateConfigView {
-  central_url: string;
-  /**
-   * `owner/name` of the repository this site's releases are tagged on, as named on Settings → Updates.
-   * Empty means "whichever repository the GitHub integration holds" (`github_config`), and naming one makes
-   * GitHub the first source a check asks.
-   */
+  /** `owner/name` of the release repository named on this screen; empty means the default. */
   repository: string;
-  channel: 'stable' | 'beta';
   auto_check: AutoCheck;
   notify: boolean;
   /** Opt-in: whether `POST /api/admin/system/update` may rewrite this server's checkout. */
   self_update: boolean;
-  has_token: boolean;
-  /** Which source a check asks first: the named repository, the central server when there is a token for it, else GitHub. */
-  source: 'central' | 'github';
-  /**
-   * True when this viewer is an end user whose updates are managed by `react-wp.com`: the server has
-   * already redacted `repository`, `central_url`, `has_token` and the GitHub source, and the screen hides
-   * the "Where updates come from" section.
-   */
-  managed?: boolean;
 }
 
 /**
- * The GitHub repository a check may read directly — the source for a deployment that owns the repository
- * its releases are tagged on. `has_token` is the masked credential: a public repository needs none, which is
- * why `configured` is the field that decides whether this source can answer at all.
+ * The release repository a check reads, and whether a GitHub token is used to read it. The token is the
+ * optional one saved under Settings → Integrations → GitHub; it only lifts GitHub's anonymous rate limit and
+ * is never sent to the browser.
  */
 export interface GithubSourceView {
   repo: string;
   has_token: boolean;
   configured: boolean;
-  /** The repository is fixed by this deployment's environment (a client site made by the installer). */
-  pinned?: boolean;
+  /** Where the name came from: this screen, the deployment's environment, or the built-in default. */
+  origin: 'saved' | 'environment' | 'default';
 }
 
 /** What this host can do with an update. `reason` is written to be shown, never parsed. */
 export interface UpdateSupport {
   available: boolean;
+  /** True when this server runs from a git checkout, which is what "update its own checkout" needs. */
   repo: boolean;
   supported: boolean;
-  /**
-   * How a *managed* site gets a release, decided by the server (`managedUpdateSupport` in
-   * `server/updateCenter.mjs`): `self` when this server can download and apply the package itself,
-   * `platform` when the platform that publishes it rebuilds the site instead, and `manual` when neither is
-   * possible. Absent on a deployment that owns its own update channel, and for a site talking to a server
-   * build that predates the field — which is why nothing here is decided by `mode` alone.
-   */
-  mode?: 'self' | 'platform' | 'manual';
   reason: string;
   branch?: string;
   head?: string;
@@ -125,11 +106,42 @@ export interface UpdateSupport {
   app_name?: string;
 }
 
+/** One of the five most recent stable releases, as the picker shows it. */
+export interface RecentRelease {
+  tag: string;
+  version: string;
+  title: string;
+  released: string;
+  /** The first few lines of the release notes. */
+  notes: string[];
+  changelog_url: string;
+  critical: boolean;
+  /** The newest release. */
+  latest: boolean;
+  /** The release this site runs. */
+  installed: boolean;
+  /** What choosing it means: `downgrade` needs an explicit confirmation. */
+  move: 'upgrade' | 'current' | 'downgrade';
+}
+
+/** `POST /api/admin/updates/releases`: the picker's list, newest first. */
+export interface RecentReleases {
+  repository: string;
+  checked_at: string;
+  cached: boolean;
+  /** True when GitHub could not be asked just now and the last list is shown (`warning` says why). */
+  stale: boolean;
+  warning: string;
+  installed: string;
+  latest_tag: string;
+  releases: RecentRelease[];
+}
+
 /** The answer to one check: both sources converge on this shape (`checkAnswerFrom`). */
 export interface UpdateCheckAnswer {
   format: 'rwp-update-center';
   version: 1;
-  source: 'central' | 'github';
+  source: 'github';
   checked_at: string;
   app: {
     installed: string;
@@ -154,12 +166,10 @@ export interface UpdateCheckAnswer {
   releaseUrl?: string;
   /** Newest commit of the update repository; sent to the platform owner only. */
   latestCommit?: { sha: string; title: string; description: string; author: string; date: string; url: string } | null;
-  /**
-   * Why the source that was *not* used did not answer. A site that names a repository reads `error` when the
-   * repository refused and the platform answered instead, and the other way round; empty when the first
-   * source asked answered. Written to be shown, never parsed.
-   */
+  /** Set when GitHub could not be refreshed just now and the last release list is shown. Written to be shown. */
   error: string;
+  /** The five most recent stable releases, for the version picker. */
+  releases: RecentReleases;
   config: UpdateConfigView;
   /** The repository this deployment reads release tags from, when it has one. */
   github: GithubSourceView;
@@ -175,9 +185,12 @@ export interface UpdatesOverview {
   readable: boolean;
   error: string;
   support: UpdateSupport;
+  /** Whether "let this server update its own checkout" can ever apply on this host (a git checkout). */
+  can_self_update: boolean;
+  /** Whether this site deploys from its own GitHub repository and Vercel project: it updates through the core update. */
+  git_deploy: boolean;
   /** The central plugin directory, for the Marketplace screen. */
   plugin_directory: string;
-  channels: string[];
   auto_check: string[];
   /** True only for the owner on a deployment that sets `OWNER_GITHUB_REPO`: the screen shows just the latest commit and release. */
   owner_commit_view?: boolean;
@@ -186,20 +199,17 @@ export interface UpdatesOverview {
 /**
  * How an update would be applied. `up_to_date` is a `manual` plan whose reason says so.
  *
- * Four modes, one per way a release can reach a site:
- *
- *   - `manual` — nowhere to send it; `reason` names what to configure (or that it is already current).
- *   - `self` — a server that owns its checkout runs the update itself, and that includes a *managed* site
- *     whose files it can write: the package comes from `react-wp.com` and this server applies it.
+ *   - `manual` — nowhere to send it; `reason` names what to do (or that it is already current).
+ *   - `self` — a server that owns its checkout runs the update itself.
  *   - `deploy-hook` — a saved hook URL rebuilds the site on its host.
- *   - `platform` — a managed site whose host cannot install a package (a prebuilt Vercel deployment: the
- *     files are read-only and the repository never carries `dist/`). `Update now` asks `react-wp.com` to
- *     build the release and upload it to the site's own project, so the work, and the steps in this plan,
- *     are the platform's rather than this server's.
+ *
+ * A site connected to its own GitHub repository and Vercel project does not use this: Dashboard → Updates
+ * shows the core update flow for it (`git: true` marks the plan that points there).
  */
 export interface UpdatePlan {
-  mode: 'manual' | 'deploy-hook' | 'self' | 'platform';
+  mode: 'manual' | 'deploy-hook' | 'self';
   up_to_date?: boolean;
+  git?: boolean;
   reason: string;
   /** The steps the screen can show while the work runs. */
   steps: string[];
@@ -214,16 +224,10 @@ export interface SelfUpdateRun {
   finished_at: string;
   from: string;
   to: string;
-  /** `git` (fetch + merge) or `package` (download the release ZIP from the central server). */
-  source?: 'git' | 'package';
   ref: string;
   previous: string;
   target: string;
-  /** The central package endpoint and bearer token, when `source === 'package'`. */
-  package_url?: string;
-  package_token?: string;
-  site?: string;
-  /** Where the runner backed up the files a package update replaced. */
+  /** Where the runner backed up the files an update replaced. */
   backup?: string;
   restart: 'pm2' | 'manual';
   app_name: string;
@@ -234,17 +238,12 @@ export interface SelfUpdateRun {
 }
 
 /**
- * What `applyUpdate` produced, in the four shapes the route can answer with.
+ * What `applyUpdate` produced.
  *
- * `manual` is not an error: it is the route saying "this host cannot do this", and `plan.reason` carries
- * the sentence that names what to configure. That is why the client classifies the response instead of
- * throwing on a 409.
- *
- * A managed site is either `self` — `react-wp.com` publishes the package and this server downloads and
- * applies it — or `platform`, where the platform did the work: it built the release and uploaded it to this
- * site's own deployment, and what is left is the promotion of that deployment, which the next check is the
- * evidence for. There is no run to poll in the second case, which is why it has its own kind rather than an
- * empty `run`.
+ * `manual` is not a failure of the request: it is the route saying "this host cannot do this", and
+ * `plan.reason` carries the sentence. Anything the server refuses outright (a tag that is not in the list,
+ * a downgrade nobody confirmed, a non-owner) throws an `UpdateRequestError` whose message is the server's
+ * sentence — never a bare status.
  */
 export type UpdateOutcome =
   | { kind: 'up_to_date'; plan: UpdatePlan; check: UpdateCheckAnswer }
@@ -257,19 +256,38 @@ export type UpdateOutcome =
     plan: UpdatePlan;
     check: UpdateCheckAnswer;
   }
-  | {
-    kind: 'platform';
-    queued: boolean;
-    /** The Vercel project the platform rebuilt, as it recorded it. Empty when its answer did not name one. */
-    project: string;
-    /** The release it uploaded, which is what the promotion will serve. */
-    version: string;
-    deployment: { id: string; url: string; ready_state: string } | null;
-    message: string;
-    plan: UpdatePlan;
-    check: UpdateCheckAnswer;
-  }
   | { kind: 'self'; run: SelfUpdateRun; plan: UpdatePlan; check: UpdateCheckAnswer };
+
+/**
+ * A server refusal. `message` is always a sentence; `needsConfirmation` is set when the server asks for an
+ * explicit "yes" (`downgrade`) before it will do the thing.
+ */
+export class UpdateRequestError extends Error {
+  status: number;
+  needsConfirmation: string;
+  constructor(message: string, status: number, needsConfirmation = '') {
+    super(message);
+    this.name = 'UpdateRequestError';
+    this.status = status;
+    this.needsConfirmation = needsConfirmation;
+  }
+}
+
+/**
+ * The sentence for a refusal whose body named none. The server always names one (`refusalBody`), so this is
+ * the safety net for a proxy or a platform error page in front of it — and it says what the status means
+ * instead of printing it bare.
+ */
+export const sentenceForStatus = (status: number): string => {
+  if (status === 401) return 'Your session has expired. Sign in again.';
+  if (status === 403) return 'Your account is not allowed to do this. Only the site owner (the Administrator account) can apply updates.';
+  if (status === 404) return 'This site does not have the update service at this address. Reload the page; if it keeps happening, the site needs the API server that answers /api.';
+  if (status === 409) return 'The update could not start because the site is not in a state that allows it. Reload the page and try again; the Updates screen shows what to do next.';
+  if (status === 428) return 'The update needs your confirmation first. Review it on the Updates screen and confirm.';
+  if (status === 429) return 'Too many requests just now. Wait a minute and try again.';
+  if (status >= 500) return 'The site’s server hit a problem while handling the update request. Nothing was changed. Try again in a minute; if it repeats, check the server log.';
+  return 'The update request was refused. Reload the page and try again.';
+};
 
 /**
  * The signed-in administrator's token. Every route in this file decides what may be done from it —
@@ -286,10 +304,10 @@ const accessToken = async (): Promise<string> => {
 /**
  * One request, with the status kept alongside the body.
  *
- * `applyUpdate` has to tell a 409 (a plan this host cannot carry out, with its by-hand steps) apart from
- * a 502 (a deploy hook that refused), so the status is part of the answer rather than an exception. A
- * bodyless 404 means the endpoint is not there at all — a static SPA, or a fetch that never reached the
- * API server — and that is reported as such, because it sends the administrator somewhere different.
+ * `applyUpdate` has to tell a 409 (a plan this host cannot carry out) apart from a 502 (a deploy hook that
+ * refused), so the status is part of the answer rather than an exception. A bodyless 404 means the endpoint
+ * is not there at all — a static SPA, or a fetch that never reached the API server — and that is reported as
+ * such, because it sends the administrator somewhere different.
  */
 const request = async <T>(path: string, init: RequestInit = {}): Promise<{ status: number; body: T }> => {
   const token = await accessToken();
@@ -310,86 +328,76 @@ const request = async <T>(path: string, init: RequestInit = {}): Promise<{ statu
   return { status: response.status, body };
 };
 
+/** The sentence a non-200 answer carries: its `error`, else its plan's reason, else the status explained. */
+const refusalOf = (status: number, body: { error?: string; plan?: { reason?: string }; needs_confirmation?: string }): UpdateRequestError =>
+  new UpdateRequestError(
+    String(body.error || body.plan?.reason || sentenceForStatus(status)),
+    status,
+    typeof body.needs_confirmation === 'string' ? body.needs_confirmation : '',
+  );
 
 /**
- * This site's own address, as the platform knows it.
+ * `POST /api/admin/updates/check` — reads the release repository's stable release tags from GitHub (through
+ * this site's own server) and compares the newest with what is installed.
  *
- * A managed site's `Update now` names the site by its public address — the API has no other way to tell
- * `react-wp.com` which Vercel project to rebuild — and the dashboard is opened on exactly that address, so
- * `window.location.origin` is the honest default. Naming one explicitly still wins, for a caller that means
- * a different deployment. The server falls back to the request's own host when this is empty
- * (`siteAddressFrom` in `server/updateCenter.mjs`), so an address is never guessed from thin air.
+ * The plugin list travels with the request because only the browser knows what this build activated.
  */
-const siteAddress = (site?: string): string => {
-  const named = String(site || '').trim();
-  if (named) return named;
-  return typeof window === 'undefined' ? '' : window.location.origin;
-};
-
-/**
- * `POST /api/admin/updates/check` — asks the central server, or reads this deployment's own GitHub release
- * tags when the site has no token for it.
- *
- * The plugin list travels with the request because only the browser knows what this build activated, and
- * the central server needs it to say which of *this site's* plugins have newer releases. The `site` value
- * is the licence identifier the central server matches on, when one is configured.
- */
-export const checkForUpdates = async (options: { site?: string } = {}): Promise<UpdateCheckAnswer> => {
+export const checkForUpdates = async (): Promise<UpdateCheckAnswer> => {
   const { status, body } = await request<UpdateCheckAnswer & { error?: string }>('/api/admin/updates/check', {
     method: 'POST',
-    body: JSON.stringify({ plugins: installedPlugins(), site: siteAddress(options.site) }),
+    body: JSON.stringify({ plugins: installedPlugins() }),
   });
-  if (status !== 200) throw new Error(body.error || `The update check failed (HTTP ${status}).`);
+  if (status !== 200) throw refusalOf(status, body);
   return body;
 };
 
 /**
- * `POST /api/admin/system/update` — applies what the check found, however this host can.
- *
- * The route decides between a platform rebuild, a deploy hook, a self-update run and a by-hand plan; this
- * only names the answer. `site` is this site's address, which a `platform` plan needs and a managed site
- * therefore always sends. `ref` chooses what a self-update checks out, and is left empty in normal use so
- * the runner follows the branch the site already runs.
+ * `POST /api/admin/updates/releases` — the five most recent stable releases, for the version picker. The
+ * same call serves Dashboard → Updates and Settings → Integrations → GitHub & Vercel. `refresh` asks for a
+ * fresh read; the server still limits how often it may go to GitHub.
  */
-export const applyUpdate = async (options: { site?: string; ref?: string } = {}): Promise<UpdateOutcome> => {
-  const { status, body } = await request<Record<string, unknown> & { error?: string }>('/api/admin/system/update', {
+export const fetchRecentReleases = async (refresh = false): Promise<RecentReleases> => {
+  const { status, body } = await request<RecentReleases & { error?: string }>('/api/admin/updates/releases', {
     method: 'POST',
-    body: JSON.stringify({ plugins: installedPlugins(), site: siteAddress(options.site), ref: options.ref || '' }),
+    body: JSON.stringify(refresh ? { refresh: true } : {}),
+  });
+  if (status !== 200) throw refusalOf(status, body);
+  return body;
+};
+
+/**
+ * `POST /api/admin/system/update` — applies one of the five listed releases, however this host can.
+ *
+ * `tag` is a tag from the picker (empty means the latest); the server re-reads the list and refuses anything
+ * else. Choosing an older tag than the one installed needs `confirmDowngrade: true`, which only the screen's
+ * explicit confirmation sets. The route decides between a deploy hook, a self-update run and a plan that says
+ * what to do; every non-200 answer is turned into an `UpdateRequestError` carrying the server's sentence.
+ */
+export const applyUpdate = async (options: { tag?: string; confirmDowngrade?: boolean } = {}): Promise<UpdateOutcome> => {
+  const { status, body } = await request<Record<string, unknown> & { error?: string; needs_confirmation?: string }>('/api/admin/system/update', {
+    method: 'POST',
+    body: JSON.stringify({
+      plugins: installedPlugins(),
+      tag: options.tag || '',
+      confirmDowngrade: options.confirmDowngrade === true,
+    }),
   });
   const plan = body.plan as UpdatePlan | undefined;
   const check = body.check as UpdateCheckAnswer | undefined;
-  if (!plan || !check) {
-    throw new Error(body.error || `The update could not be started (HTTP ${status}).`);
-  }
+  if (!plan || !check) throw refusalOf(status, body);
   if (plan.up_to_date) return { kind: 'up_to_date', plan, check };
-  if (plan.mode === 'manual') {
-    // 409: a refusal that carries its sentence in `plan.reason`. Anything else under `manual` is that same answer.
-    return { kind: 'manual', plan, check };
-  }
-  if (plan.mode === 'platform') {
-    // A managed site the platform rebuilt: the release was built and uploaded before this answered, so
-    // there is no run to follow — `version` is what the promotion will serve.
-    return {
-      kind: 'platform',
-      queued: body.queued === true,
-      project: String(body.project || ''),
-      version: String(body.version || ''),
-      deployment: (body.deployment as { id: string; url: string; ready_state: string } | null) || null,
-      message: String(body.message || ''),
-      plan,
-      check,
-    };
-  }
-  if (plan.mode === 'deploy-hook' || status === 502) {
+  if (plan.mode === 'manual') return { kind: 'manual', plan, check };
+  if (plan.mode === 'deploy-hook') {
     return {
       kind: 'deploy',
       queued: body.queued === true,
-      message: String(body.message || ''),
+      message: String(body.message || body.error || ''),
       deploy: body.deploy as { configured: boolean; triggered: boolean; status?: number; error?: string },
       plan,
       check,
     };
   }
+  if (status >= 400 || !body.run) throw refusalOf(status, body);
   return { kind: 'self', run: body.run as SelfUpdateRun, plan, check };
 };
 
@@ -399,7 +407,7 @@ export const fetchUpdateRun = async (id: string): Promise<{ run: SelfUpdateRun; 
   const { status, body } = await request<{ run: SelfUpdateRun; log: string; error?: string }>(
     `/api/admin/system/update-status${query}`,
   );
-  if (status !== 200) throw new Error(body.error || `That update run could not be read (HTTP ${status}).`);
+  if (status !== 200) throw refusalOf(status, body);
   return body;
 };
 
@@ -408,7 +416,7 @@ export const fetchUpdateRuns = async (): Promise<{ runs: SelfUpdateRun[]; suppor
   const { status, body } = await request<{ runs: SelfUpdateRun[]; support: UpdateSupport; error?: string }>(
     '/api/admin/system/update-status',
   );
-  if (status !== 200) throw new Error(body.error || `The update history could not be read (HTTP ${status}).`);
+  if (status !== 200) throw refusalOf(status, body);
   return body;
 };
 
@@ -423,31 +431,29 @@ export const installedPlugins = (): Array<{ id: string; name: string; version: s
 /** `GET /api/admin/updates` — the installed version, the configuration, and this host's capabilities. */
 export const fetchUpdatesOverview = async (): Promise<UpdatesOverview> => {
   const { status, body } = await request<UpdatesOverview & { error?: string }>('/api/admin/updates');
-  if (status !== 200) throw new Error(body.error || `The Updates screen could not be loaded (HTTP ${status}).`);
+  if (status !== 200) throw refusalOf(status, body);
   return body;
 };
 
 /* -- Writing the two rows the screen owns --------------------------------------------------------- */
 
 /**
- * Saves `system_settings.updates_config`, keeping whatever the patch does not name.
+ * Row keys older versions wrote and nothing reads any more: the update server's address, its bearer token and
+ * the release channel. They are removed whenever the settings are saved, so a stored token does not outlive
+ * the screen that used it.
+ */
+export const legacyUpdateConfigKeys = LEGACY_UPDATE_CONFIG_KEYS;
+
+/**
+ * Saves `system_settings.updates_config`, keeping whatever the patch does not name and dropping the keys in
+ * `legacyUpdateConfigKeys`.
  *
  * Written from the browser because that is where the administrator is: the server reads this row with a
- * service key or a direct connection, and never needs to write it. `token` is the one field whose
- * *absence* means "leave it alone" — the screen is never sent the stored token, so an empty input must
- * not wipe it. Passing `null` deletes it, which is how a site stops using the central server.
+ * service key or a direct connection, and never needs to write it.
  */
-export const saveUpdateConfig = async (patch: { token?: string | null } & Partial<Omit<UpdateConfigView, 'has_token' | 'source'>>) => {
+export const saveUpdateConfig = async (patch: Partial<UpdateConfigView>) => {
   const stored = await getSystemSetting<Record<string, unknown>>(updateConfigKey, {});
-  const next: Record<string, unknown> = { ...(stored && typeof stored === 'object' ? stored : {}) };
-  Object.entries(patch).forEach(([key, value]) => {
-    if (key === 'token') {
-      if (value === null) next.token = '';
-      else if (typeof value === 'string' && value.trim()) next.token = value.trim();
-      return;
-    }
-    next[key] = value;
-  });
+  const next = nextUpdateConfigRow(stored, patch);
   if (!(await setSystemSetting(updateConfigKey, next))) {
     throw new Error('This browser is not allowed to store the update configuration. Sign in again as an administrator and retry.');
   }
@@ -463,12 +469,12 @@ export interface VersionStateEntry {
   to: string;
   /**
    * How the release arrived. `manual` is a plan this host could not carry out, recorded so the screen can
-   * say so later; `self` is a run this server performed itself, which is also how a managed site installs
-   * the package `react-wp.com` publishes; `deploy-hook` is a hook that was called; and `platform` is the
-   * platform rebuilding the site — the one mode where the new version arrives on a *later* deployment
-   * rather than in something this screen can watch, so it is settled the way a hook is.
+   * say so later; `self` is a run this server performed itself; `deploy-hook` is a hook that was called, and
+   * the new version arrives on a *later* deployment, so it is settled by the next check; `git` is a core
+   * update committed to the site's own repository (Vercel's deployment state settles it). `platform` is
+   * only ever read from rows an older version wrote.
    */
-  mode: 'deploy-hook' | 'self' | 'manual' | 'platform';
+  mode: 'deploy-hook' | 'self' | 'manual' | 'git' | 'platform';
   status: 'started' | 'triggered' | 'completed' | 'failed';
   error?: string;
 }
@@ -530,7 +536,7 @@ export const updateStatusFrom = (answer: UpdateCheckAnswer): UpdateStatus => {
   return {
     checked_at: answer.checked_at || new Date().toISOString(),
     error: answer.error || '',
-    source: answer.source === 'central' ? 'central' : 'github',
+    source: 'github',
     installed,
     latest: latest
       ? {

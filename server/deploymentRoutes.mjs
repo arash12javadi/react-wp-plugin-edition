@@ -11,8 +11,10 @@
  *   POST /api/admin/deployment/connect               the confirmed connection (see gitDeploy/setup.mjs)
  *   POST /api/admin/deployment/disconnect            forget the sealed Vercel token and the project
  *   GET  /api/admin/deployment/status?sha=           Vercel's state for one commit (gitDeploy/deploymentStatus.mjs)
- *   POST /api/admin/deployment/core-update/plan      `{ version? }` → the merge plan and its fingerprint
- *   POST /api/admin/deployment/core-update/apply     `{ version, fingerprint, resolutions, mode }`
+ *   POST /api/admin/deployment/core-update/plan      `{ tag? }` → the merge plan and its fingerprint; `tag` must be one of
+ *                                                    the five most recent stable releases (empty = latest)
+ *   POST /api/admin/deployment/core-update/apply     `{ tag, fingerprint, resolutions, mode, confirmDowngrade? }`; an older
+ *                                                    tag than the repository runs needs `confirmDowngrade: true` (428)
  *   POST /api/admin/deployment/plugin-updates/check  every installed plugin against its own `<id>-v<version>` release
  *   POST /api/admin/deployment/plugin-updates/apply  `{ id, version }` → one commit under plugins/<id>/ (no core change)
  *
@@ -30,7 +32,7 @@ import { DeployError } from './deploy/errors.mjs';
 import { redactSecrets } from './deploy/http.mjs';
 import { InstallError } from './pluginInstaller.mjs';
 import { githubTokenFrom, GITHUB_CONFIG_KEY } from './integrationConfig.mjs';
-import { fetchGithubReleases, latestReleaseFrom } from './githubReleases.mjs';
+import { ReleaseListError, listRecentReleases, moveKindFor, releaseSourceFrom, selectRelease, DOWNGRADE_WARNING } from './releaseList.mjs';
 import { UPDATE_CONFIG_KEY } from './updateCenter.mjs';
 import {
   VERCEL_DEPLOY_CONFIG_KEY,
@@ -79,12 +81,12 @@ function githubTargetOrNull(githubRow, connection) {
   }
 }
 
-/** Where core releases come from: Settings → Updates, else RWP_RELEASE_REPO. Never the site's own repository. */
-function releaseSourceFrom(updatesRow, githubRow, env) {
-  const repo = str(updatesRow?.repository) || str(env.RWP_RELEASE_REPO);
-  if (!repo) return null;
-  return { repo, token: str(env.RWP_RELEASE_TOKEN) || githubTokenFrom(githubRow) };
-}
+/**
+ * Where core releases come from: Dashboard → Updates, else RWP_RELEASE_REPO, else the public default
+ * (`arash12javadi/react-wp-plugin-edition`). Never the site's own repository, and never react-wp.com. The
+ * token is the site's own optional GitHub token and only lifts GitHub's anonymous rate limit.
+ */
+const releaseSourceFor = (updatesRow, githubRow, env) => releaseSourceFrom({ updates: updatesRow, github: githubRow, env });
 
 /**
  * @param {object} options
@@ -174,7 +176,7 @@ export async function handleDeploymentRequest(options) {
         teamId: str(body.teamId),
         project: body.project && typeof body.project === 'object' ? body.project : null,
         confirm: body.confirm && typeof body.confirm === 'object' ? body.confirm : {},
-        releaseSource: releaseSourceFrom(updatesRow, githubRow, env),
+        releaseSource: releaseSourceFor(updatesRow, githubRow, env),
         installedVersion: await installedVersion(),
         environment,
         env,
@@ -206,13 +208,13 @@ export async function handleDeploymentRequest(options) {
       return refuse(409, 'Connect this site to its GitHub repository and Vercel project first (Settings → Integrations → GitHub & Vercel).');
     }
     const updatesRow = await io.read(UPDATE_CONFIG_KEY);
-    const source = releaseSourceFrom(updatesRow, githubRow, env);
+    const source = releaseSourceFor(updatesRow, githubRow, env);
     const target = repositoryTarget(githubTokenFrom(githubRow), connection.repository, connection.branch);
 
     // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
     if (pathname === `${PREFIX}/plugin-updates/check`) {
-      const answer = await checkPluginUpdates({ target, source, channel: str(updatesRow?.channel) || 'stable', fetchImpl });
+      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl });
       return ok(200, answer);
     }
     if (pathname === `${PREFIX}/plugin-updates/apply`) {
@@ -222,24 +224,24 @@ export async function handleDeploymentRequest(options) {
         id: str(body.id),
         version: str(body.version),
         coreVersion: await installedVersion(),
-        channel: str(updatesRow?.channel) || 'stable',
+        channel: 'stable',
         fetchImpl,
       });
       return ok(200, { result, deployment: result.deployment });
     }
 
-    let version = str(body.version).replace(/^v/i, '');
-    if (!version) {
-      if (!source) return refuse(409, 'No release repository is configured. Name it on Settings → Updates (or set RWP_RELEASE_REPO).');
-      const listing = await fetchGithubReleases({ repo: source.repo, token: source.token, fetchImpl });
-      const latest = latestReleaseFrom(listing.releases, { channel: str(updatesRow?.channel) || 'stable' });
-      if (!latest) return refuse(404, `${source.repo} publishes no release to update to.`);
-      version = str(latest.version);
-    }
+    // The release to move to is one of the five most recent stable releases, re-read here. Only a tag from
+    // that list is accepted — the browser's text is compared for equality with it and never reaches a URL —
+    // and an empty choice means the latest.
+    const list = await listRecentReleases({ source, fetchImpl });
+    const release = selectRelease(list, str(body.tag) || str(body.version));
+    const version = release.version;
+    const confirmedDowngrade = body.confirmDowngrade === true;
 
     if (pathname === `${PREFIX}/core-update/plan`) {
       const plan = await planCoreUpdate({ target, source, toVersion: version, fetchImpl });
-      return ok(200, { plan: describeCorePlan(plan) });
+      const downgrade = moveKindFor(plan.fromVersion, plan.toVersion) === 'downgrade';
+      return ok(200, { plan: describeCorePlan(plan), downgrade, ...(downgrade ? { warning: DOWNGRADE_WARNING } : {}) });
     }
 
     if (pathname === `${PREFIX}/core-update/apply`) {
@@ -250,7 +252,21 @@ export async function handleDeploymentRequest(options) {
           if (choice === 'release' || choice === 'keep') resolutions[path] = choice;
         }
       }
-      const result = await applyCoreUpdate({ target, source, toVersion: version, fingerprint: str(body.fingerprint), resolutions, mode, fetchImpl });
+      const result = await applyCoreUpdate({
+        target,
+        source,
+        toVersion: version,
+        fingerprint: str(body.fingerprint),
+        resolutions,
+        mode,
+        fetchImpl,
+        // Asked once the plan matches what the administrator reviewed and before anything is committed, with
+        // the version the repository really runs (`plan.fromVersion`), not a guess.
+        guard: (plan) => {
+          if (moveKindFor(plan.fromVersion, plan.toVersion) !== 'downgrade' || confirmedDowngrade) return;
+          throw new ReleaseListError(`${DOWNGRADE_WARNING} Confirm the downgrade to ${release.tag} to continue. Nothing was committed.`, 428, { needs_confirmation: 'downgrade' });
+        },
+      });
       if (result.error) return refuse(result.status || 502, result.error, { result });
       return ok(200, {
         result,
@@ -271,6 +287,7 @@ export async function handleDeploymentRequest(options) {
     return refuse(status, message, {
       ...(Array.isArray(error?.steps) && error.steps.length ? { steps: error.steps } : {}),
       ...(Array.isArray(error?.conflicts) ? { conflicts: error.conflicts } : {}),
+      ...(error?.extra && typeof error.extra === 'object' ? error.extra : {}),
     });
   }
 }

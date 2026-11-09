@@ -139,10 +139,16 @@ export const disconnectDeployment = () => call<{ connection: DeploymentConnectio
 export const fetchDeploymentState = (sha: string, since = '') =>
   call<{ deployment: DeploymentState }>(`${BASE}/status?sha=${encodeURIComponent(sha)}${since ? `&since=${encodeURIComponent(since)}` : ''}`);
 
-export const planCoreUpdate = (version = '') =>
-  call<{ plan: CoreUpdatePlanView }>(`${BASE}/core-update/plan`, { method: 'POST', body: version ? { version } : {} });
+/**
+ * Plans a core update to `tag` — one of the five most recent stable releases (empty = the latest). The server
+ * re-reads that list and refuses any other text. `downgrade` is true when `tag` is older than what the
+ * repository runs; `warning` then says what that risks.
+ */
+export const planCoreUpdate = (tag = '') =>
+  call<{ plan: CoreUpdatePlanView; downgrade: boolean; warning?: string }>(`${BASE}/core-update/plan`, { method: 'POST', body: tag ? { tag } : {} });
 
-export const applyCoreUpdate = (input: { version: string; fingerprint: string; resolutions: Record<string, 'release' | 'keep'>; mode: 'direct' | 'pull_request' }) =>
+/** Applies the reviewed plan. An older `tag` than the repository runs needs `confirmDowngrade: true` (the server answers 428 without it). */
+export const applyCoreUpdate = (input: { tag: string; fingerprint: string; resolutions: Record<string, 'release' | 'keep'>; mode: 'direct' | 'pull_request'; confirmDowngrade?: boolean }) =>
   call<{
     result: { applied: boolean; merged: boolean; upToDate?: boolean; commit: { sha: string; url: string; branch: string } | null; pullRequest: { number: number; url: string } | null };
     deployment: { sha: string; state: 'pending' } | null;

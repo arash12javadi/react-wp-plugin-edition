@@ -6,84 +6,28 @@
  * only. Everything runs through this site's own server (`src/lib/gitDeployment.ts`); the Vercel token lives
  * in this component's state while the form is open and is never written to the browser's storage.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { IntegrationCardProps } from '../../core/integrations';
 import {
-  applyCoreUpdate,
   connectDeployment,
   disconnectDeployment,
   fetchDeploymentOverview,
-  fetchDeploymentState,
   inspectGithubAccount,
   inspectVercelAccount,
-  isTerminalDeploymentState,
-  planCoreUpdate,
-  type CoreUpdatePlanView,
   type DeploymentOverview,
-  type DeploymentState,
   type RepositoryChoice,
   type RepositoryInspection,
   type VercelProjectView,
 } from '../../lib/gitDeployment';
+import CoreUpdatePanel from '../update/CoreUpdatePanel';
+import { DeploymentWatcher } from '../update/DeploymentWatcher';
 import styles from './DeploymentCard.module.css';
 
 const messageOf = (value: unknown, fallback: string): string =>
   value instanceof Error && value.message ? value.message : fallback;
 
-const STATE_LABELS: Record<DeploymentState['state'], string> = {
-  pending: 'Committed — waiting for Vercel',
-  not_started: 'Waiting for Vercel to start',
-  queued: 'Queued at Vercel',
-  building: 'Building at Vercel',
-  ready: 'Ready',
-  error: 'Failed — the previous deployment is still serving',
-  canceled: 'Canceled — the previous deployment is still serving',
-  unknown: 'Unknown',
-};
-
-/** Follows one commit until Vercel reports a final state. Polls every 5 s, stops after 30 minutes. */
-export function DeploymentWatcher({ sha, since }: { sha: string; since: string }) {
-  const [state, setState] = useState<DeploymentState | null>(null);
-  const [error, setError] = useState('');
-  const started = useRef(Date.now());
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      try {
-        const { deployment } = await fetchDeploymentState(sha, since);
-        if (cancelled) return;
-        setState(deployment);
-        setError('');
-        if (isTerminalDeploymentState(deployment.state) || Date.now() - started.current > 30 * 60_000) return;
-      } catch (tickError) {
-        if (!cancelled) setError(messageOf(tickError, 'The deployment state could not be read.'));
-      }
-      if (!cancelled) timer = setTimeout(tick, 5000);
-    };
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [sha, since]);
-
-  const label = state ? STATE_LABELS[state.state] || state.state : 'Asking Vercel…';
-  const tone = state?.state === 'ready' ? styles.ok : state && ['error', 'canceled'].includes(state.state) ? styles.bad : styles.wait;
-  return (
-    <div className={styles.watch} role="status" aria-live="polite">
-      <p>
-        Commit <code>{sha.slice(0, 7)}</code>: <strong className={tone}>{label}</strong>
-        {state?.state === 'ready' && state.serving === false ? ' (built, but not promoted to production)' : ''}
-      </p>
-      {state?.reason ? <p className={styles.small}>{state.reason}</p> : null}
-      {state?.error ? <p className={styles.small}>{state.error}</p> : null}
-      {state?.inspectorUrl ? <p className={styles.small}><a href={state.inspectorUrl} target="_blank" rel="noreferrer">Open the deployment in Vercel</a></p> : null}
-      {error ? <p className={styles.errorText}>{error}</p> : null}
-    </div>
-  );
-}
+/** Kept here because other screens (Plugins → updates) import the watcher from this card. */
+export { DeploymentWatcher };
 
 function ConnectForm({ overview, onConnected }: { overview: DeploymentOverview; onConnected: (sha: string) => void }) {
   const [repositories, setRepositories] = useState<RepositoryChoice[] | null>(null);
@@ -297,109 +241,6 @@ function ConnectForm({ overview, onConnected }: { overview: DeploymentOverview; 
   );
 }
 
-function CoreUpdate() {
-  const [version, setVersion] = useState('');
-  const [plan, setPlan] = useState<CoreUpdatePlanView | null>(null);
-  const [resolutions, setResolutions] = useState<Record<string, 'release' | 'keep'>>({});
-  const [mode, setMode] = useState<'direct' | 'pull_request'>('direct');
-  const [busy, setBusy] = useState('');
-  const [error, setError] = useState('');
-  const [result, setResult] = useState<{ text: string; sha: string; since: string; url: string } | null>(null);
-
-  const makePlan = async () => {
-    setBusy('plan');
-    setError('');
-    setResult(null);
-    try {
-      const answer = await planCoreUpdate(version);
-      setPlan(answer.plan);
-      setResolutions({});
-    } catch (planError) {
-      setError(messageOf(planError, 'The update could not be planned.'));
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const apply = async () => {
-    if (!plan) return;
-    setBusy('apply');
-    setError('');
-    try {
-      const answer = await applyCoreUpdate({ version: plan.toVersion, fingerprint: plan.fingerprint, resolutions, mode });
-      const { result: applied } = answer;
-      if (applied.upToDate) setResult({ text: 'Nothing to change: the repository already has this release.', sha: '', since: '', url: '' });
-      else if (applied.pullRequest) setResult({ text: `Pull request #${applied.pullRequest.number} is open. Production changes only when it is merged.`, sha: '', since: '', url: applied.pullRequest.url });
-      else if (applied.commit) setResult({ text: `Committed ${plan.toVersion} to ${plan.branch}. The site is updated once Vercel's deployment is Ready; until then the current version keeps serving.`, sha: applied.commit.sha, since: new Date().toISOString(), url: applied.commit.url });
-      setPlan(null);
-    } catch (applyError) {
-      setError(messageOf(applyError, 'The update was not applied.'));
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const unresolved = plan ? plan.conflicts.filter((item) => !resolutions[item.path]).length : 0;
-
-  return (
-    <div className={styles.form}>
-      <div className={styles.row}>
-        <label className={styles.field}>Version (empty = latest)
-          <input value={version} onChange={(event) => setVersion(event.target.value.trim())} placeholder="e.g. 1.4.0" />
-        </label>
-        <button type="button" onClick={makePlan} disabled={Boolean(busy)}>{busy === 'plan' ? 'Planning…' : 'Review the update'}</button>
-      </div>
-      {plan ? (
-        <div className={styles.plan}>
-          <p>
-            {plan.fromVersion || 'unknown'} → <strong>{plan.toVersion}</strong> from {plan.releaseRepository}. {plan.upToDate ? 'Nothing to change.' : `${plan.updated.length} updated, ${plan.added.length} added, ${plan.deleted.length} deleted, ${plan.unchanged} unchanged.`} Plugins are not touched.
-          </p>
-          {plan.merged.map((item) => (
-            <p key={item.path} className={styles.small}>
-              <code>{item.path}</code> merged{item.carried.length ? `; kept: ${item.carried.join(', ')}` : ''}{item.dropped.length ? `; dropped imports of plugins not in this repository: ${item.dropped.join(', ')}` : ''}.
-            </p>
-          ))}
-          {plan.kept.length ? <details><summary>{plan.kept.length} file(s) you changed are kept</summary><ul>{plan.kept.map((item) => <li key={item.path}><code>{item.path}</code> — {item.reason}</li>)}</ul></details> : null}
-          {plan.warnings.map((warning) => <p key={warning} className={styles.small}>{warning}</p>)}
-          {plan.conflicts.length ? (
-            <fieldset className={styles.step}>
-              <legend>{plan.conflicts.length} file(s) need your decision</legend>
-              {plan.conflicts.map((item) => (
-                <div key={item.path} className={styles.conflict}>
-                  <code>{item.path}</code> <span className={styles.small}>{item.reason}</span>
-                  <select aria-label={`Decision for ${item.path}`} value={resolutions[item.path] || ''} onChange={(event) => setResolutions((current) => ({ ...current, [item.path]: event.target.value as 'release' | 'keep' }))}>
-                    <option value="">Choose…</option>
-                    <option value="release">Use the release&apos;s version</option>
-                    <option value="keep">Keep this repository&apos;s version</option>
-                  </select>
-                </div>
-              ))}
-            </fieldset>
-          ) : null}
-          {!plan.upToDate ? (
-            <>
-              <div className={styles.choices} role="radiogroup" aria-label="How to apply">
-                <label className={styles.inline}><input type="radio" checked={mode === 'direct'} onChange={() => setMode('direct')} /> Apply to {plan.branch} now (Vercel deploys it)</label>
-                <label className={styles.inline}><input type="radio" checked={mode === 'pull_request'} onChange={() => setMode('pull_request')} /> Open a pull request to review first</label>
-              </div>
-              <div className={styles.row}>
-                <button type="button" className={styles.primary} onClick={apply} disabled={Boolean(busy) || unresolved > 0}>{busy === 'apply' ? 'Applying…' : unresolved ? `Decide ${unresolved} file(s) first` : 'Apply the update'}</button>
-              </div>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-      {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
-      {result ? (
-        <div>
-          <p className={styles.small}>{result.text} {result.url ? <a href={result.url} target="_blank" rel="noreferrer">View on GitHub</a> : null}</p>
-          {result.sha ? <DeploymentWatcher sha={result.sha} since={result.since} /> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export function DeploymentCard({ refresh }: IntegrationCardProps) {
   const [overview, setOverview] = useState<DeploymentOverview | null>(null);
   const [error, setError] = useState('');
@@ -451,7 +292,7 @@ export function DeploymentCard({ refresh }: IntegrationCardProps) {
           {!connection.secretBox ? <p className={styles.errorText}>RWP_SECRET_BOX_KEY is not set on this server, so the stored token cannot be opened. Set the same key the token was stored with.</p> : null}
           {watching ? <DeploymentWatcher sha={watching.sha} since={watching.since} /> : null}
           <h4 className={styles.subhead}>Update React-WP core</h4>
-          <CoreUpdate />
+          <CoreUpdatePanel />
           <div className={styles.row}>
             <button type="button" onClick={disconnect}>Disconnect</button>
           </div>

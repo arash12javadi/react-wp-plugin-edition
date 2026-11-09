@@ -200,6 +200,11 @@ export const isSafeRef = (ref) => {
  * @param {{ to: string, from: string, ref?: string, source?: 'git' | 'package', package?: { url: string, token: string, site?: string } }} options
  */
 export async function startSelfUpdate({ to, from, ref = '', source = 'git', package: pkg = null }) {
+  // Retired: a site no longer downloads a release package from react-wp.com. Updates are read from the public
+  // release repository on GitHub and applied from a git checkout (or through the site's own GitHub and Vercel).
+  if (source === 'package') {
+    throw new SelfUpdateError('Installing a release package from react-wp.com was retired. Updates are read from GitHub: use Update now on Dashboard → Updates, or the core update under Settings → Integrations → GitHub & Vercel.', 410);
+  }
   const support = source === 'package' ? await packageUpdateSupport() : await selfUpdateSupport();
   if (!support.supported) throw new SelfUpdateError(support.reason, 409);
   const targetRef = source === 'package' ? '' : (ref ? String(ref) : `origin/${support.branch}`);

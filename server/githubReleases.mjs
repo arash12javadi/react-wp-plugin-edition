@@ -262,18 +262,19 @@ export async function githubList({ name, url, token = '', fetchImpl = fetch }) {
       : `${url} could not be reached. Check this server's network access.`, 502);
   }
   if (response.status === 404) {
-    throw new GithubReleaseError(`GitHub has no repository or no release tags at ${name}. A private repository answers 404 without a token, so set RWP_RELEASE_TOKEN on the central server if the repository is not public.`, 404);
+    throw new GithubReleaseError(`GitHub could not read release tags for ${name}: the repository is private or has no release tags yet. Site owner: check the repository name under Dashboard → Updates → Release repository.`, 404);
   }
   if (response.status === 401) {
-    throw new GithubReleaseError('GitHub refused the release token. Set RWP_RELEASE_TOKEN to a token that can read the repository\'s releases (Contents: read is enough).', 401);
+    throw new GithubReleaseError('GitHub refused the saved GitHub token. Site owner: replace or remove it under Settings → Integrations → GitHub.', 401);
   }
   if (response.status === 403 || response.status === 429) {
-    if (response.headers?.get?.('x-ratelimit-remaining') === '0') {
-      const reset = Number(response.headers.get('x-ratelimit-reset')) || 0;
-      const at = reset ? new Date(reset * 1000).toISOString() : 'later';
-      throw new GithubReleaseError(`GitHub's rate limit for this server is used up; it resets at ${at}. The last answer stays cached until then.`, 429);
+    const remaining = response.headers?.get?.('x-ratelimit-remaining');
+    if (response.status === 429 || remaining === '0' || response.headers?.get?.('retry-after')) {
+      const reset = Number(response.headers?.get?.('x-ratelimit-reset')) || 0;
+      const when = reset ? ` It resets around ${new Date(reset * 1000).toISOString().slice(11, 16)} UTC.` : '';
+      throw new GithubReleaseError(`GitHub is limiting how often this server may read releases.${when} Site owner: save a GitHub token under Settings → Integrations → GitHub to raise the limit, or try again later. The last release list stays available until then.`, 429);
     }
-    throw new GithubReleaseError(`GitHub refused the release request (HTTP ${response.status}). Check RWP_RELEASE_TOKEN and the repository name.`, 403);
+    throw new GithubReleaseError(`GitHub refused the release request (HTTP ${response.status}). Site owner: check the repository name under Dashboard → Updates → Release repository.`, 403);
   }
   if (!response.ok) throw new GithubReleaseError(`GitHub answered HTTP ${response.status} for ${name}'s releases.`, 502);
   const body = await response.json().catch(() => {
@@ -344,7 +345,7 @@ export async function fetchGithubReleases({
 }) {
   const target = repoFrom(repo);
   if (!target) {
-    throw new GithubReleaseError('Set RWP_RELEASE_REPO to the repository the releases are published on, as "owner/name" (or https://github.com/owner/name).', 400);
+    throw new GithubReleaseError('The release repository must look like owner/repository (or https://github.com/owner/repository). Site owner: fix it under Dashboard → Updates → Release repository.', 400);
   }
   const name = `${target.owner}/${target.repo}`;
   const size = Math.min(Math.max(Number(perPage) || GITHUB_RELEASES_PER_PAGE, 1), 100);

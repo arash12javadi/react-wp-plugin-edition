@@ -199,14 +199,17 @@ export function describeCorePlan(plan) {
 /**
  * Applies a plan the administrator approved.
  *
- * @param {{ target: object, source: object, toVersion: string, fingerprint: string, resolutions?: Record<string, string>, mode?: 'direct' | 'pull_request', fetchImpl?: typeof fetch, now?: () => Date }} input
+ * @param {{ target: object, source: object, toVersion: string, fingerprint: string, resolutions?: Record<string, string>, mode?: 'direct' | 'pull_request', fetchImpl?: typeof fetch, guard?: ((plan: object) => void) | null }} input
  */
-export async function applyCoreUpdate({ target, source, toVersion, fingerprint, resolutions = {}, mode = 'direct', fetchImpl = fetch }) {
+export async function applyCoreUpdate({ target, source, toVersion, fingerprint, resolutions = {}, mode = 'direct', fetchImpl = fetch, guard = null }) {
   if (!str(fingerprint)) throw new InstallError('Review the update plan first: applying it needs the plan\'s fingerprint.', 428);
   const plan = await planCoreUpdate({ target, source, toVersion, resolutions, fetchImpl });
   if (plan.fingerprint !== str(fingerprint)) {
     throw new InstallError('The repository or the release changed after the plan you reviewed was made, so nothing was applied. Review the new plan and apply that one.', 409);
   }
+  // An optional last check the caller owns (the downgrade confirmation), run on the plan that is about to be
+  // committed and before anything is written. It throws to refuse.
+  if (typeof guard === 'function') guard(plan);
   if (plan.unresolved.length) {
     const error = new InstallError(`${plan.unresolved.length} file(s) need your decision before the update can be applied: ${plan.unresolved.slice(0, 5).join(', ')}${plan.unresolved.length > 5 ? ', …' : ''}. Nothing was committed.`, 409);
     error.conflicts = plan.unresolved;

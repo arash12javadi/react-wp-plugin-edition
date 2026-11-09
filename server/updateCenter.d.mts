@@ -8,6 +8,7 @@
  * `UpdateConfigView` field for field.
  */
 import type { IntegrationReadOptions } from './integrationSettings.mjs';
+import type { RecentReleaseList, RecentReleasesView } from './releaseList.mjs';
 
 /** The `system_settings` rows this feature owns. */
 export const UPDATE_CONFIG_KEY: string;
@@ -62,7 +63,12 @@ export const MANAGED_MESSAGES: {
 export class UpdateError extends Error {
   constructor(message: string, status?: number);
   status: number;
+  /** Fields a route adds to its `{ error }` body, such as `needs_confirmation: 'downgrade'`. */
+  extra: Record<string, unknown>;
 }
+
+/** A release-list refusal (`ReleaseListError`, `GithubReleaseError`, …) as the `UpdateError` every route maps. */
+export function toUpdateError(error: unknown): UpdateError;
 
 /** One release, from the central answer or a GitHub release tag. */
 export interface UpdateRelease {
@@ -80,42 +86,37 @@ export interface UpdateRelease {
 /** A release as a browser sees it. */
 export type PublicUpdateRelease = Omit<UpdateRelease, 'download_url'>;
 
-/** `system_settings.updates_config`, normalised. */
+/**
+ * `system_settings.updates_config`, normalised. An update-server address, token or channel stored by an older
+ * version is not carried: nothing asks an update server any more, and releases are always stable ones.
+ */
 export interface UpdateConfig {
-  central_url: string;
-  token: string;
-  /** `owner/name` of the repository this site is updated from, or empty to use the GitHub integration's. */
+  /** `owner/name` of the release repository named on Dashboard → Updates, or empty for the default. */
   repository: string;
-  channel: string;
   auto_check: string;
   notify: boolean;
   self_update: boolean;
 }
 
 /**
- * The repository a check reads release tags from when this deployment owns it. `token` is empty for a
- * public repository, which is a supported state rather than an error.
+ * The repository a release list is read from. `token` is empty for a public repository, which is a supported
+ * state rather than an error. `origin` says where the name came from.
  */
 export interface GithubUpdateSource {
   repo: string;
   token: string;
-  /** True when `updates_config.repository` named it, which is what makes GitHub the first source asked. */
   explicit?: boolean;
+  custom?: boolean;
+  origin?: 'saved' | 'environment' | 'default';
 }
 
-/** The same configuration with the token replaced by `has_token`. */
+/** The same configuration as a screen sees it. It holds no secret. */
 export interface UpdateConfigView {
-  central_url: string;
-  /** The repository named on Settings → Updates, or empty when the GitHub integration names it instead. */
+  /** The repository named on Dashboard → Updates, or empty for the default. Hidden from non-owners. */
   repository: string;
-  channel: string;
   auto_check: string;
   notify: boolean;
   self_update: boolean;
-  has_token: boolean;
-  source: 'central' | 'github';
-  /** True for an end user whose updates are managed by react-wp.com. */
-  managed?: boolean;
 }
 
 /** What the browser knows and the server cannot: which build is running. */
@@ -254,6 +255,7 @@ export function describeGithubSource(source?: GithubUpdateSource | null, owner?:
   repo: string;
   has_token: boolean;
   configured: boolean;
+  origin: 'saved' | 'environment' | 'default';
 };
 
 export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
@@ -262,8 +264,8 @@ export function readUpdatesConfig(options?: IntegrationReadOptions): Promise<{
    * screen names none — the installer card's template is the repository a platform publishes from.
    */
   config: UpdateConfig;
-  /** The GitHub repository this deployment may read release tags from, or null. */
-  github: GithubUpdateSource | null;
+  /** The release repository and optional GitHub token this deployment reads releases with. */
+  github: GithubUpdateSource;
   /** The release tag the SaaS installer recorded, as a plain version — or ''. */
   installed: string;
   readable: boolean;
@@ -350,7 +352,6 @@ export function fetchCentralCheck(options: {
 
 export function fetchGithubCheck(options: {
   source: GithubUpdateSource;
-  channel?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ app: UpdateRelease; plugins: Record<string, UpdateRelease> }>;
 
@@ -374,18 +375,26 @@ export function checkAnswerFrom(input: {
 }): UpdateCheck;
 
 export function checkForUpdates(options: {
-  config: UpdateConfig;
   current: CurrentVersion;
   plugins: InstalledPluginVersion[];
-  /** The repository this deployment may read directly; defaults to `githubUpdateSourceFrom()`. */
-  github?: GithubUpdateSource | null;
+  /** The release repository to read; defaults to the public one. */
+  github?: { repo: string; token?: string } | null;
   fetchImpl?: typeof fetch;
-  /**
-   * False for an end user, whose check is answered by the central server and by nothing else: `github` is
-   * ignored, and every refusal is a `MANAGED_MESSAGES` sentence rather than configuration advice.
-   */
-  owner?: boolean;
-}): Promise<UpdateCheck>;
+  /** A list already read for this request, so a check and a selection share one GitHub call. */
+  list?: RecentReleaseList | null;
+}): Promise<UpdateCheck & { releases: RecentReleasesView }>;
+
+/**
+ * Re-reads the five most recent releases and resolves the one a request named. Only a tag from that list is
+ * accepted; an older one needs `confirmDowngrade: true` (a refusal with `extra.needs_confirmation`).
+ */
+export function resolveUpdateTarget(input: {
+  github: { repo: string; token?: string };
+  tag?: unknown;
+  confirmDowngrade?: unknown;
+  installed: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ list: RecentReleaseList; release: UpdateRelease & { tag: string }; move: 'upgrade' | 'current' | 'downgrade' }>;
 
 export function triggerDeployHookUrl(
   hook: string,
@@ -400,6 +409,8 @@ export function updatePlan(input: {
   installedVersion: string;
   /** True when the site deploys from its own GitHub repository: the plan points to the Git core update. */
   gitDeploy?: boolean;
+  /** `moveKindFor`'s word for the chosen release against what is installed. */
+  move?: 'upgrade' | 'current' | 'downgrade' | '';
 }): UpdatePlan;
 
 export function applyDeployHookUpdate(options: {

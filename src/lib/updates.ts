@@ -37,9 +37,8 @@ export const autoCheckIntervals = {
 export type AutoCheck = keyof typeof autoCheckIntervals;
 
 /**
- * The two settings the dashboard itself keeps. Everything else about updates — the central server, the
- * token, the channel, whether this host may update itself — lives in `system_settings.updates_config`,
- * where the server reads it.
+ * The two settings the dashboard itself keeps. Everything else about updates — the release repository and
+ * whether this host may update itself — lives in `system_settings.updates_config`, where the server reads it.
  */
 export interface UpdateSettings {
   auto_check: AutoCheck;
