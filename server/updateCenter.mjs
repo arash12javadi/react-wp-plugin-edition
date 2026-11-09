@@ -117,15 +117,20 @@ export const saasInstalledVersionFrom = (value) => {
  *
  *   1. `recorded` — the `.rwp-version` file the update itself writes in the same commit as the code
  *      (`server/gitDeploy/coreMerge.mjs`), so it cannot lag the code it describes;
- *   2. the deploy's own pin (`RWP_APP_VERSION`);
- *   3. the tag the SaaS installer recorded (`saas_installer_config.installed_version`);
- *   4. the `package.json` the build was compiled from — which need not match any tag.
+ *   2. `stamped` — the `package.json` of this build when an update stamped it with the release tag
+ *      (`rwpRelease`, `manifestAtVersion`): it is part of the same commit and build as the code, so the very first
+ *      deployment of an update already reports the new version even when no `.rwp-version` exists;
+ *   3. the deploy's own pin (`RWP_APP_VERSION`) — an owner-only override, never set for a client;
+ *   4. the tag the SaaS installer recorded once at install (`saas_installer_config.installed_version`): it never
+ *      moves, so it ranks below every source that follows the code;
+ *   5. the unstamped `package.json` version, which names no tag at all (the template's own number).
  *
  * The newest published release is never a stand-in: a site with no record would then call itself up to date
  * and hide the update this screen exists to offer. Each answer is normalised to a plain version (no `v`).
  */
-export const resolveInstalledVersion = ({ recorded = '', pinned = '', saas = '', fallback = '' }) =>
+export const resolveInstalledVersion = ({ recorded = '', stamped = '', pinned = '', saas = '', fallback = '' }) =>
   trimmed(recorded).replace(/^v/i, '')
+  || trimmed(stamped).replace(/^v/i, '')
   || trimmed(pinned).replace(/^v/i, '')
   || trimmed(saas).replace(/^v/i, '')
   || trimmed(fallback).replace(/^v/i, '');

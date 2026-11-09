@@ -9,7 +9,7 @@
 import type { Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getRuntimeConfig } from './config';
-import { version as packageVersion } from '../../package.json';
+import packageManifest from '../../package.json';
 import { handleDeploymentRequest, ownsDeploymentPath } from '../../server/deploymentRoutes.mjs';
 import { authorizePlatformOwner } from '../../server/integrationSettings.mjs';
 import { installedVersionFor } from '../../server/installedVersion.mjs';
@@ -23,7 +23,7 @@ import {
 const serverEnvironment = (): Record<string, string | undefined> =>
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
-const installedVersion = (): Promise<string> => installedVersionFor({ fallback: String(packageVersion || '') });
+const installedVersion = (): Promise<string> => installedVersionFor({ fallback: String(packageManifest.version || ''), manifest: packageManifest });
 
 async function handle(c: Context): Promise<Response> {
   const url = new URL(c.req.url);

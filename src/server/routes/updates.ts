@@ -29,7 +29,7 @@
  */
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { version as packageVersion } from '../../../package.json';
+import packageManifest from '../../../package.json';
 import type { RuntimeConfig } from '../../lib/runtime';
 import { ensureSiteInstalled, getRuntimeConfig } from '../config';
 import { detectPluginHostMode } from '../pluginHostMode';
@@ -70,7 +70,7 @@ interface StoredUpdateConfig {
 
 /** The version this build reports — `server/installedVersion.mjs`, the same answer the classic host gives. */
 const installedFor = (stored: StoredUpdateConfig): Promise<string> =>
-  installedVersionFor({ saas: stored.installed, fallback: String(packageVersion || '') });
+  installedVersionFor({ saas: stored.installed, fallback: String(packageManifest.version || ''), manifest: packageManifest });
 
 /**
  * Everything that can be refused with a status before any work starts: whether this site is installed,

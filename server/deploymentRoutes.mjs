@@ -313,6 +313,13 @@ export async function handleDeploymentRequest(options) {
       if (!/^[0-9a-f]{7,40}$/.test(sha) || !head.toLowerCase().startsWith(sha)) {
         throw new InstallError(`Only the newest commit on "${target.branch}" can be rebuilt, and that is not ${sha ? sha.slice(0, 7) : 'the commit you named'}. Press Update to start from its current state.`, 409);
       }
+      // A project connected through Git builds every commit by itself, so a second build is only ever legitimate
+      // when Vercel says the Production build of this very commit FAILED (or was cancelled). Anything else — queued,
+      // building, ready — is refused: a retry there would be the duplicate deployment this route must never cause.
+      const current = await deploymentStatusForCommit({ connection, sha: head, githubTarget: githubTargetOrNull(githubRow, connection), committedAt: str(body.since), env });
+      if (current?.state !== 'error' && current?.state !== 'canceled') {
+        throw new InstallError('Vercel has not reported a failed Production build for this commit, so no second build was started: a build that is queued, running or finished is never repeated.', 409);
+      }
       const deployment = await deployCommit(openVercelToken(connection, env), {
         projectId: connection.project_id,
         projectName: connection.project_name,

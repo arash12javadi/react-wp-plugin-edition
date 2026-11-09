@@ -23,7 +23,7 @@
  * the recorded commit if the build fails, and the log it writes is what the screen shows.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Where a run's status record and log live, inside the folder every deployment already ignores. */
@@ -85,6 +85,17 @@ export async function gitState(cwd = process.cwd()) {
  * the Update Now button, so an administrator never meets a disabled button with no explanation.
  */
 export async function selfUpdateSupport() {
+  // The option is only ever offered where it can work. A serverless host has no checkout, and the update script
+  // is runtime code that a client repository may not carry; in both cases `repo` stays false, so the screen shows
+  // neither the checkbox nor its text.
+  if (globalThis.process?.env?.VERCEL) {
+    return { available: true, repo: false, branch: '', head: '', dirty: false, error: '', supported: false, reason: 'This site is updated with the Update button; it has no checkout of its own to rewrite.' };
+  }
+  try {
+    await access(SELF_UPDATE_SCRIPT);
+  } catch {
+    return { available: true, repo: false, branch: '', head: '', dirty: false, error: '', supported: false, reason: 'This site is updated with the Update button; this installation does not include the self-update program.' };
+  }
   const state = await gitState();
   if (!state.repo) return { ...state, supported: false, reason: state.error };
   if (state.dirty) {

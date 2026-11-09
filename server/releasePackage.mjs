@@ -54,6 +54,9 @@ export function manifestAtVersion(bytes, version) {
     const manifest = JSON.parse(new TextDecoder().decode(bytes));
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return bytes;
     manifest.version = plain;
+    // The marker that tells a stamped manifest from the template's own version number (which matches no tag):
+    // `installedVersionFor` trusts `version` only when `rwpRelease` repeats it.
+    manifest.rwpRelease = plain;
     return new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
   } catch {
     return bytes;

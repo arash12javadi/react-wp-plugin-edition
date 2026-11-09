@@ -30,7 +30,7 @@
  */
 import { createHash } from 'node:crypto';
 import { InstallError } from '../pluginInstaller.mjs';
-import { commitFiles, fastForwardBranch, githubRequest, readBranch, readTextFile } from '../pluginGitPush.mjs';
+import { commitFiles, createBranch, fastForwardBranch, githubRequest, readBranch, readTextFile } from '../pluginGitPush.mjs';
 import { fetchCoreReleaseFiles, manifestAtVersion } from '../releasePackage.mjs';
 import {
   PACKAGE_PATH,
@@ -40,6 +40,7 @@ import {
   mergePackageJson,
   mergeRegistry,
   planCoreFiles,
+  readStamp,
   readVersionRecord,
 } from './coreMerge.mjs';
 
@@ -65,6 +66,14 @@ async function fetchRelease(source, version, fetchImpl) {
 }
 
 /** The version the repository's own package.json names — what the production branch is running. */
+const safeJson = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
 const versionOf = (packageSource) => {
   try {
     return plainVersion(JSON.parse(packageSource)?.version);
@@ -133,7 +142,9 @@ export async function planCoreUpdate({ target, source, toVersion, resolutions = 
   const branch = await readBranch(target);
   const repoPackage = branch.paths.has(PACKAGE_PATH) ? await readTextFile(target, PACKAGE_PATH) : null;
   const recordSource = branch.paths.has(VERSION_PATH) ? await readTextFile(target, VERSION_PATH) : '';
-  const recorded = readVersionRecord(recordSource);
+  // The stamp an update put on package.json says the same thing as the record, so a site updated by code that
+  // wrote no record still has an exact base.
+  const recorded = readVersionRecord(recordSource) || readStamp(safeJson(repoPackage));
   const packageVersion = repoPackage ? versionOf(repoPackage) : '';
 
   const next = await fetchRelease(source, toVersion, fetchImpl);
@@ -261,11 +272,17 @@ const mentions = (error, pattern) => pattern.test(String(error instanceof Error 
 export async function landOnProduction({ target, updateBranch, sha, title, body }) {
   const where = `${target.owner}/${target.repo}`;
   try {
+    // The commit exists but no branch points at it, so this one ref move is the only thing Vercel sees:
+    // exactly one (Production) deployment and no staging branch.
     await fastForwardBranch(target, target.branch, sha);
-    return { sha, how: 'fast-forward' };
+    return { sha, how: 'fast-forward', staged: false };
   } catch (forwardError) {
-    // Anything that stopped a fast-forward — the branch moved on, or a rule refuses direct updates — is
-    // tried again as a merge, which GitHub performs on the server against the branch's current head.
+    // Anything that stopped a direct move — the branch moved on, or a rule refuses direct updates — is
+    // tried again as a merge, which GitHub performs on the server against the branch's current head. A merge
+    // and a pull request need a branch to merge from, so the staging branch exists only from here on.
+    // (A branch of that name left by an earlier attempt holds an older commit, so it is replaced.)
+    await dropBranch(target, updateBranch);
+    await createBranch(target, updateBranch, sha);
     let mergeError = forwardError;
     try {
       const merged = await githubRequest(target, 'POST', `/repos/${target.owner}/${target.repo}/merges`, {
@@ -274,11 +291,12 @@ export async function landOnProduction({ target, updateBranch, sha, title, body 
         commit_message: title,
       });
       // 204 (an empty body): the branch already contains the update.
-      return { sha: str(merged?.sha) || sha, how: 'merge' };
+      return { sha: str(merged?.sha) || sha, how: 'merge', staged: true };
     } catch (error) {
       mergeError = error;
     }
     if (mentions(mergeError, /HTTP 409/) && mentions(mergeError, /conflict/i)) {
+      await dropBranch(target, updateBranch);
       const conflict = new InstallError(`The files changed on "${target.branch}" while the update was being prepared and GitHub could not merge the update into them automatically. Nothing was changed on "${target.branch}". Press Update again to start from its current state.`, 409);
       throw conflict;
     }
@@ -289,7 +307,7 @@ export async function landOnProduction({ target, updateBranch, sha, title, body 
       pullNumber = Number(pull?.number) || 0;
       if (!pullNumber) throw new InstallError('GitHub opened the pull request but did not return its number.', 502);
       const merged = await githubRequest(target, 'PUT', `/repos/${target.owner}/${target.repo}/pulls/${pullNumber}/merge`, { merge_method: 'merge', sha });
-      return { sha: str(merged?.sha) || sha, how: 'pull-request' };
+      return { sha: str(merged?.sha) || sha, how: 'pull-request', staged: true };
     } catch (pullError) {
       if (pullNumber) {
         await githubRequest(target, 'PATCH', `/repos/${target.owner}/${target.repo}/pulls/${pullNumber}`, { state: 'closed' }).catch(() => {});
@@ -329,8 +347,6 @@ export async function applyCoreUpdate({ target, source, toVersion, fingerprint, 
   if (base.commitSha !== plan.head) {
     throw new InstallError(`Branch "${target.branch}" changed while the update was being prepared. Nothing was committed; press Update again.`, 409);
   }
-  // A staging branch left by an earlier attempt from this same head holds nothing the site needs.
-  await dropBranch(target, updateBranch);
   const title = `Update React-WP core ${plan.fromVersion || 'unknown'} → ${plan.toVersion}`;
   const commit = await commitFiles(target, {
     message: `${title}\n\nRelease ${plan.releaseRepository}@${plan.releaseTag}. Plugins and site files were left as they were.`,
@@ -344,7 +360,7 @@ export async function applyCoreUpdate({ target, source, toVersion, fingerprint, 
         throw new InstallError(error instanceof Error ? error.message : String(error), 500);
       }
     },
-    ref: { create: updateBranch },
+    ref: { none: true },
   });
 
   let landed;
@@ -361,7 +377,7 @@ export async function applyCoreUpdate({ target, source, toVersion, fingerprint, 
     await dropBranch(target, updateBranch);
     throw error;
   }
-  const leftover = (await dropBranch(target, updateBranch)) ? '' : updateBranch;
+  const leftover = landed.staged && !(await dropBranch(target, updateBranch)) ? updateBranch : '';
   return {
     applied: true,
     merged: true,

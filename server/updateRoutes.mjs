@@ -77,19 +77,29 @@ const fail = (error) => ({
  * The `package.json` this build was compiled from. The fallback of last resort: it is the template's
  * version for a provisioned site, which is exactly what the SaaS installer's record corrects.
  */
-export async function packageVersion() {
+export async function packageManifest() {
   try {
-    const raw = await readFile(new URL('../package.json', import.meta.url), 'utf8');
-    return String(JSON.parse(raw)?.version || '').trim();
+    const parsed = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
-    return '';
+    return null;
   }
 }
 
-/** The version this host reports as installed — `server/installedVersion.mjs`, with the installer's record when one is stored. */
-export const installedVersion = async () => installedVersionFor({ fallback: await packageVersion() });
+export async function packageVersion() {
+  return String((await packageManifest())?.version || '').trim();
+}
 
-const installedFor = async (stored) => installedVersionFor({ saas: stored.installed, fallback: await packageVersion() });
+/** The version this host reports as installed — `server/installedVersion.mjs`, with the installer's record when one is stored. */
+export const installedVersion = async () => {
+  const manifest = await packageManifest();
+  return installedVersionFor({ fallback: String(manifest?.version || '').trim(), manifest });
+};
+
+const installedFor = async (stored) => {
+  const manifest = await packageManifest();
+  return installedVersionFor({ saas: stored.installed, fallback: String(manifest?.version || '').trim(), manifest });
+};
 
 /** The caller's permission, or a refusal. Every route below needs an administrator. */
 async function requireManager(config, headers) {

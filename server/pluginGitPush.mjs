@@ -430,7 +430,11 @@ export async function commitFiles(target, options) {
 
   // `ref: { create: 'name' }` puts the commit on a new branch and leaves the production branch alone (the
   // core updater fast-forwards it afterwards, or opens a pull request). The default moves `target.branch`.
-  if (ref && typeof ref.create === 'string') {
+  // `ref: { none: true }` creates the commit object only and moves no branch: nothing is built until a caller
+  // moves a ref to it, so the core updater can advance the production branch exactly once.
+  if (ref && ref.none === true) {
+    // the commit exists unreferenced; the caller decides which branch (if any) gets it
+  } else if (ref && typeof ref.create === 'string') {
     await createBranch(target, ref.create, sha);
   } else {
     await fastForwardBranch(target, target.branch, sha);

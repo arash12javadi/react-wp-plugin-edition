@@ -36,7 +36,7 @@
  * untouched. Everything here is pure: no network, no clock, no filesystem — `coreUpdate.mjs` does the I/O.
  */
 import { createHash } from 'node:crypto';
-import { VERSION_PATH, readVersionRecord } from '../versionRecord.mjs';
+import { VERSION_PATH, readStamp, readVersionRecord } from '../versionRecord.mjs';
 import {
   addServerPluginImportToSource,
   removeServerPluginImportFromSource,
@@ -46,7 +46,7 @@ import {
 export const REGISTRY_PATH = 'server/plugins.mjs';
 export const PACKAGE_PATH = 'package.json';
 export const MERGED_PATHS = Object.freeze([REGISTRY_PATH, PACKAGE_PATH]);
-export { VERSION_PATH, readVersionRecord };
+export { VERSION_PATH, readStamp, readVersionRecord };
 
 const CLIENT_OWNED_PREFIXES = ['plugins/', 'data/', '.rwp-tmp/', '.vercel/', 'state/', '.state/', 'node_modules/', 'dist/', 'src/server-dist/'];
 

@@ -152,10 +152,11 @@ export function saasInstalledVersionFrom(value: unknown): string;
 
 /**
  * The version this host reports, in one order shared by both hosts: the `.rwp-version` record the update
- * writes, the deploy's pin, the installer's record, then the `package.json` the build compiled.
+ * writes, the build's stamped `package.json`, the owner-only pin, the installer's record, then the unstamped `package.json`.
  */
 export function resolveInstalledVersion(input: {
   recorded?: string;
+  stamped?: string;
   pinned?: string;
   saas?: string;
   fallback?: string;

@@ -26,6 +26,7 @@ import { projectRefFromUrl, resolveConnectionString } from './db.mjs';
 import { planSchemaUpdate, readSchemaStatus, runSchemaUpdate } from './schemaMigrate.mjs';
 import { DB_CONNECTION_SETTING_KEY } from './integrationConfig.mjs';
 import { requireSecretBox, settingsIo } from './gitDeploy/connection.mjs';
+import { ensureVersionRecord } from './versionRecord.mjs';
 import { openSecret, sealSecret, secretFingerprint } from './deploy/secretBox.mjs';
 
 const PREFIX = '/api/admin/schema-update';
@@ -196,7 +197,13 @@ export async function handleSchemaUpdateRequest({ method, pathname, headers = {}
       return ok(200, present(await updater.status(stored)));
     }
     if (method !== 'POST') return refuse(405, 'Use POST to apply the database update.');
-    return ok(200, present(pathname === `${PREFIX}/ensure` ? await updater.ensure(stored) : await updater.run(stored)));
+    if (pathname === `${PREFIX}/ensure`) {
+      // Opening the admin also lets a site that has a stamped package.json but no `.rwp-version` record its release
+      // by itself (no commit, no question): see `ensureVersionRecord`.
+      await ensureVersionRecord().catch(() => null);
+      return ok(200, present(await updater.ensure(stored)));
+    }
+    return ok(200, present(await updater.run(stored)));
   } catch (error) {
     const message = error instanceof Error ? error.message.split('\n')[0].slice(0, 220) : 'unknown error';
     return refuse(Number(error?.status) >= 400 && Number(error?.status) < 600 ? Number(error.status) : 500, `The database update could not start: ${message}`);
