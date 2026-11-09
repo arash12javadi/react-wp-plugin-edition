@@ -68,7 +68,13 @@ export const INTEGRATION_CONFIG_KEYS = [
 /** The client's sealed Vercel token and connected project (`server/gitDeploy/connection.mjs`). */
 export const VERCEL_DEPLOY_CONFIG_KEY = 'vercel_deploy_config';
 
-export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, VERCEL_DEPLOY_CONFIG_KEY];
+/** The sealed site token that links this installation to a react-wp.com account (`server/licenseLink.mjs`). */
+export const LICENSE_LINK_SETTING_KEY = 'license_link_config';
+
+/** Where `server/schemaMigrate.mjs` records the outcome of automatic database updates (hashes, statuses, one sentence). */
+export const SCHEMA_STATE_SETTING_KEY = 'schema_migration_state';
+
+export const PLATFORM_SETTING_KEYS = [GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, VERCEL_DEPLOY_CONFIG_KEY, LICENSE_LINK_SETTING_KEY, SCHEMA_STATE_SETTING_KEY];
 
 // -- Normalising ---------------------------------------------------------------------------------
 //

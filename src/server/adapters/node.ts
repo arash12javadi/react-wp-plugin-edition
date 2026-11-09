@@ -14,6 +14,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono, type Context } from 'hono';
 import { app } from '../index';
+import { runSchemaUpdateOnStart } from '../schemaUpdate';
 import { ensureSiteInstalled, getRuntimeConfig, publicConfig, runStartupMigrations } from '../config';
 
 const port = Number(process.env.PORT || 3000);
@@ -82,6 +83,7 @@ full.get('*', renderIndex);
 // failure-safe — and it logs the `[Auto-Setup] Site installation verified/auto-seeded ...` line.
 void ensureSiteInstalled()
   .then(() => runStartupMigrations())
+  .then(() => runSchemaUpdateOnStart())
   .catch(() => undefined);
 
 serve({ fetch: full.fetch, port }, (info) => {

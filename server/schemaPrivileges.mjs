@@ -62,7 +62,7 @@ revoke insert, update, delete on table public.rwp_translations from anon;
 -- time it installs.
 create or replace function public.rwp_platform_setting(setting_key text)
 returns boolean language sql immutable set search_path = public as $platform$
-  select $1 in ('github_config', 'deploy_config', 'saas_installer_config', 'vercel_deploy_config');
+  select $1 in ('github_config', 'deploy_config', 'saas_installer_config', 'vercel_deploy_config', 'license_link_config', 'schema_migration_state');
 $platform$;
 
 grant execute on function public.rwp_platform_setting(text) to anon, authenticated;

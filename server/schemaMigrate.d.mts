@@ -1,0 +1,22 @@
+export const SCHEMA_STATE_KEY: string;
+export const SCHEMA_LOCK_KEY: number;
+export type SchemaUnit = {
+  id: string;
+  label: string;
+  version: string;
+  statements: string[];
+  tail: string;
+  refused: Array<{ kind: string; what: string; statement: string }>;
+  fingerprint: string;
+};
+export function classifyStatement(statement: string): { ok: true } | { ok: false; kind: string; what: string; statement: string };
+export function isNullFillUpdate(statement: string): boolean;
+export function planUnit(options: { id: string; label?: string; version?: string; sql: string; tail?: string }): SchemaUnit;
+export function planSchemaUpdate(options: { coreSql: string; plugins?: Array<{ id: string; label?: string; version?: string; sql: string }> }): SchemaUnit[];
+export function manualReason(unit: SchemaUnit): string;
+export function parseState(value: unknown): { units: Record<string, any> };
+export function summariseState(units: SchemaUnit[], state: { units: Record<string, any> }): { status: string; units: any[]; lastAppliedAt: string | null };
+export function readActivePluginIds(client: { query: (sql: string) => Promise<{ rows: any[] }> }): Promise<string[] | null>;
+export function onlyActive(units: SchemaUnit[], activeIds: string[] | null): SchemaUnit[];
+export function readSchemaStatus(options: { connectionString: string; units: SchemaUnit[]; withClient?: any }): Promise<Record<string, any>>;
+export function runSchemaUpdate(options: { connectionString: string; units: SchemaUnit[]; withClient?: any; now?: () => Date }): Promise<Record<string, any>>;

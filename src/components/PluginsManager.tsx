@@ -17,6 +17,7 @@ import {
 import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './BulkActions';
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
 import PluginUpdatesPanel from './PluginUpdatesPanel';
+import LicenseLinkPanel from './LicenseLinkPanel';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
 import { installPluginSchema } from '../lib/pluginSchema';
@@ -45,13 +46,19 @@ interface PluginLicenseReport {
   /** False for a free plugin, and for one that ships no server module (nothing to gate). */
   required: boolean;
   licensed: boolean;
-  status: 'free' | 'licensed' | 'missing' | 'invalid' | 'wrong-plugin' | 'expired' | 'unknown';
+  status: 'free' | 'licensed' | 'grace' | 'missing' | 'invalid' | 'wrong-plugin' | 'revoked' | 'expired' | 'unknown';
   addon: string;
   pluginId: string;
   /** The stored key, masked by the server. Never the whole key. */
   key?: string;
   expiresOn?: string;
   daysLeft?: number;
+  /** True while the keys come from the last good read because the key store cannot be read right now. */
+  degraded?: boolean;
+  offlineUntil?: string;
+  /** Set while an expired key is still inside its grace period. */
+  graceDaysLeft?: number;
+  graceEndsOn?: string;
   message: string;
 }
 
@@ -125,7 +132,7 @@ const fetchPluginLicense = async (pluginId: string): Promise<PluginLicenseReport
  */
 const licenseDetail = (report: PluginLicenseReport): string => {
   if (!report.required) return report.message;
-  if (report.status === 'licensed') {
+  if (report.status === 'licensed' || report.status === 'grace') {
     return [report.message, report.key ? `Stored key ${report.key} - clear the field and save to remove it.` : '']
       .filter(Boolean)
       .join(' ');
@@ -652,7 +659,18 @@ export default function PluginsManager() {
           </div>
         </div>
       </div>
+      {(() => {
+        const offline = Object.values(licenseReports).find((report) => report.degraded && report.offlineUntil);
+        return offline ? (
+          <p className={styles.offlineNotice} role="status">
+            The licence keys could not be read just now, so your plugins are running on the last good check. They keep working
+            until {new Date(offline.offlineUntil as string).toLocaleString()}; if the problem is not fixed by then, paid plugins lock.
+            Check the database connection.
+          </p>
+        ) : null;
+      })()}
       <PluginUpdatesPanel />
+      <LicenseLinkPanel onChanged={() => setReloadKey((key) => key + 1)} />
       {uploadOpen && (
         <PluginUploadModal
           initialResult={pendingInstall}
@@ -769,11 +787,18 @@ export default function PluginsManager() {
                                 aria-expanded={open}
                                 title={report?.message || 'Sold separately: paste the key this plugin was issued.'}
                               >
-                                {unlocked ? 'Unlocked' : 'Locked'}
+                                {report?.status === 'grace' ? 'Expired' : unlocked ? 'Unlocked' : 'Locked'}
                               </button>
-                              {unlocked && report?.expiresOn
-                                ? <small className={styles.licenseExpiry}>to {report.expiresOn}</small>
-                                : null}
+                              {report?.status === 'grace' ? (
+                                <small className={styles.licenseWarn} role="status">
+                                  Locks in {report.graceDaysLeft} day{report.graceDaysLeft === 1 ? '' : 's'}
+                                </small>
+                              ) : unlocked && report?.expiresOn ? (
+                                <small className={(report.daysLeft ?? 999) <= 30 ? styles.licenseWarn : styles.licenseExpiry}>
+                                  to {report.expiresOn}
+                                  {(report.daysLeft ?? 999) <= 30 ? ` · ${report.daysLeft} day${report.daysLeft === 1 ? '' : 's'} left` : ''}
+                                </small>
+                              ) : null}
                               {/*
                                 The named way into the key field. The badge above toggles it too, but a badge
                                 says what the state is; a customer looking for where to paste a key needs a
@@ -789,14 +814,14 @@ export default function PluginsManager() {
                                 >
                                   {open ? 'Hide key field' : 'Enter license key'}
                                 </button>
-                                {!unlocked ? (
+                                {!unlocked || report?.status === 'grace' || (report?.daysLeft ?? 999) <= 30 ? (
                                   <a
                                     className={styles.shopLink}
                                     href={SHOP_URL}
                                     target="_blank"
                                     rel="noreferrer noopener"
                                   >
-                                    Buy a key
+                                    {unlocked ? 'Renew' : 'Buy a key'}
                                   </a>
                                 ) : null}
                               </div>

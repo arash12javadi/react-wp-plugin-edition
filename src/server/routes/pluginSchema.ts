@@ -72,7 +72,7 @@ declare const __RWP_PLUGIN_CATALOGUE__: string | undefined;
  */
 let catalogueFromBuild: unknown[] | null | undefined;
 
-const pluginCatalogueFromBuild = (): unknown[] | null => {
+export const pluginCatalogueFromBuild = (): unknown[] | null => {
   if (catalogueFromBuild === undefined) catalogueFromBuild = readCatalogueFromBuild();
   return catalogueFromBuild;
 };

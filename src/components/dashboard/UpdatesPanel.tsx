@@ -1,6 +1,7 @@
 import type { AdminStatus } from '../../lib/adminStatus';
 import type { UserRole } from '../../lib/roles';
 import UpdatesCard from './UpdatesCard';
+import SchemaUpdateCard from './SchemaUpdateCard';
 
 /**
  * Dashboard → Updates.
@@ -23,5 +24,10 @@ export default function UpdatesPanel({ role, status, navigate }: {
   status: AdminStatus;
   navigate: (section: string, subsection?: string) => void;
 }) {
-  return <UpdatesCard role={role} onStatus={status.setUpdateStatus} navigate={navigate} />;
+  return (
+    <>
+      <SchemaUpdateCard />
+      <UpdatesCard role={role} onStatus={status.setUpdateStatus} navigate={navigate} />
+    </>
+  );
 }

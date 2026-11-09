@@ -14,6 +14,9 @@ import {
   authorizeCapabilityOnSupabase, authorizePlatformOwner, authorizeSettingsManager, readIntegrationRows, readMediaStorageSettings,
 } from './server/integrationSettings.mjs';
 import { handleDeploymentRequest, ownsDeploymentPath } from './server/deploymentRoutes.mjs';
+import { handleLicenseLinkRequest, ownsLicenseLinkPath } from './server/licenseLinkRoutes.mjs';
+import { createSchemaUpdater, handleSchemaUpdateRequest, ownsSchemaUpdatePath } from './server/schemaRoutes.mjs';
+import { diskSources } from './server/schemaSources.mjs';
 import { renderDocumentInjections, renderEditorInjections } from './server/seo.mjs';
 import { handlePluginRequest, resolveOrigin } from './server/plugins.mjs';
 import { authorizePluginManager, deletePluginFolder, listPluginFolders, readActivePluginIds } from './server/pluginFiles.mjs';
@@ -94,6 +97,9 @@ const currentConfig = async () => {
   configureSecuritySettings(config);
   return config;
 };
+
+/** Automatic database updates after a release (`server/schemaMigrate.mjs`); reads the schemas from this checkout. */
+const schemaUpdater = createSchemaUpdater({ sources: diskSources() });
 
 /**
  * The Supabase pair this server authorises with — and the answer when it has none.
@@ -641,6 +647,40 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    // Dashboard → Updates → Database: automatic, guarded database updates after a release
+    // (`server/schemaMigrate.mjs`). Shared with the Hono app (`src/server/schemaUpdate.ts`); platform owner only.
+    if (ownsSchemaUpdatePath(url.pathname)) {
+      const siteConfig = await currentConfig();
+      const result = await handleSchemaUpdateRequest({
+        method: request.method,
+        pathname: url.pathname,
+        headers: request.headers,
+        updater: schemaUpdater,
+        authorize: (token) => authorizePlatformOwner(siteConfig?.supabaseUrl, siteConfig?.supabasePublishableKey, token),
+      });
+      json(request, response, result.status, result.body);
+      return;
+    }
+
+    // Plugins → "Connect to react-wp.com": this site fetches its licence keys from the account that bought
+    // them. Shared with the Hono app (`src/server/licenseLink.ts`); every route needs the platform owner.
+    if (ownsLicenseLinkPath(url.pathname)) {
+      const siteConfig = await currentConfig();
+      const file = await readConfig();
+      const result = await handleLicenseLinkRequest({
+        method: request.method,
+        pathname: url.pathname,
+        headers: request.headers,
+        body: request.method === 'POST' ? await readBody(request).catch(() => ({})) : {},
+        config: { ...siteConfig, dbType: file?.dbType || siteConfig?.dbType },
+        siteUrl: resolveOrigin(request.headers),
+        env: process.env,
+        authorize: (token) => authorizePlatformOwner(siteConfig?.supabaseUrl, siteConfig?.supabasePublishableKey, token),
+      });
+      json(request, response, result.status, result.body);
+      return;
+    }
+
     // The editor's AI assistant: whether it can run, and on which provider's account (GET), and the one
     // rewrite it performs on a selection (POST). Shared with the Hono app through `server/aiAssist.mjs`,
     // so the prompt, the allowlist an answer is cleaned with, the rate limit and the sentences a refusal
@@ -1002,8 +1042,13 @@ const server = http.createServer(async (request, response) => {
     // (`/api/v1/licenses/revoked`, next to the update API) and answered by the marketplace plugin's own
     // route, which holds the table and the signing key. It is the same handler on every host; Vercel does it
     // with a rewrite in `vercel.json`. A GET only: anything else falls through to the 404 below.
-    const licensePluginPath = request.method === 'GET' && url.pathname === '/api/v1/licenses/revoked'
-      ? '/api/plugins/rwp-plugin-marketplace/licenses/revoked'
+    // The account link is published beside it: `GET /api/v1/licenses/sync` (a connected site's key list,
+    // ETag/304) and `POST /api/v1/licenses/connect` (a pairing code for a site token).
+    // Nothing here names a plugin: `/api/v1/licenses/*` goes to `handlePluginRequest` as `__public/licenses/*`,
+    // which resolves it only through the `publicRoutes` of the one plugin allowed to publish them
+    // (`PUBLIC_ROUTE_PLUGINS` in `server/plugins.mjs`) - and answers 404 on a client edition, which has none.
+    const licensePluginPath = url.pathname.startsWith('/api/v1/licenses/')
+      ? `/api/plugins/__public/${url.pathname.slice('/api/v1/'.length)}`
       : url.pathname;
     if (licensePluginPath.startsWith('/api/plugins/')) {
       const chunks = [];
@@ -1156,6 +1201,14 @@ await ensureSiteInstalled({ seed: seedInstalledOption });
 // yet has nothing to read and keeps the defaults, which is correct.
 configureSecuritySettings(publicConfig(await readConfig()));
 await refreshSecuritySettings();
+
+// After a release the database follows the code: runs once per process, in the background, behind an advisory
+// lock, and only when the recorded fingerprints differ (`server/schemaMigrate.mjs`). It never throws and never
+// blocks a request; with no direct database connection it does nothing and Dashboard → Updates says what to set.
+{
+  const bootConfig = await readConfig();
+  if (bootConfig?.installed && (bootConfig.dbType || 'supabase') === 'supabase') void schemaUpdater.auto();
+}
 
 server.listen(port, () => {
   const settings = securitySettings();

@@ -373,6 +373,26 @@ button:disabled {
   white-space: nowrap;
 }
 
+.offlineNotice {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.88rem;
+}
+
+/* Within 30 days of expiry, or past it and in grace: amber, not red, because the plugin still works. */
+.licenseWarn {
+  display: block;
+  margin-top: 4px;
+  color: #b45309;
+  font-size: 0.73rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* The badge and the named control share a line; "Enter license key" is what a locked row invites. */
 .licenseActions {
   display: flex;

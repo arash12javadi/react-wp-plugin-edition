@@ -55,6 +55,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export const LICENSE_GRACE_MS = 72 * 60 * 60 * 1000;
 
+/**
+ * Days a sold plugin keeps working after its key's last day, with a warning, before it locks. This is a
+ * different grace from the one above (an unreadable store): that one protects against our outage, this
+ * one against a late renewal. Revoked and invalid keys never get it.
+ */
+export const LICENSE_EXPIRY_GRACE_DAYS = 14;
+
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
 /** `YYYYMMDD` from a `YYYY-MM-DD`, `YYYYMMDD` or `Date`, or `''` when it is not a calendar date. */
@@ -240,13 +247,29 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), pub
     daysLeft: Math.max(0, Math.ceil((new Date(parts.expiresAt).getTime() - now.getTime()) / DAY_MS)),
     message: `The ${parts.addon} license is valid through ${parts.expiresOn}.`,
   };
-  if (new Date(parts.expiresAt).getTime() < now.getTime()) {
+  const endsAt = new Date(parts.expiresAt).getTime();
+  if (endsAt < now.getTime()) {
+    // The grace runs from the end of the expiry day, so a buyer who is a day late is not locked out of a
+    // live shop. It is only ever reached with a verified, unrevoked key: both checks above come first.
+    const graceEndsAt = endsAt + LICENSE_EXPIRY_GRACE_DAYS * DAY_MS;
+    if (now.getTime() <= graceEndsAt) {
+      const graceDaysLeft = Math.max(1, Math.ceil((graceEndsAt - now.getTime()) / DAY_MS));
+      return {
+        ...state,
+        licensed: true,
+        status: 'grace',
+        daysLeft: 0,
+        graceDaysLeft,
+        graceEndsOn: new Date(graceEndsAt).toISOString().slice(0, 10),
+        message: `The ${parts.addon} license expired on ${parts.expiresOn}. ${pluginId || 'The plugin'} keeps working for ${graceDaysLeft} more day${graceDaysLeft === 1 ? '' : 's'} and then locks. Renew at ${PLUGIN_LICENSE_SHOP_URL} and enter the new key.`,
+      };
+    }
     return {
       ...state,
       licensed: false,
       status: 'expired',
       daysLeft: 0,
-      message: `The ${parts.addon} license expired on ${parts.expiresOn}, so ${pluginId || 'the plugin'} stays locked until a current key is entered. Renew at ${PLUGIN_LICENSE_SHOP_URL}.`,
+      message: `The ${parts.addon} license expired on ${parts.expiresOn} and its ${LICENSE_EXPIRY_GRACE_DAYS}-day grace period has ended, so ${pluginId || 'the plugin'} stays locked until a current key is entered. Renew at ${PLUGIN_LICENSE_SHOP_URL}.`,
     };
   }
   return state;

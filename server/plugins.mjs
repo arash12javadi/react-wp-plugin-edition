@@ -40,10 +40,11 @@
 import { readAiConfig } from './integrationAi.mjs';
 import { currentEdition, editionKeepsPlugin } from '../src/lib/pluginEdition.js';
 import {
-  PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, applyLicenseGrace, defaultActivePluginIds, licensedActivePluginIds,
+  LICENSE_GRACE_MS, PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, applyLicenseGrace, defaultActivePluginIds, licensedActivePluginIds,
   pluginLicenseAddonFor, pluginLicenseGate, pluginLicenseState, readPluginLicenses,
 } from './pluginLicense.mjs';
 import { ensureRevocations } from './licenseRevocations.mjs';
+import { backgroundLicenseSync } from './licenseLink.mjs';
 import { readJsonState, writeJsonState } from './licenseStore.mjs';
 
 const loaded = await Promise.allSettled([
@@ -94,7 +95,7 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
  * successfully; it is also persisted (`data/license-cache.json`, when the host can write) so a restart
  * during a database outage does not forget it.
  */
-const optionCache = { at: 0, active: null, licenses: null, licensesAt: 0 };
+const optionCache = { at: 0, active: null, licenses: null, licensesAt: 0, degraded: false };
 const OPTION_CACHE_MS = 30_000;
 const LICENSE_CACHE_FILE = 'license-cache.json';
 let licenseCacheLoaded = false;
@@ -164,6 +165,9 @@ async function readPluginOptions(supabaseUrl, supabaseKey, { fresh = false } = {
   const changed = JSON.stringify(verdict.licenses) !== JSON.stringify(optionCache.licenses);
   optionCache.licenses = verdict.licenses;
   optionCache.licensesAt = verdict.at;
+  // True while the keys are being served from the last good read because the store cannot be read now; the
+  // Plugins screen turns it into "working offline until ...".
+  optionCache.degraded = verdict.degraded === true;
   // Persisted on change and at most hourly otherwise, so the stored clock stays close to the real one
   // without a file write every 30 seconds.
   if (!verdict.degraded && (changed || now - lastPersistedAt > 60 * 60 * 1000)) {
@@ -172,6 +176,14 @@ async function readPluginOptions(supabaseUrl, supabaseKey, { fresh = false } = {
   // Revocation list: a bounded wait on the first call of a process, background afterwards, and a failure
   // never locks or unlocks anything (server/licenseRevocations.mjs).
   await ensureRevocations();
+  // The daily account-link sync (server/licenseLink.mjs): started, never awaited, and silent when this site is
+  // not connected, has no secret key or is not due. A change makes the next request re-read the option.
+  if (!verdict.degraded) {
+    backgroundLicenseSync({
+      supabaseUrl,
+      secretKey: process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+    }).then((result) => { if (result?.changed) optionCache.at = 0; }).catch(() => {});
+  }
   return optionCache;
 }
 
@@ -196,6 +208,34 @@ const matchRoute = (routes, method, path) => {
 };
 
 /**
+ * Plugins that may publish a route at a stable public address under `/api/v1/`.
+ *
+ * Only react-wp.com's own marketplace needs it (the signed revocation list and the account link live at
+ * `/api/v1/licenses/…` on sites already deployed, so the URLs cannot move). It is an allow-list of ids, never
+ * something a plugin can claim: a ZIP's `server.mjs` that declared `publicRoutes` is ignored, because a
+ * published address is a promise to every site, and a plugin must not be able to take one over. A client
+ * edition has no such plugin, so `/api/v1/licenses/*` simply answers 404 there.
+ */
+const PUBLIC_ROUTE_PLUGINS = new Set(['rwp-plugin-marketplace']);
+
+/**
+ * `__public/licenses/sync` → `rwp-plugin-marketplace/licenses/sync`, when an allowed plugin declares
+ * `publicRoutes: { 'GET licenses/sync': 'licenses/sync' }` (key: METHOD + path under /api/v1/; value: its own route).
+ * Any other `__public/…` path is rewritten to one no plugin owns, so it answers the usual 404.
+ */
+function resolvePublicRoute(request) {
+  const parts = String(request.path || '').split('/').filter(Boolean);
+  if (parts[0] !== '__public') return null;
+  const published = parts.slice(1).join('/');
+  for (const plugin of serverPlugins) {
+    if (!PUBLIC_ROUTE_PLUGINS.has(plugin.id)) continue;
+    const target = plugin.publicRoutes?.[`${request.method} ${published}`];
+    if (typeof target === 'string' && target) return `${plugin.id}/${target}`;
+  }
+  return '__no_public_route__';
+}
+
+/**
  * @param {object} request
  * @param {string} request.method
  * @param {string} request.path        Everything after /api/plugins/
@@ -207,6 +247,8 @@ const matchRoute = (routes, method, path) => {
  * @returns {Promise<{status:number, body?:unknown, redirect?:string, text?:string, headers?:Record<string,string>}>}
  */
 export async function handlePluginRequest(request) {
+  const publicRoute = resolvePublicRoute(request);
+  if (publicRoute) request = { ...request, path: publicRoute };
   const [pluginId, ...rest] = request.path.split('/').filter(Boolean);
   const plugin = serverPlugins.find((item) => item.id === pluginId);
   const routePath = rest.join('/');
@@ -291,7 +333,11 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
       };
     }
     const state = pluginLicenseState({ pluginId: plugin.id, key: licenseOptions.licenses[plugin.id], addon });
-    return { status: 200, body: { success: true, required: true, ...state } };
+    // `offlineUntil`: the keys come from the last good read and lock if the store stays unreadable past this.
+    const offline = licenseOptions.degraded && licenseOptions.licensesAt > 0
+      ? { degraded: true, offlineUntil: new Date(licenseOptions.licensesAt + LICENSE_GRACE_MS).toISOString() }
+      : { degraded: false };
+    return { status: 200, body: { success: true, required: true, ...state, ...offline } };
   }
 
   const options = await readOptions();
