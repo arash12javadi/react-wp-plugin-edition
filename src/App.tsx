@@ -216,6 +216,32 @@ function DatabaseUnreachable({ detail, problem, configured, dbType, onRetry, onR
   onResetSession: () => void;
   onRunWizard: () => void;
 }) {
+  const reloading = problem === 'reloading';
+  // The database API rebuilds its schema cache by itself after a schema change, so this screen asks
+  // again on its own instead of waiting for a click.
+  useEffect(() => {
+    if (!reloading) return undefined;
+    const timer = window.setTimeout(onRetry, 15000);
+    return () => window.clearTimeout(timer);
+  }, [reloading, onRetry]);
+
+  if (reloading) {
+    return (
+      <div className={styles.loadingScreen} role="status">
+        <div className={styles.loginCard}>
+          <h1>The database is refreshing</h1>
+          <p>
+            Your data is safe. The database&rsquo;s API is rebuilding its schema cache, which usually
+            takes under a minute after a plugin or update changed the database. This page checks again
+            by itself.
+          </p>
+          <p><code>{detail}</code></p>
+          <button type="button" onClick={onRetry}>Check now</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.loadingScreen} role="alert">
       <div className={styles.loginCard}>
@@ -598,7 +624,8 @@ export default function App() {
      */
     const reportFailure = (result: BootResult) => {
       console.warn(`React-WP: database check failed — ${result.failure?.message ?? 'no database client'}`);
-      clearBootCache();
+      // A rebuilding schema cache is not a contradiction of what the browser remembers.
+      if (result.failure?.problem !== 'reloading') clearBootCache();
       if (!result.freshInstall) {
         setBootFailure({
           failure: result.failure ?? { problem: 'connection', message: 'The database could not be read.' },
@@ -650,6 +677,11 @@ export default function App() {
       if (mounted) setCheckingDatabase(false);
       const result = await verification;
       if (!mounted) return;
+      if (!result.client && result.failure?.problem === 'reloading') {
+        // The painted page was right and the API is only busy: leave it up, its own reads retry.
+        console.warn(`React-WP: the database API is refreshing — ${result.failure.message}`);
+        return;
+      }
       if (!result.client) {
         // The remembered verdict was wrong after all: take the page down rather than let it render
         // reads this check could not make.

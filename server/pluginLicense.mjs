@@ -18,10 +18,11 @@
  * a customer cannot forge a key from the code they received. A serial can be revoked
  * (`server/licenseRevocations.mjs`). What it cannot do: a customer who can edit this server's code can
  * delete the check. The protection against that is not here - sold plugin source is never committed to a
- * client's repository (`isCommercialPlugin` in `clientRepositoryFiles`) and is delivered built, not as
- * source. This file is the entitlement record and the gate, not DRM.
+ * client's repository (`isCommercialPlugin` in `clientRepositoryFiles`); what reaches one is the protected,
+ * signed package (`server/packageCrypto.mjs`), not source. This file is the entitlement record and the gate, not DRM.
  *
  *     node server/pluginLicense.mjs keygen                          (once, by the owner)
+ *     node server/pluginLicense.mjs keygen-package                  (once: the key that signs delivered packages)
  *     node server/pluginLicense.mjs mint --plugin rwp-shop --days 365   (needs PLUGIN_LICENSE_PRIVATE_KEY)
  *     node server/pluginLicense.mjs verify RWP2-SHOP-...            (uses the public key)
  *
@@ -39,6 +40,7 @@ import {
   licensePublicKey, newLicenseSerial, signPayload, verifyPayload,
 } from './licenseCrypto.mjs';
 import { revokedSerials } from './licenseRevocations.mjs';
+import { PLUGIN_PACKAGE_PRIVATE_KEY_ENV, generatePackageKeyPair } from './packageCrypto.mjs';
 
 export {
   COMMERCIAL_PLUGIN_ADDONS, PLUGIN_LICENSES_OPTION, PLUGIN_LICENSE_SHOP_URL, defaultActivePluginIds,
@@ -379,6 +381,16 @@ function cli(argv) {
     return 0;
   }
 
+  if (command === 'keygen-package') {
+    const pair = generatePackageKeyPair();
+    console.log('Package public key (safe to commit: paste into BUILT_IN_PACKAGE_PUBLIC_KEY in server/packageCrypto.mjs):');
+    console.log(pair.publicKey);
+    console.log('');
+    console.log(`Package private key (SECRET: set it as ${PLUGIN_PACKAGE_PRIVATE_KEY_ENV} on react-wp.com, and nowhere else; it is not stored anywhere and is not the licence key):`);
+    console.log(pair.privateKey);
+    return 0;
+  }
+
   if (command === 'mint') {
     if (!str(options.plugin)) {
       console.error('Name the plugin the key is for: --plugin rwp-shop (or --plugin SHOP).');
@@ -428,6 +440,7 @@ function cli(argv) {
 function usage(exitCode = 0) {
   console.log('Usage:');
   console.log('  node server/pluginLicense.mjs keygen');
+  console.log('  node server/pluginLicense.mjs keygen-package');
   console.log('  node server/pluginLicense.mjs mint --plugin rwp-shop --days 365');
   console.log('  node server/pluginLicense.mjs mint --plugin rwp-shop --expires 2027-06-30');
   console.log('  node server/pluginLicense.mjs verify RWP2-SHOP-20270630-<serial>-<signature>');

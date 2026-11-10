@@ -23,6 +23,7 @@
 import { describeDbError, resetClient, tryGetClient, type Client } from './db';
 import { isConfigured, resolveRuntimeConfig } from './runtime';
 import { AUTH_TOKEN_KEY } from './auth/token';
+import { isTransientDatabaseError } from './transientDatabaseError.js';
 
 /** How many times a failed read is retried before the failure is reported to the screen. */
 const PROBE_ATTEMPTS = 3;
@@ -42,8 +43,12 @@ const SUPABASE_SESSION_KEY = /^sb-.*-auth-token/;
  */
 const AUTH_FAILURE = /PGRST30[0-9]|JWT|token|Invalid API key|invalid claim|not authenticated|\b40[13]\b|permission denied|row-level security|\bRLS\b|policy/i;
 
+/** How long a transient failure is waited out before the screen says so, and how often it is retried. */
+const TRANSIENT_PATIENCE_MS = 45000;
+const TRANSIENT_DELAYS_MS = [1000, 2000, 3000, 5000];
+
 /** Which kind of trouble the boot hit, so the recovery screen can give the right advice. */
-export type BootProblem = 'auth' | 'connection';
+export type BootProblem = 'auth' | 'connection' | 'reloading';
 
 export interface BootFailure {
   problem: BootProblem;
@@ -96,13 +101,29 @@ const probeOnce = async (): Promise<{ ok: boolean; error: string }> => {
 };
 
 /** The read above, retried: a single blip must not be reported as an unreadable database. */
-const probeDatabase = async (): Promise<{ ok: boolean; error: string }> => {
+const probeDatabase = async (patienceMs = TRANSIENT_PATIENCE_MS): Promise<{ ok: boolean; error: string }> => {
   let result = await probeOnce();
   for (let attempt = 1; !result.ok && attempt < PROBE_ATTEMPTS; attempt += 1) {
+    if (isTransientDatabaseError(result.error)) break;
     await wait(PROBE_RETRY_DELAY_MS);
     result = await probeOnce();
   }
+  const startedAt = Date.now();
+  for (let attempt = 0; !result.ok && isTransientDatabaseError(result.error) && Date.now() - startedAt < patienceMs; attempt += 1) {
+    await wait(TRANSIENT_DELAYS_MS[Math.min(attempt, TRANSIENT_DELAYS_MS.length - 1)]);
+    result = await probeOnce();
+  }
   return result;
+};
+
+/**
+ * Waits until the database API answers again after something rebuilt its schema cache, for callers
+ * that are about to write (plugin activation). Resolves true when it answers, false when it is still
+ * busy after `timeoutMs`; any other failure is not waited on.
+ */
+export const waitForDatabaseApi = async (timeoutMs = 60000): Promise<boolean> => {
+  const result = await probeDatabase(timeoutMs);
+  return result.ok;
 };
 
 /**
@@ -210,6 +231,10 @@ export async function bootDatabase(): Promise<BootResult> {
 
   const first = await probeDatabase();
   if (first.ok) return { ...base, client: tryGetClient() };
+
+  if (isTransientDatabaseError(first.error)) {
+    return { ...base, failure: { problem: 'reloading', message: first.error } };
+  }
 
   const clearedSession = looksLikeAuthFailure(first.error) ? clearStoredSession() : [];
   if (!clearedSession.length) {

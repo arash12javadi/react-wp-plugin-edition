@@ -20,6 +20,7 @@
  * built by `pluginCatalogue()` at the bottom of this file — on a real checkout, through these very
  * readers — so the two hosts share one set of rules and answer with the same body.
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describeDbError, withClient } from './db.mjs';
@@ -218,25 +219,86 @@ export async function readSchemaState(client, tables, functions = []) {
   return state;
 }
 
+/** The `options` row that remembers which schema.sql text each plugin was last installed from. */
+export const SCHEMA_HASHES_OPTION = 'rwp_plugin_schema_hashes';
+
+/** How long a statement may wait for a lock before the install gives up and rolls back. */
+const SCHEMA_LOCK_TIMEOUT_MS = 15000;
+
+/** What identifies a schema.sql: any change to the text, in either direction, changes it. */
+export const schemaHash = (sql) => createHash('sha256').update(String(sql).replace(/\r\n/g, '\n')).digest('hex');
+
+/**
+ * Why a plugin's schema.sql has to run, or `'unchanged'` when it does not. Only an unchanged file whose
+ * tables and functions are all present may be skipped; anything else, including no recorded hash, runs.
+ */
+export const schemaRunReason = ({ force, state, stored, hash }) => {
+  if (force) return 'forced';
+  if (state.missing.length > 0 || state.functionsMissing.length > 0) return 'incomplete';
+  if (!stored) return 'unrecorded';
+  return stored === hash ? 'unchanged' : 'changed';
+};
+
+/** Hashes are of files that ship in the repository, so the world-readable `options` table is fine. */
+const readSchemaHashes = async (client) => {
+  const { rows } = await client.query('select option_value from public.options where option_name = $1', [SCHEMA_HASHES_OPTION]);
+  try {
+    const parsed = JSON.parse(rows[0]?.option_value ?? '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeSchemaHashes = (client, hashes) => client.query(
+  `insert into public.options (option_name, option_value) values ($1, $2)
+   on conflict (option_name) do update set option_value = excluded.option_value`,
+  [SCHEMA_HASHES_OPTION, JSON.stringify(hashes)],
+);
+
 /**
  * Runs the plugin's schema.sql. Idempotent by contract, so re-activating a plugin whose tables
  * are already there is a no-op rather than an error — the same promise supabase/schema.sql makes.
+ * An unchanged file whose objects are all present is not even run (`skipped: 'unchanged'`); `force`
+ * runs it anyway.
  *
  * The reported state is read after the file runs and covers functions as well as tables, so a
  * schema.sql that creates the tables but not an RPC (a stale copy of the file, or a run that stopped
  * half way) is still reported as incomplete instead of as installed.
  */
-export async function installPluginSchema(connectionString, id, catalogue = null) {
+export async function installPluginSchema(connectionString, id, catalogue = null, { force = false } = {}) {
   const { plugin, database } = await readPluginDatabase(id, catalogue);
   if (!database || !database.schema) {
     return { installed: false, reason: 'no-schema', plugin: plugin.id, tables: [], functions: [] };
   }
   const sql = await readSql(database.schema);
+  const hash = schemaHash(sql);
   try {
     return await withClient(connectionString, async (client) => {
       const before = await readSchemaState(client, database.tables, database.functions);
+      const hashes = await readSchemaHashes(client);
+      // Re-running an unchanged schema.sql changes nothing, but it still takes locks, rewrites dozens of
+      // functions and makes PostgREST rebuild its schema cache: the work that can leave a site answering
+      // PGRST002. So it runs when the file changed, when something it creates is missing, when no hash was
+      // ever recorded (an install from before this check) or when the caller forces it.
+      if (schemaRunReason({ force, state: before, stored: hashes[plugin.id], hash }) === 'unchanged') {
+        return {
+          installed: true,
+          skipped: 'unchanged',
+          plugin: plugin.id,
+          tables: before.present,
+          functions: before.functionsPresent,
+          created: [],
+          stillMissing: [],
+          missingFunctions: [],
+        };
+      }
       await client.query(sql);
       const after = await readSchemaState(client, database.tables, database.functions);
+      // Recorded only when the file produced everything it declares, so an incomplete run is repeated.
+      if (after.missing.length === 0 && after.functionsMissing.length === 0) {
+        await writeSchemaHashes(client, { ...hashes, [plugin.id]: hash });
+      }
       return {
         installed: true,
         plugin: plugin.id,
@@ -247,7 +309,7 @@ export async function installPluginSchema(connectionString, id, catalogue = null
         stillMissing: after.missing,
         missingFunctions: after.functionsMissing,
       };
-    }, { transaction: true });
+    }, { transaction: true, lockTimeoutMs: SCHEMA_LOCK_TIMEOUT_MS });
   } catch (error) {
     throw new SchemaError(500,
       `plugins/${plugin.folder}/schema.sql failed, and nothing was applied: ${describeDbError(error, connectionString)}`);

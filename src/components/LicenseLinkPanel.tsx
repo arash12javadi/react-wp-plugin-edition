@@ -12,6 +12,7 @@ interface LinkState {
   lastResult: { ok: boolean; message: string; at: string } | null;
   nextSyncAt: string;
   secretBox: boolean;
+  autoInstall: boolean;
 }
 
 interface LinkAnswer {
@@ -55,6 +56,7 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
   const [link, setLink] = useState<LinkState | null>(null);
   const [hidden, setHidden] = useState(false);
   const [code, setCode] = useState('');
+  const [autoInstall, setAutoInstall] = useState(true);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -86,7 +88,7 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
 
   const connect = async (event: FormEvent) => {
     event.preventDefault();
-    if (await run('connect', '/connect', { code: code.trim() })) setCode('');
+    if (await run('connect', '/connect', { code: code.trim(), autoInstall })) setCode('');
   };
 
   if (hidden) return null;
@@ -104,6 +106,19 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
           {link.lastResult && (
             <p className={link.lastResult.ok ? styles.ok : styles.error} role="status">{link.lastResult.message}</p>
           )}
+          <label className={styles.check}>
+            <input
+              type="checkbox"
+              checked={link.autoInstall}
+              disabled={Boolean(busy)}
+              onChange={(event) => void run('settings', '/settings', { autoInstall: event.target.checked })}
+            />{' '}
+            Install the plugins I assigned to this site on react-wp.com automatically
+          </label>
+          <p className={styles.hint}>
+            A plugin is added to this site&rsquo;s GitHub repository only after its signature and checksum verify, arrives switched off,
+            and needs GitHub and Vercel connected under Settings → Integrations. You still press Activate.
+          </p>
           <div className={styles.actions}>
             <button type="button" className={styles.primary} disabled={Boolean(busy)} onClick={() => void run('sync', '/sync')}>
               {busy === 'sync' ? 'Checking…' : 'Sync now'}
@@ -145,6 +160,10 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
               {busy === 'connect' ? 'Connecting…' : 'Connect'}
             </button>
           </div>
+          <label className={styles.check}>
+            <input type="checkbox" checked={autoInstall} onChange={(event) => setAutoInstall(event.target.checked)} />{' '}
+            Install the plugins I assign to this site on react-wp.com automatically
+          </label>
         </form>
       )}
       {message && !link.lastResult?.message && <p className={styles.ok} role="status">{message}</p>}

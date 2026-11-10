@@ -115,12 +115,15 @@ export function describeDbError(error, connectionString) {
   return message;
 }
 
+/** How long Postgres waits on a transaction that has gone quiet before ending the session, in ms. */
+const IDLE_IN_TRANSACTION_MS = 30000;
+
 /**
  * Opens a connection, runs `work`, and always closes it. When `transaction` is set the work runs
  * inside begin/commit, so a schema that fails half way leaves nothing behind — the reason plugin
  * install and uninstall are all-or-nothing.
  */
-export async function withClient(connectionString, work, { transaction = false } = {}) {
+export async function withClient(connectionString, work, { transaction = false, lockTimeoutMs = 0 } = {}) {
   const client = new Client({
     connectionString,
     ssl: { rejectUnauthorized: false },
@@ -131,6 +134,13 @@ export async function withClient(connectionString, work, { transaction = false }
   });
   await client.connect();
   try {
+    // A serverless function can be frozen or killed between two statements. The connection then stays
+    // open with a transaction nobody will finish, and the locks it holds stop PostgREST from rebuilding
+    // its schema cache (PGRST002) until someone terminates the backend by hand. Postgres ends such a
+    // session itself once this runs out. A statement that is still executing is not "idle", so a long
+    // schema.sql is unaffected. Ignored on a pooler that refuses SET.
+    await client.query(`set idle_in_transaction_session_timeout = '${IDLE_IN_TRANSACTION_MS}'`).catch(() => {});
+    if (lockTimeoutMs > 0) await client.query(`set lock_timeout = '${Math.floor(lockTimeoutMs)}'`).catch(() => {});
     if (transaction) await client.query('begin');
     const result = await work(client);
     if (transaction) await client.query('commit');

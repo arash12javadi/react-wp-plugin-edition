@@ -21,6 +21,7 @@ import LicenseLinkPanel from './LicenseLinkPanel';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
 import { installPluginSchema } from '../lib/pluginSchema';
+import { waitForDatabaseApi } from '../lib/boot';
 import styles from './PluginsManager.module.css';
 
 const activationOption = 'rwp_active_plugins';
@@ -527,9 +528,11 @@ export default function PluginsManager() {
       // enables the shop never gets its twenty tables. schema.sql is re-runnable by contract, so
       // activating an already-provisioned plugin is a no-op rather than an error.
       if (nextActive) {
+        let schemaChanged = false;
         for (const plugin of changing) {
           try {
             const result = await installPluginSchema(plugin.plugin_id);
+            if (result.installed && !result.skipped) schemaChanged = true;
             if (result.created?.length) {
               notes.push(`${plugin.name}: created ${result.created.join(', ')}.`);
             }
@@ -553,6 +556,16 @@ export default function PluginsManager() {
             notes.push(`${plugin.name}: its database tables were not created. ${
               schemaError instanceof Error ? schemaError.message : String(schemaError)}`);
           }
+        }
+        // New database objects make PostgREST rebuild its schema cache, and until it is done every read
+        // and write answers 503 (PGRST002). Writing the activation state into that gap would leave the
+        // tables created and the plugin switched off.
+        if (schemaChanged) {
+          setFeedback('The database changed. Waiting for its API to finish reloading…');
+          if (!(await waitForDatabaseApi())) {
+            throw new Error('The database was updated, but its API is still rebuilding its schema cache, so the plugin was not switched on yet. Nothing is lost: wait a minute and activate it again.');
+          }
+          setFeedback('');
         }
       }
       const supabase = client;

@@ -128,7 +128,7 @@ export async function installPluginSchemaFor(config, id, body = {}, options = {}
         + 'tables were not created. Plugin tables need a Supabase or Postgres backend.',
     };
   }
-  return installPluginSchema(requireConnection(body, config), id, options.catalogue ?? null);
+  return installPluginSchema(requireConnection(body, config), id, options.catalogue ?? null, { force: body.force === true });
 }
 
 /**

@@ -149,7 +149,7 @@ export const fetchPluginSchemaStatus = (id: string) =>
  */
 export const installPluginSchema = (id: string, credentials: DbCredentials = {}) =>
   request<{
-    installed: boolean; reason?: string; message?: string; plugin: string; tables: string[];
+    installed: boolean; skipped?: 'unchanged'; reason?: string; message?: string; plugin: string; tables: string[];
     functions?: string[]; created?: string[]; stillMissing?: string[]; missingFunctions?: string[];
   }>(
     '/api/admin/plugins/install-schema',

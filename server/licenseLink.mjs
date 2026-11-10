@@ -69,6 +69,9 @@ export function licenseLinkFrom(value) {
     last_sync_at: str(row.last_sync_at),
     last_attempt_at: str(row.last_attempt_at),
     last_result: { ok: result.ok === true, message: str(result.message), at: str(result.at) },
+    // Consent to commit the plugins assigned to this site on react-wp.com. Only an explicit `true` counts, so a
+    // site that connected before this option existed has not agreed to anything.
+    auto_install: row.auto_install === true,
   };
 }
 
@@ -105,6 +108,7 @@ export function publicLicenseLink(value, { env = globalThis.process?.env || {}, 
     nextSyncAt: isLicenseLinked(row) ? nextSyncAt(row, { env, now }) : '',
     tokenFingerprint: row.token_fingerprint,
     secretBox: safeSecretBoxEnabled(env),
+    autoInstall: row.auto_install,
   };
 }
 
@@ -165,7 +169,7 @@ const platformMessage = async (response) => {
 };
 
 /** Connects this site with a pairing code. Returns the row that was stored (never the token). */
-export async function connectSite({ code, siteUrl, io, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
+export async function connectSite({ code, siteUrl, io, autoInstall = true, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
   requireSecretBox(env);
   const domain = hostOf(str(siteUrl));
   if (!domain) throw new LicenseLinkError(400, 'This site cannot tell its own address from the request, so it cannot be connected.', 'no_site_address');
@@ -198,9 +202,20 @@ export async function connectSite({ code, siteUrl, io, env = globalThis.process?
     last_sync_at: '',
     last_attempt_at: '',
     last_result: { ok: true, message: 'Connected. Keys are fetched next.', at: now.toISOString() },
+    auto_install: autoInstall !== false,
   };
   await io.write(LICENSE_LINK_CONFIG_KEY, row);
   return row;
+}
+
+/** Turns the automatic install of assigned plugins on or off. Everything else on the row stays as it is. */
+export async function setAutoInstall({ io, enabled }) {
+  const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+  if (!isLicenseLinked(row)) throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account.', 'not_connected');
+  // The stored ETag is dropped so the next sync asks for the full answer: a "nothing changed" reply would
+  // otherwise hide the plugins that were waiting for this switch.
+  await io.write(LICENSE_LINK_CONFIG_KEY, { ...row, auto_install: enabled === true, etag: '' });
+  return enabled === true;
 }
 
 const SAFE_PLUGIN_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -237,7 +252,7 @@ export function mergeDeliveredKeys({ delivered, held, now = new Date() }) {
  * One sync. `licenseIo.read()` / `licenseIo.write(next)` are the licence option; `io` the settings rows.
  * Records the outcome on the row either way, and returns what a screen can say.
  */
-export async function syncLicenses({ io, licenseIo, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
+export async function syncLicenses({ io, licenseIo, credentials = null, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
   const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
   if (!isLicenseLinked(row)) throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account.', 'not_connected');
   requireSecretBox(env);
@@ -299,9 +314,30 @@ export async function syncLicenses({ io, licenseIo, env = globalThis.process?.en
   const message = updated.length
     ? `Updated ${updated.length} key${updated.length === 1 ? '' : 's'}: ${updated.join(', ')}.`
     : `Checked ${answer.licenses.length} key${answer.licenses.length === 1 ? '' : 's'}: the keys on this site are already current${ignored ? ` (${ignored} ignored)` : ''}.`;
-  // The ETag is kept only after the keys it describes were stored, so a failed write is fetched again.
-  await record({ last_sync_at: now.toISOString(), etag: str(response.headers.get('etag')) }, message, true);
-  return { changed: updated.length > 0, updated, message };
+
+  // Plugins the customer assigned to this site. The ONLY automatic commit this site makes: it needs the owner's
+  // consent on the connection (`auto_install`), credentials to read GitHub and the options (`credentials`), and
+  // it is handled in `pluginAutoInstall.mjs`, loaded only now so the sync itself stays light.
+  let install = { complete: true, installed: [], message: '' };
+  if (row.auto_install && credentials && Array.isArray(answer.installs) && answer.installs.length) {
+    try {
+      const { autoInstallAssigned } = await import('./pluginAutoInstall.mjs');
+      install = await autoInstallAssigned({
+        installs: answer.installs, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl,
+      });
+    } catch (error) {
+      install = { complete: false, installed: [], message: `Assigned plugins were not installed: ${error instanceof Error ? error.message : 'unexpected error'}.` };
+    }
+  }
+  const fullMessage = [message, install.message].filter(Boolean).join(' ');
+  // The ETag is kept only after the keys it describes were stored and every assigned plugin was handled, so a
+  // failed write or install is fetched (and tried) again instead of being answered "unchanged".
+  await record(
+    { last_sync_at: now.toISOString(), etag: install.complete ? str(response.headers.get('etag')) : '' },
+    fullMessage,
+    install.complete,
+  );
+  return { changed: updated.length > 0, updated, installed: install.installed.map((row) => row.plugin), message: fullMessage };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -367,7 +403,8 @@ export function backgroundLicenseSync({ supabaseUrl, secretKey, env = globalThis
         return { ran: false, reason: 'not due' };
       }
       const licenseIo = licenseOptionIo({ supabaseUrl, apiKey: secretKey, accessToken: secretKey, fetchImpl });
-      const result = await syncLicenses({ io, licenseIo, env, fetchImpl, now });
+      const credentials = { supabaseUrl, apiKey: secretKey, accessToken: secretKey };
+      const result = await syncLicenses({ io, licenseIo, credentials, env, fetchImpl, now });
       return { ran: true, changed: result.changed };
     } catch (error) {
       // The outcome is already on the row; the log carries the sentence, never a token or key.

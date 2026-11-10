@@ -15,12 +15,12 @@
  * My licenses (the response says so).
  */
 import {
-  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, connectSite, licenseLinkFrom, licenseOptionIo, publicLicenseLink, syncLicenses,
+  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, connectSite, licenseLinkFrom, licenseOptionIo, publicLicenseLink, setAutoInstall, syncLicenses,
 } from './licenseLink.mjs';
 import { settingsIo } from './gitDeploy/connection.mjs';
 
 const PREFIX = '/api/admin/license-link';
-const PATHS = new Set([PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/disconnect`]);
+const PATHS = new Set([PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/settings`, `${PREFIX}/disconnect`]);
 
 /** The paths this module answers - the single list both engines route by. */
 export const ownsLicenseLinkPath = (pathname) => PATHS.has(pathname);
@@ -55,6 +55,8 @@ export async function handleLicenseLinkRequest(options) {
 
   const io = settingsIo({ supabaseUrl: config.supabaseUrl, supabaseKey: config.supabasePublishableKey, accessToken, fetchImpl });
   const licenseIo = licenseOptionIo({ supabaseUrl: config.supabaseUrl, apiKey: config.supabasePublishableKey, accessToken, fetchImpl });
+  // What an automatic install needs to pin `rwp_active_plugins`: the owner's own session, never more.
+  const credentials = { supabaseUrl: config.supabaseUrl, apiKey: config.supabasePublishableKey, accessToken };
 
   try {
     if (pathname === PREFIX) {
@@ -64,19 +66,24 @@ export async function handleLicenseLinkRequest(options) {
     if (method !== 'POST') return refuse(405, 'Only POST is supported here.');
 
     if (pathname === `${PREFIX}/connect`) {
-      const row = await connectSite({ code: body?.code, siteUrl, io, env, fetchImpl });
+      const row = await connectSite({ code: body?.code, siteUrl, io, autoInstall: body?.autoInstall !== false, env, fetchImpl });
       // Keys are fetched straight away, so a customer is not left looking at "Connected" with locked plugins.
       let sync = null;
       try {
-        sync = await syncLicenses({ io, licenseIo, env, fetchImpl });
+        sync = await syncLicenses({ io, licenseIo, credentials, env, fetchImpl });
       } catch (error) {
         sync = { changed: false, updated: [], message: error instanceof Error ? error.message : 'The first sync did not complete.' };
       }
       return ok(200, { link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }), sync, domain: row.domain });
     }
     if (pathname === `${PREFIX}/sync`) {
-      const sync = await syncLicenses({ io, licenseIo, env, fetchImpl });
+      const sync = await syncLicenses({ io, licenseIo, credentials, env, fetchImpl });
       return ok(200, { link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }), sync });
+    }
+    if (pathname === `${PREFIX}/settings`) {
+      if (typeof body?.autoInstall !== 'boolean') return refuse(400, 'Send { "autoInstall": true } or { "autoInstall": false }.');
+      await setAutoInstall({ io, enabled: body.autoInstall });
+      return ok(200, { link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }) });
     }
     if (pathname === `${PREFIX}/disconnect`) {
       const before = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
