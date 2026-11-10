@@ -310,7 +310,7 @@ export default function UpdatesCard({ role, onStatus }: {
       publish(answer);
       setOverview((current) => (current ? { ...current, config: answer.config, github: answer.github, readable: answer.readable } : current));
       const latest = asTag(answer.latestVersion || answer.app.latest_tag || answer.app.latest);
-      setFeedback(answer.update_available
+      setFeedback((answer.updateAvailable ?? answer.update_available)
         ? `An update is available — latest release ${latest}.`
         : `Everything is up to date: ${asTag(answer.app.installed)} is the latest release GitHub publishes.`);
       await settleDeploy(answer);

@@ -72,7 +72,22 @@ export function licenseLinkFrom(value) {
     // Consent to commit the plugins assigned to this site on react-wp.com. Only an explicit `true` counts, so a
     // site that connected before this option existed has not agreed to anything.
     auto_install: row.auto_install === true,
+    latest_versions: latestVersionsFrom(row.latest_versions),
   };
+}
+
+const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * `{ "rwp-shop": "1.3.0" }`: the newest version of each sold plugin this site is licensed for, as the platform last
+ * said. Only a sold plugin with a safe id and a plain version is kept, so a damaged row or a hostile answer
+ * cannot put anything else on the Plugins screen.
+ */
+export function latestVersionsFrom(value) {
+  const entries = Array.isArray(value)
+    ? value.map((item) => [str(item?.plugin), str(item?.version)])
+    : value && typeof value === 'object' ? Object.entries(value).map(([plugin, version]) => [str(plugin), str(version)]) : [];
+  return Object.fromEntries(entries.filter(([plugin, version]) => SAFE_PLUGIN_ID.test(plugin) && isCommercialPlugin(plugin) && VERSION.test(version)));
 }
 
 export const isLicenseLinked = (row) => Boolean(row?.token_sealed && row?.domain);
@@ -109,6 +124,7 @@ export function publicLicenseLink(value, { env = globalThis.process?.env || {}, 
     tokenFingerprint: row.token_fingerprint,
     secretBox: safeSecretBoxEnabled(env),
     autoInstall: row.auto_install,
+    latestVersions: row.latest_versions,
   };
 }
 
@@ -206,6 +222,25 @@ export async function connectSite({ code, siteUrl, io, autoInstall = true, env =
   };
   await io.write(LICENSE_LINK_CONFIG_KEY, row);
   return row;
+}
+
+/**
+ * Updates one installed sold plugin to the newest version this site is licensed for. Called by the Update
+ * button's route and by nothing else (`tests/updateRelease.test.mjs` pins that): an update is a deliberate act,
+ * unlike the opt-in install of a plugin that is missing.
+ */
+export async function updateLicensedPlugin({ plugin, version = '', io, credentials = null, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
+  const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+  if (!isLicenseLinked(row)) throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account.', 'not_connected');
+  requireSecretBox(env);
+  let token;
+  try {
+    token = openSecret(row.token_sealed, { env });
+  } catch (error) {
+    throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
+  }
+  const { updateSoldPlugin } = await import('./pluginAutoInstall.mjs');
+  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl });
 }
 
 /** Turns the automatic install of assigned plugins on or off. Everything else on the row stays as it is. */
@@ -333,7 +368,12 @@ export async function syncLicenses({ io, licenseIo, credentials = null, env = gl
   // The ETag is kept only after the keys it describes were stored and every assigned plugin was handled, so a
   // failed write or install is fetched (and tried) again instead of being answered "unchanged".
   await record(
-    { last_sync_at: now.toISOString(), etag: install.complete ? str(response.headers.get('etag')) : '' },
+    {
+      last_sync_at: now.toISOString(),
+      etag: install.complete ? str(response.headers.get('etag')) : '',
+      // Kept as it was when an older platform sends no list.
+      ...(Array.isArray(answer.latest) ? { latest_versions: latestVersionsFrom(answer.latest) } : {}),
+    },
     fullMessage,
     install.complete,
   );

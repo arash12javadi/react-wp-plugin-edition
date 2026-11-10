@@ -100,6 +100,46 @@ export async function fetchPluginReleases({ repo, token = '', channel = 'stable'
   return { repo: name, releases: pluginReleasesFrom(rows, { channel }) };
 }
 
+const RELEASE_CACHE_MS = 5 * 60 * 1000;
+/** `repo|auth` to the last good answer, so many admins opening the dashboard make one GitHub call, not many. */
+const releaseCache = new Map();
+
+export const clearPluginReleaseCache = () => releaseCache.clear();
+
+/**
+ * The newest stable release of each **free** plugin that has an installable asset, shaped the way the update
+ * check reports a release (`version`, `tag`, `title`, `released`, `notes`, `changelog_url`). This is what lets
+ * the daily check, the sidebar badge and the dashboard say "a new version of plugin X is available".
+ *
+ * Sold plugins are left out (their updates come from react-wp.com with a licence, never from a public
+ * release). It never throws: a GitHub outage or rate limit answers with the last good list, or none, because a
+ * plugin notice must never make the core check fail.
+ *
+ * @param {{ source: { repo: string, token?: string }, fetchImpl?: typeof fetch, now?: number }} input
+ * @returns {Promise<Record<string, { version: string, tag: string, title: string, released: string, notes: string[], changelog_url: string, critical: boolean }>>}
+ */
+export async function latestFreePluginReleases({ source, fetchImpl = fetch, now = Date.now() }) {
+  const key = `${trimmed(source?.repo).toLowerCase()}|${trimmed(source?.token) ? 'auth' : 'anon'}`;
+  const hit = releaseCache.get(key);
+  if (hit && now - hit.at < RELEASE_CACHE_MS) return hit.value;
+  try {
+    const listing = await fetchPluginReleases({ repo: source?.repo, token: source?.token, fetchImpl });
+    const value = {};
+    for (const [id, list] of listing.releases) {
+      const latest = list[0];
+      if (!latest || !latest.asset || isCommercialPlugin(id)) continue;
+      value[id] = {
+        version: latest.version, tag: latest.tag, title: latest.title, released: latest.released,
+        notes: latest.notes, changelog_url: latest.url, critical: false,
+      };
+    }
+    releaseCache.set(key, { at: now, value });
+    return value;
+  } catch {
+    return hit ? hit.value : {};
+  }
+}
+
 /** The sentence for a sold plugin: its package is not served from a public release. */
 export const commercialRefusal = (id) => `"${id}" is a licensed plugin. Its package is only handed out against a valid licence key, which this update path does not do yet, so it is not updated from here. Install the new version from the Plugins screen once it is delivered with your licence.`;
 

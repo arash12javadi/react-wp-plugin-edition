@@ -229,6 +229,8 @@ export function checkForUpdates(options: {
   fetchImpl?: typeof fetch;
   /** A list already read for this request, so a check and a selection share one GitHub call. */
   list?: RecentReleaseList | null;
+  /** The newest free-plugin releases (`latestFreePluginReleases`); given, they are reported beside the core answer. */
+  pluginReleases?: Record<string, UpdateRelease> | null;
 }): Promise<UpdateCheck & { releases: RecentReleasesView }>;
 
 /**

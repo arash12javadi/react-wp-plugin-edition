@@ -517,7 +517,7 @@ export const checkAnswerFrom = ({ source, app, plugins, current, plugins_install
  *
  * @param {{ config?: any, current: { app: string, site?: string }, plugins: Array<{ id: string, name?: string, version: string }>, github?: { repo: string, token?: string } | null, fetchImpl?: typeof fetch, list?: Awaited<ReturnType<typeof listRecentReleases>> | null }} options
  */
-export async function checkForUpdates({ current, plugins, github = null, fetchImpl = fetch, list = null }) {
+export async function checkForUpdates({ current, plugins, github = null, fetchImpl = fetch, list = null, pluginReleases = null }) {
   const source = github || releaseSourceFrom({});
   let recent = list;
   if (!recent) {
@@ -530,13 +530,15 @@ export async function checkForUpdates({ current, plugins, github = null, fetchIm
   const answer = checkAnswerFrom({
     source: 'github',
     app: recent.releases[0],
-    plugins: {},
+    // Plugin releases are *reported* (the badge, the banner and the table list them) when the caller read
+    // them, but never become part of the core update: `updateAvailable` stays "core only", so no core button
+    // is offered for a plugin. Without `pluginReleases` the answer is core-only, as before.
+    plugins: pluginReleases || {},
     current,
     plugins_installed: plugins,
     // The list is a warning, not a failure, when GitHub could not be refreshed and the last answer is shown.
     error: recent.stale ? recent.warning : '',
-    // Plugin releases follow their own lifecycle, never this button.
-    coreOnly: true,
+    coreOnly: !pluginReleases,
   });
   return { ...answer, releases: describeRecentReleases(recent, current.app) };
 }

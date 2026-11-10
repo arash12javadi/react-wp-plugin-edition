@@ -21,7 +21,8 @@
 import { COMMERCIAL_PLUGIN_ADDONS } from '../src/lib/pluginLicense.js';
 import { centralFetch } from './centralFetch.mjs';
 import { packagePublicKey, sha256Hex, verifyPackage } from './packageCrypto.mjs';
-import { downloadZip } from './pluginInstaller.mjs';
+import { InstallError, downloadZip } from './pluginInstaller.mjs';
+import { compareVersions } from './versions.mjs';
 import { githubTargetFrom } from './pluginGitPush.mjs';
 import { installPluginFromGit } from './pluginGitInstaller.mjs';
 import { assertPackageMatches, installedPluginVersions } from './pluginUpdates.mjs';
@@ -68,12 +69,15 @@ export function optionStoreFrom({ supabaseUrl, apiKey, accessToken, fetchImpl = 
 }
 
 /** The platform's signed description of one package, or a sentence for why there is none. */
-async function fetchPackageDescription({ baseUrl, token, domain, id, fetchImpl }) {
+async function fetchPackageDescription({ baseUrl, token, domain, id, mode = 'install', fetchImpl }) {
   let response;
   try {
-    response = await centralFetch(`${baseUrl}/package?plugin=${encodeURIComponent(id)}`, {
+    response = await centralFetch(`${baseUrl}/package?plugin=${encodeURIComponent(id)}${mode === 'update' ? '&mode=update' : ''}`, {
       method: 'GET',
-      headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, 'X-RWP-Site': domain, 'X-RWP-Plugin': id },
+      headers: {
+        Accept: 'application/json', Authorization: `Bearer ${token}`, 'X-RWP-Site': domain, 'X-RWP-Plugin': id,
+        ...(mode === 'update' ? { 'X-RWP-Mode': 'update' } : {}),
+      },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }, { fetchImpl });
   } catch (error) {
@@ -82,6 +86,32 @@ async function fetchPackageDescription({ baseUrl, token, domain, id, fetchImpl }
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(str(body?.error) || `react-wp.com refused to hand over ${id} (HTTP ${response.status}).`);
   return body;
+}
+
+/**
+ * Asks for one package and proves it before anything is committed: the platform's description must name this
+ * plugin and the expected version, its signature must verify for THIS site's host, and the downloaded bytes
+ * must have the signed sha256. Throws a sentence on any failure; returns the verified zip.
+ */
+async function fetchVerifiedPackage({ id, wantedVersion, mode, baseUrl, token, domain, publicKey, now, fetchImpl, d }) {
+  const description = await fetchPackageDescription({ baseUrl, token, domain, id, mode, fetchImpl });
+  const sha256 = str(description?.sha256).toLowerCase();
+  const version = str(description?.version);
+  if (str(description?.plugin) !== id || (wantedVersion && version !== wantedVersion) || !version || !SHA256.test(sha256) || !str(description?.url)) {
+    throw new Error('react-wp.com described a different package than the one asked for, so it was not installed.');
+  }
+  const verdict = verifyPackage({ pluginId: id, version, domain, sha256, exp: str(description?.exp), sig: str(description?.sig) }, { publicKey, now });
+  if (verdict !== 'ok') {
+    throw new Error(verdict === 'expired'
+      ? 'The package description had already expired. It will be asked for again on the next sync.'
+      : `The package signature for ${id} did not verify (${verdict}), so nothing was committed.`);
+  }
+  const zip = await d.downloadZip(str(description.url));
+  if (sha256Hex(zip) !== sha256) {
+    throw new Error(`The downloaded ${id} does not match the signed checksum, so nothing was committed.`);
+  }
+  d.assertPackageMatches({ zip, id, version });
+  return { zip, version };
 }
 
 /**
@@ -140,23 +170,9 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
       continue;
     }
     try {
-      const description = await fetchPackageDescription({ baseUrl, token, domain, id: item.plugin, fetchImpl });
-      const sha256 = str(description?.sha256).toLowerCase();
-      const version = str(description?.version);
-      if (str(description?.plugin) !== item.plugin || version !== item.version || !SHA256.test(sha256) || !str(description?.url)) {
-        throw new Error('react-wp.com described a different package than the one asked for, so it was not installed.');
-      }
-      const verdict = verifyPackage({ pluginId: item.plugin, version, domain, sha256, exp: str(description?.exp), sig: str(description?.sig) }, { publicKey, now });
-      if (verdict !== 'ok') {
-        throw new Error(verdict === 'expired'
-          ? 'The package description had already expired. It will be asked for again on the next sync.'
-          : `The package signature for ${item.plugin} did not verify (${verdict}), so nothing was committed.`);
-      }
-      const zip = await d.downloadZip(str(description.url));
-      if (sha256Hex(zip) !== sha256) {
-        throw new Error(`The downloaded ${item.plugin} does not match the signed checksum, so nothing was committed.`);
-      }
-      d.assertPackageMatches({ zip, id: item.plugin, version });
+      const { zip, version } = await fetchVerifiedPackage({
+        id: item.plugin, wantedVersion: item.version, mode: 'install', baseUrl, token, domain, publicKey, now, fetchImpl, d,
+      });
       const result = await d.installPluginFromGit({
         source: { zip }, target, optionStore, deployHook: '', expectedId: item.plugin, gitDeploys: true,
       });
@@ -174,4 +190,59 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
   if (failures.length) parts.push(`Not installed: ${failures.join(' ')}`);
   if (later.length) parts.push(`Still to install on the next sync: ${later.join(', ')}.`);
   return { complete: failures.length === 0 && later.length === 0, installed, message: parts.join(' ') };
+}
+
+/**
+ * Updates one sold plugin that is already installed, to the newest version react-wp.com licenses this site
+ * for. Called only from the Update button's route (`POST /api/admin/license-link/update`), never from a sync.
+ *
+ * The same proof as the first install (signature for this site's host, sha256 of the bytes), plus the rules of
+ * an update: the plugin must already be in the repository, the new version must be newer (never a downgrade),
+ * and it must be the version the screen showed. The commit is the installer's own: it replaces only
+ * `plugins/<id>/` and that plugin's line in `server/plugins.mjs`, and the deployment is `pending` until Vercel
+ * says READY.
+ *
+ * Unlike the sync's install this throws: the owner pressed a button and is owed the real reason.
+ *
+ * @returns {Promise<object>} what `installPluginFromGit` answers, plus `update: { id, from, to }`
+ */
+export async function updateSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {} }) {
+  const d = {
+    installedPluginVersions, installPluginFromGit, downloadZip, githubTargetFrom, assertPackageMatches, ...deps,
+  };
+  const id = str(plugin);
+  if (!SAFE_PLUGIN_ID.test(id) || !Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) {
+    throw new InstallError('Only the sold plugins are updated from react-wp.com. Free plugins update from their own releases under Plugins → Plugin updates.', 400);
+  }
+  const publicKey = deps.publicKey ?? packagePublicKey();
+  if (!publicKey) {
+    throw new InstallError('This release has no package verification key yet, so it cannot check a plugin package. Update React-WP first.', 503);
+  }
+  let target;
+  try {
+    target = d.githubTargetFrom(await io.read(GITHUB_CONFIG_KEY));
+  } catch (error) {
+    throw new InstallError(`Connect GitHub and Vercel under Settings → Integrations first. (${error instanceof Error ? error.message : 'The GitHub connection could not be read.'})`, 501);
+  }
+  const present = (await d.installedPluginVersions(target)).find((row) => row.id === id);
+  if (!present) {
+    throw new InstallError(`"${id}" is not in ${target.owner}/${target.repo}, so there is nothing to update. Install it first.`, 404);
+  }
+
+  let verified;
+  try {
+    verified = await fetchVerifiedPackage({
+      id, wantedVersion: str(version), mode: 'update', baseUrl, token, domain, publicKey, now, fetchImpl, d,
+    });
+  } catch (error) {
+    throw new InstallError(error instanceof Error ? error.message : 'The package could not be fetched.', 502);
+  }
+  if (compareVersions(verified.version, present.version) <= 0) {
+    throw new InstallError(`${id} ${present.version} is already installed; ${verified.version} is not newer, and a plugin is never downgraded from here.`, 409);
+  }
+  const optionStore = credentials?.supabaseUrl ? optionStoreFrom({ ...credentials, fetchImpl }) : null;
+  const result = await d.installPluginFromGit({
+    source: { zip: verified.zip }, target, optionStore, deployHook: '', expectedId: id, gitDeploys: true,
+  });
+  return { ...result, update: { id, from: present.version, to: verified.version } };
 }

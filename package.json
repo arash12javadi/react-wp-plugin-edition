@@ -15,6 +15,7 @@
     "check:schema": "node scripts/checkPluginSchemaSql.mjs",
     "check:updates": "node scripts/checkUpdateEngine.mjs",
     "check:release": "node scripts/checkRelease.mjs",
+    "plugin:release": "node scripts/publishPluginRelease.mjs",
     "test": "node --test \"tests/*.test.mjs\"",
     "install:worker": "node scripts/rwpBuildWorker.mjs",
     "verify:install": "node scripts/verifyPluginInstall.mjs",

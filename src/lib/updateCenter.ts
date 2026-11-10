@@ -18,6 +18,7 @@
  */
 import { client, getSystemSetting, setSystemSetting } from './db';
 import { rwp } from './rwp';
+import { callLink } from './licenseLinkApi';
 import { LEGACY_UPDATE_CONFIG_KEYS, nextUpdateConfigRow } from './updateConfigRow';
 import {
   autoCheckIntervals,
@@ -582,9 +583,34 @@ export const runScheduledUpdateCheck = async (): Promise<{ settings: UpdateSetti
   // Settings are a database read on the server; a screen that cannot reach them still checks on the default.
   const overview = await fetchUpdatesOverview().catch(() => null);
   const settings = settingsFromConfig(overview?.config);
-  if (!isCheckDue(settings.auto_check, stored?.checked_at)) return { settings, status: stored };
+  if (!isCheckDue(settings.auto_check, stored?.checked_at)) return { settings, status: await withSoldPluginVersions(stored) };
   const status = updateStatusFrom(await checkForUpdates());
   await saveUpdateStatus(status).catch(() => undefined);
-  return { settings, status };
+  return { settings, status: await withSoldPluginVersions(status) };
+};
+
+/**
+ * Adds the sold plugins' newest versions to the status the badge and the banner read. They are not on GitHub:
+ * react-wp.com tells this site, at each account sync, which version it is licensed for, and that is kept on the
+ * connection row. Only the platform owner can read it, so for anyone else (and for a site that is not
+ * connected) the status is returned unchanged. It is merged for display and never stored.
+ */
+const withSoldPluginVersions = async (status: UpdateStatus | null): Promise<UpdateStatus | null> => {
+  if (!status) return status;
+  try {
+    const { answer } = await callLink('', 'GET');
+    const latest = answer.link?.connected ? answer.link.latestVersions || {} : {};
+    const entries = Object.entries(latest).filter(([, version]) => Boolean(version));
+    if (!entries.length) return status;
+    return {
+      ...status,
+      plugins: {
+        ...(status.plugins || {}),
+        ...Object.fromEntries(entries.map(([id, version]) => [id, { version, tag: `${id}-v${version}`, title: '', released: '', notes: [], changelog_url: '' }])),
+      },
+    };
+  } catch {
+    return status;
+  }
 };
 

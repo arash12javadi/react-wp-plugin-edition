@@ -1,49 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { client } from '../lib/db';
+import { callLink, type LinkState } from '../lib/licenseLinkApi';
 import { PLUGIN_LICENSE_SHOP_URL } from '../lib/pluginLicense.js';
 import styles from './LicenseLinkPanel.module.css';
-
-/** What `GET /api/admin/license-link` says: presence and dates, never a token or a key. */
-interface LinkState {
-  connected: boolean;
-  domain: string;
-  connectedAt: string;
-  lastSyncAt: string;
-  lastResult: { ok: boolean; message: string; at: string } | null;
-  nextSyncAt: string;
-  secretBox: boolean;
-  autoInstall: boolean;
-}
-
-interface LinkAnswer {
-  ok?: boolean;
-  error?: string;
-  message?: string;
-  link?: LinkState;
-  sync?: { changed: boolean; updated: string[]; message: string };
-}
 
 const readable = (value: string): string => {
   const parsed = new Date(value);
   return value && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleString() : 'never';
-};
-
-const callLink = async (path: string, method: 'GET' | 'POST', body?: Record<string, unknown>): Promise<{ status: number; answer: LinkAnswer }> => {
-  const { data } = await client.auth.getSession();
-  const token = data.session?.access_token;
-  if (!token) return { status: 401, answer: { error: 'Your session has expired. Sign in again.' } };
-  let response: Response;
-  try {
-    response = await fetch(`/api/admin/license-link${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      cache: 'no-store',
-    });
-  } catch {
-    return { status: 0, answer: { error: 'The site server could not be reached.' } };
-  }
-  return { status: response.status, answer: await response.json().catch(() => ({})) as LinkAnswer };
 };
 
 /**
