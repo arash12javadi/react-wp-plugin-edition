@@ -95,3 +95,40 @@
   color: #b91c1c;
   font-size: 0.86rem;
 }
+
+.quiet {
+  margin: 0 0 14px;
+  color: #475569;
+  font-size: 0.85rem;
+}
+
+.quiet span {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.linkButton {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: #4f46e5;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.linkButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notesBox {
+  margin-top: 6px;
+  font-size: 0.84rem;
+  color: #475569;
+}
+
+.notesBox summary {
+  cursor: pointer;
+  color: #4f46e5;
+}

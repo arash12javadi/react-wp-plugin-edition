@@ -15,12 +15,12 @@
  * My licenses (the response says so).
  */
 import {
-  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, connectSite, licenseLinkFrom, licenseOptionIo, publicLicenseLink, setAutoInstall, syncLicenses, updateLicensedPlugin,
+  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, connectSite, licenseLinkFrom, licenseOptionIo, installLicensedPlugin, publicLicenseLink, setAutoInstall, syncLicenses, updateLicensedPlugin,
 } from './licenseLink.mjs';
 import { settingsIo } from './gitDeploy/connection.mjs';
 
 const PREFIX = '/api/admin/license-link';
-const PATHS = new Set([PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/settings`, `${PREFIX}/update`, `${PREFIX}/disconnect`]);
+const PATHS = new Set([PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/settings`, `${PREFIX}/install`, `${PREFIX}/update`, `${PREFIX}/disconnect`]);
 
 /** The paths this module answers - the single list both engines route by. */
 export const ownsLicenseLinkPath = (pathname) => PATHS.has(pathname);
@@ -79,6 +79,11 @@ export async function handleLicenseLinkRequest(options) {
     if (pathname === `${PREFIX}/sync`) {
       const sync = await syncLicenses({ io, licenseIo, credentials, env, fetchImpl });
       return ok(200, { link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }), sync });
+    }
+    if (pathname === `${PREFIX}/install`) {
+      // The owner pressed Install on a purchased plugin. Never reached from a sync or a timer.
+      const result = await installLicensedPlugin({ plugin: body?.plugin, version: body?.version, io, credentials, env, fetchImpl });
+      return ok(200, { result, deployment: result.deployment ?? null });
     }
     if (pathname === `${PREFIX}/update`) {
       // The owner pressed Update on a sold plugin. Never reached from a sync or a timer.

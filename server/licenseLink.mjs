@@ -243,6 +243,26 @@ export async function updateLicensedPlugin({ plugin, version = '', io, credentia
   return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl });
 }
 
+/**
+ * Installs one purchased sold plugin that this site does not have yet, for the Install button on My Purchases and
+ * on a Marketplace card. Called by that button's route and nothing else (`tests/updateRelease.test.mjs`).
+ */
+export async function installLicensedPlugin({ plugin, version = '', io, credentials = null, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
+  const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+  if (!isLicenseLinked(row)) {
+    throw new LicenseLinkError(409, 'Connect this site to your react-wp.com account first (Plugins → Connect to react-wp.com), then install it here.', 'not_connected');
+  }
+  requireSecretBox(env);
+  let token;
+  try {
+    token = openSecret(row.token_sealed, { env });
+  } catch (error) {
+    throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
+  }
+  const { installSoldPlugin } = await import('./pluginAutoInstall.mjs');
+  return installSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl });
+}
+
 /** Turns the automatic install of assigned plugins on or off. Everything else on the row stays as it is. */
 export async function setAutoInstall({ io, enabled }) {
   const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));

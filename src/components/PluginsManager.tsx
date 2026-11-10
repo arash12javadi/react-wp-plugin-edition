@@ -665,10 +665,10 @@ export default function PluginsManager() {
       <div className={styles.heading}>
         <div>
           <h2 id="plugins-heading">Plugins</h2>
-          <p>Extend React-WP with typed actions, filters, admin pages, widgets, and shortcodes.</p>
+          <p>Add features to your site.</p>
           <div className={styles.headingActions}>
-            <button type="button" className={styles.upload} onClick={() => setUploadOpen(true)}>Upload Plugin</button>
-            <button type="button" className={styles.refresh} onClick={reloadPlugins}>Refresh plugins</button>
+            <button type="button" className={styles.upload} onClick={() => setUploadOpen(true)}>Upload plugin</button>
+            <button type="button" className={styles.refresh} onClick={reloadPlugins}>Refresh</button>
           </div>
         </div>
       </div>
@@ -682,8 +682,8 @@ export default function PluginsManager() {
           </p>
         ) : null;
       })()}
-      <PluginUpdatesPanel />
       <LicenseLinkPanel onChanged={() => setReloadKey((key) => key + 1)} />
+      <PluginUpdatesPanel />
       {uploadOpen && (
         <PluginUploadModal
           initialResult={pendingInstall}
@@ -715,12 +715,15 @@ export default function PluginsManager() {
       )}
       {error && <div className={styles.error} role="alert">{error}</div>}
       {feedback && <div className={styles.feedback} role="status">{feedback}</div>}
-      <div className={styles.notice}>
-        A plugin is installed while its folder exists in <code>plugins/</code>. Activation is stored in Supabase and shared by every administrator, and it is what creates the plugin&apos;s database tables. <strong>Uninstall</strong> removes the folder and asks what should happen to those tables. Activation is free, and so is every plugin that shows <strong>Free</strong>. Four plugins are sold — Page Builder, Shop, Chat and Code Snippets — and each asks for its own key in the License column; only the routes of those four wait for one. They arrive <strong>inactive</strong> and stay that way until their key checks out, so a new site carries nothing it cannot use; if a key later stops verifying, the plugin is switched back to <strong>inactive</strong> here and on the server, and nothing of it runs. <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">Buy a key</a> when you want one.
-      </div>
-      {!files.available && files.reason && (
-        <div className={styles.notice} role="status">Plugin folders could not be checked, so Delete is unavailable: {files.reason}</div>
-      )}
+      <details className={styles.help}>
+        <summary>How plugins work</summary>
+        <ul>
+          <li><strong>Activate</strong> switches a plugin on for everyone who manages this site. <strong>Uninstall</strong> removes it and asks what should happen to its data.</li>
+          <li>Page Builder, Shop, Chat and Code Snippets are sold on react-wp.com. Connect this site to your account and what you buy installs here by itself; each one needs its licence to be switched on.</li>
+          <li>If a licence stops being valid, that plugin switches itself off until it is renewed. Everything else keeps working.</li>
+        </ul>
+        <p>Need a licence? <a className={styles.shopLink} href={SHOP_URL} target="_blank" rel="noreferrer noopener">Buy one on react-wp.com</a>.</p>
+      </details>
       {files.notBuilt.length > 0 && (
         <div className={styles.notice} role="status">
           Found {files.notBuilt.map((plugin) => `${plugin.name} (plugins/${plugin.folder})`).join(', ')} on disk, but the running site was built without {files.notBuilt.length === 1 ? 'it' : 'them'}. Restart the server with <code>npm start</code> (which rebuilds) and {files.notBuilt.length === 1 ? 'it' : 'they'} will appear here as inactive. Under <code>npm run dev</code>, reload this page.
@@ -731,8 +734,12 @@ export default function PluginsManager() {
       )}
       {plugins.length === 0 ? (
         <div className={styles.empty}>
-          <strong>No plugins registered</strong>
-          <span>Built-in and bundled plugins will appear here when they register through the RWP API.</span>
+          <strong>No plugins yet</strong>
+          <span>Browse the marketplace, or upload a plugin you already have.</span>
+          <div className={styles.emptyActions}>
+            <a className={styles.upload} href="/admin?section=plugins&tab=marketplace">Browse the marketplace</a>
+            <button type="button" className={styles.refresh} onClick={() => setUploadOpen(true)}>Upload a plugin</button>
+          </div>
         </div>
       ) : (
         <div className={styles.list}>
@@ -754,7 +761,7 @@ export default function PluginsManager() {
               { id: 'deactivate', label: 'Deactivate', hidden: statusFilter === 'inactive' },
               // Folders only. Anything touching plugin data goes through the per-plugin
               // Uninstall dialog, which is where the backup and wipe choices live.
-              { id: 'delete', label: 'Delete files', tone: 'danger' },
+              { id: 'delete', label: 'Delete files', tone: 'danger', hidden: !files.available },
             ]}
             onAction={onBulk} />
           {visible.length === 0 && <div className={styles.empty}><strong>No plugins match</strong><span>Try another search or filter.</span></div>}

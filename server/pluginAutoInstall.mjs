@@ -138,7 +138,7 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
   // Without a package key this release cannot verify anything, which is the safe direction: install nothing.
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
-    return { complete: false, installed: [], message: 'Plugins assigned to this site were not installed: this release has no package verification key yet, so it cannot check them. Update React-WP, or upload the plugin by hand.' };
+    return { complete: false, installed: [], message: 'Your purchased plugins were not installed: automatic install is not switched on at react-wp.com yet. Nothing is wrong with your site.' };
   }
 
   let target;
@@ -216,7 +216,7 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
   }
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
-    throw new InstallError('This release has no package verification key yet, so it cannot check a plugin package. Update React-WP first.', 503);
+    throw new InstallError('Automatic install is not switched on at react-wp.com yet, so this plugin cannot be installed from here. Nothing is wrong with your site.', 503);
   }
   let target;
   try {
@@ -245,4 +245,50 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
     source: { zip: verified.zip }, target, optionStore, deployHook: '', expectedId: id, gitDeploys: true,
   });
   return { ...result, update: { id, from: present.version, to: verified.version } };
+}
+
+/**
+ * Installs one sold plugin that is NOT in the repository yet: the button on My Purchases and on a Marketplace card.
+ * Called only from `POST /api/admin/license-link/install`, so it is a click, never a sync. It is the same proof as
+ * the automatic install (a package signed for this site's host, its sha256, the installer's own one commit) and,
+ * unlike it, throws the real reason, because someone pressed a button and is owed it. A plugin that is already in
+ * the repository is refused (that is an update, with its own button); a free plugin is not installed from here.
+ *
+ * @returns {Promise<object>} what `installPluginFromGit` answers, plus `install: { id, version }`
+ */
+export async function installSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {} }) {
+  const d = {
+    installedPluginVersions, installPluginFromGit, downloadZip, githubTargetFrom, assertPackageMatches, ...deps,
+  };
+  const id = str(plugin);
+  if (!SAFE_PLUGIN_ID.test(id) || !Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) {
+    throw new InstallError('Only the plugins sold on react-wp.com are installed from here. A free plugin is added from Plugins → Upload.', 400);
+  }
+  const publicKey = deps.publicKey ?? packagePublicKey();
+  if (!publicKey) {
+    throw new InstallError('Automatic install is not switched on at react-wp.com yet, so this plugin cannot be installed from here. Nothing is wrong with your site.', 503);
+  }
+  let target;
+  try {
+    target = d.githubTargetFrom(await io.read(GITHUB_CONFIG_KEY));
+  } catch (error) {
+    throw new InstallError(`Connect GitHub and Vercel under Settings → Integrations first. (${error instanceof Error ? error.message : 'The GitHub connection could not be read.'})`, 501);
+  }
+  const present = (await d.installedPluginVersions(target)).find((row) => row.id === id);
+  if (present) {
+    throw new InstallError(`${id} ${present.version} is already installed on this site. Use Update when a newer version is available.`, 409);
+  }
+  let verified;
+  try {
+    verified = await fetchVerifiedPackage({
+      id, wantedVersion: str(version), mode: 'install', baseUrl, token, domain, publicKey, now, fetchImpl, d,
+    });
+  } catch (error) {
+    throw new InstallError(error instanceof Error ? error.message : 'The package could not be fetched.', 502);
+  }
+  const optionStore = credentials?.supabaseUrl ? optionStoreFrom({ ...credentials, fetchImpl }) : null;
+  const result = await d.installPluginFromGit({
+    source: { zip: verified.zip }, target, optionStore, deployHook: '', expectedId: id, gitDeploys: true,
+  });
+  return { ...result, install: { id, version: verified.version } };
 }

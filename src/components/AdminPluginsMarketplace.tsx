@@ -10,6 +10,7 @@ import {
   verifyRemoteLicense,
   waitForRemotePlugin,
 } from '../lib/remotePlugins';
+import { installPurchased, loadPurchases, purchaseFor, type Purchase, type PurchaseOverview } from '../lib/purchasedPlugins';
 import styles from './AdminPluginsMarketplace.module.css';
 
 interface Props {
@@ -202,6 +203,26 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [details, setDetails] = useState<RemoteCatalogItem | null>(null);
+  // What this site bought through its react-wp.com account (the keys the account link fetched). A plugin it holds a
+  // key for says Install, not Buy.
+  const [purchases, setPurchases] = useState<PurchaseOverview | null>(null);
+  const refreshPurchases = useCallback(async () => {
+    setPurchases(await loadPurchases().catch(() => null));
+  }, []);
+  useEffect(() => { void refreshPurchases(); }, [refreshPurchases]);
+  const installSold = async (plugin: RemoteCatalogItem, purchase: Purchase) => {
+    setBusy(plugin.pluginId);
+    setError('');
+    setNotice('');
+    try {
+      setNotice(await installPurchased(purchase.id, purchase.latestVersion));
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : `${plugin.name} could not be installed.`);
+    } finally {
+      setBusy('');
+      void refreshPurchases();
+    }
+  };
 
   const activated = licence.status === 'active';
   const entitled = useMemo(() => new Set(licence.plugins.map((plugin) => plugin.pluginId)), [licence.plugins]);
@@ -421,7 +442,8 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
       ) : (
         <ul className={styles.grid}>
           {catalog.items.map((plugin) => {
-            const owned = entitled.has(plugin.pluginId);
+            const sold = isMarketplaceListing(plugin) ? purchaseFor(purchases, plugin.pluginId) : null;
+            const owned = entitled.has(plugin.pluginId) || Boolean(sold?.installed);
             const working = busy === plugin.pluginId;
             return (
               <li key={plugin.pluginId} className={styles.card}>
@@ -446,6 +468,15 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
                   <strong className={styles.price}>{money(plugin)}</strong>
                   {owned ? (
                     <span className={styles.owned} title="Already licensed to this site">✓ Installed</span>
+                  ) : sold?.licensed ? (
+                    <button
+                      type="button"
+                      className={styles.primary}
+                      disabled={Boolean(busy)}
+                      onClick={() => void installSold(plugin, sold)}
+                    >
+                      {working ? 'Installing…' : 'Install'}
+                    </button>
                   ) : isMarketplaceListing(plugin) ? (
                     <a className={styles.primary} href={storeUrlOf(plugin)} target="_blank" rel="noreferrer">
                       {actionLabel(plugin)}

@@ -27,6 +27,7 @@ export interface LinkAnswer {
     warnings: string[];
     sql: string[];
     update: { id: string; from: string; to: string };
+    install?: { id: string; version: string };
   };
   deployment?: { sha: string } | null;
 }

@@ -150,18 +150,30 @@ export default function PluginUpdatesPanel() {
   };
 
   const available = (rows || []).filter((row) => row.state === 'available' || row.state === 'unavailable');
+  const waiting = available.filter((row) => row.state === 'available').length + sold.length;
+  const checked = rows !== null || sold.length > 0;
+
+  // Nothing yet to say, and nothing to do: stay out of the way instead of showing an empty box.
+  if (!applied && !error && waiting === 0 && available.length === 0) {
+    if (!checked) return null;
+    return (
+      <p className={styles.quiet} role="status">
+        <span aria-hidden="true">✓</span> Your plugins are up to date.{' '}
+        <button type="button" className={styles.linkButton} onClick={() => void check()} disabled={busy !== ''}>
+          {busy === 'check' ? 'Checking…' : 'Check again'}
+        </button>
+      </p>
+    );
+  }
 
   return (
     <section className={styles.panel} aria-labelledby="plugin-updates-heading">
       <div className={styles.head}>
-        <h3 id="plugin-updates-heading">Plugin updates</h3>
+        <h3 id="plugin-updates-heading">{waiting > 0 ? `${waiting} plugin update${waiting === 1 ? '' : 's'} available` : 'Plugin updates'}</h3>
         <button type="button" className={styles.button} onClick={() => void check()} disabled={busy !== ''}>
-          {busy === 'check' ? 'Checking…' : 'Check for updates'}
+          {busy === 'check' ? 'Checking…' : 'Check again'}
         </button>
       </div>
-      <p className={styles.help}>
-        Each plugin has its own releases, separate from React-WP core, so updating a plugin never changes core. An update is one commit to your repository; the plugin is only updated once Vercel&apos;s deployment is Ready, and until then the current site keeps running.
-      </p>
       {error && <p className={styles.error} role="alert">{error}</p>}
       {applied && (
         <div role="status">
@@ -169,9 +181,6 @@ export default function PluginUpdatesPanel() {
           <DeploymentWatcher sha={applied.sha} since={applied.since} />
           {applied.warnings.map((warning) => <p key={warning} className={styles.small}>{warning}</p>)}
         </div>
-      )}
-      {rows && available.length === 0 && sold.length === 0 && (
-        <p className={styles.small} role="status">All {rows.length} installed plugin{rows.length === 1 ? ' is' : 's are'} up to date{source ? ` (releases read from ${source})` : ''}.</p>
       )}
       {sold.length > 0 && (
         <ul className={styles.list}>
@@ -183,7 +192,6 @@ export default function PluginUpdatesPanel() {
                   {busy === row.id ? 'Updating…' : 'Update'}
                 </button>
               </div>
-              <p className={styles.small}>Licensed plugin: the new version comes from your react-wp.com account, signed for this site.</p>
             </li>
           ))}
         </ul>
@@ -203,9 +211,12 @@ export default function PluginUpdatesPanel() {
               {row.state === 'unavailable' && <p className={styles.warn}>{row.reason}</p>}
               {row.release?.prerelease && <p className={styles.warn}>This is a pre-release.</p>}
               {row.release && row.release.notes.length > 0 && (
-                <ul className={styles.notes}>{row.release.notes.slice(0, 6).map((note) => <li key={note}>{note}</li>)}</ul>
+                <details className={styles.notesBox}>
+                  <summary>What is new</summary>
+                  <ul className={styles.notes}>{row.release.notes.slice(0, 6).map((note) => <li key={note}>{note}</li>)}</ul>
+                  {row.release?.url && <a className={styles.small} href={row.release.url} target="_blank" rel="noreferrer noopener">Full release notes</a>}
+                </details>
               )}
-              {row.release?.url && <a className={styles.small} href={row.release.url} target="_blank" rel="noreferrer noopener">Release notes on GitHub</a>}
             </li>
           ))}
         </ul>

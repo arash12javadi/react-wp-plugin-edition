@@ -343,6 +343,24 @@ export const authorizeSettingsManager = (supabaseUrl, supabaseKey, accessToken) 
   authorizeCapabilityOnSupabase(supabaseUrl, supabaseKey, accessToken, 'manage_options');
 
 /**
+ * One `current_user_role()` call, asked a second time after a short pause when the database answers 5xx. A 5xx here
+ * is almost always the database being busy (PostgREST rebuilding its schema cache, or a schema update holding a lock
+ * for a moment), which says nothing about the person; refusing them for it is what showed "returned HTTP 500" to an
+ * owner whose database was simply mid-update. A 4xx is an answer and is never repeated.
+ */
+async function askRole(baseUrl, headers) {
+  const ask = () => fetch(`${baseUrl}/rest/v1/rpc/current_user_role`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const first = await ask();
+  if (first.status < 500) return first;
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return ask();
+}
+
+/**
  * The caller's role from `public.profiles`, via the `current_user_role()` RPC — the same question
  * `authorizePlatformOwner` asks. Returns `''` when the session is invalid, the site is not installed,
  * or the RPC cannot be reached, so a route can fall back to its least-privileged answer rather than
@@ -445,14 +463,16 @@ export async function authorizePlatformOwner(supabaseUrl, supabaseKey, accessTok
     const userResponse = await fetch(`${baseUrl}/auth/v1/user`, { headers });
     if (!userResponse.ok) return { ok: false, status: 401, error: text.invalidSession };
     const user = await userResponse.json().catch(() => null);
-    const roleResponse = await fetch(`${baseUrl}/rest/v1/rpc/current_user_role`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      // The function takes no arguments; PostgREST still wants a body for a POST.
-      body: '{}',
-    });
+    // The function takes no arguments; PostgREST still wants a body for a POST.
+    const roleResponse = await askRole(baseUrl, headers);
     if (!roleResponse.ok) {
-      return { ok: false, status: 502, error: `Could not check your permission: current_user_role returned HTTP ${roleResponse.status}.` };
+      return {
+        ok: false,
+        status: 502,
+        error: roleResponse.status >= 500
+          ? 'The database was busy and could not confirm who you are just now. Wait a moment and try again.'
+          : `Could not check your permission: current_user_role returned HTTP ${roleResponse.status}.`,
+      };
     }
     // A scalar function answers as a JSON string (or null when the caller has no profile row).
     const answer = await roleResponse.json();

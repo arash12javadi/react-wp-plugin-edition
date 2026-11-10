@@ -496,3 +496,40 @@ button:disabled {
   font-size: 0.78rem;
   line-height: 1.5;
 }
+
+.help {
+  margin-bottom: 14px;
+  color: #475569;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.help summary {
+  cursor: pointer;
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+.help ul {
+  margin: 10px 0 6px;
+  padding-inline-start: 20px;
+}
+
+.help li + li {
+  margin-top: 6px;
+}
+
+.help p {
+  margin: 6px 0 0;
+}
+
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.emptyActions .upload {
+  text-decoration: none;
+}

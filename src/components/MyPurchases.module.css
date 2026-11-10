@@ -157,3 +157,90 @@
   color: #15803d;
   font-size: 13px;
 }
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.cardMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cardName {
+  font-weight: 700;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.chipOk,
+.chipWait,
+.chipBad {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chipOk { background: #dcfce7; color: #166534; }
+.chipWait { background: #e0e7ff; color: #3730a3; }
+.chipBad { background: #fee2e2; color: #991b1b; }
+
+.card .primary {
+  justify-self: start;
+  text-decoration: none;
+}
+
+.empty {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  margin: 0;
+  padding: 20px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.empty a.primary {
+  text-decoration: none;
+}
+
+.more {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 12px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.more summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.more > * + * {
+  margin-top: 12px;
+}

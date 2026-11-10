@@ -23,7 +23,7 @@
  * no-op when the recorded fingerprints already match the release.
  */
 import { projectRefFromUrl, resolveConnectionString } from './db.mjs';
-import { planSchemaUpdate, readSchemaStatus, runSchemaUpdate } from './schemaMigrate.mjs';
+import { planSchemaUpdate, readSchemaStatus, runSchemaUpdate, shouldRetryFailure } from './schemaMigrate.mjs';
 import { DB_CONNECTION_SETTING_KEY } from './integrationConfig.mjs';
 import { requireSecretBox, settingsIo } from './gitDeploy/connection.mjs';
 import { ensureVersionRecord } from './versionRecord.mjs';
@@ -50,9 +50,14 @@ export function presentSchemaResult(result) {
     case 'unreachable':
       return { state: 'failed', headline: 'The database could not be reached', detail: result.reason || 'The connection to the database failed. Nothing was changed.', action: 'Paste the connection string again in the box below (Supabase → Connect → Session pooler, ending in :5432/postgres; not the Transaction pooler on port 6543), then press "Try again".' };
     case 'busy':
-      return { state: 'pending', headline: 'An update is already running', detail: 'Another copy of this site is updating the database right now.', action: 'Press "Try again" in a minute.' };
+      return { state: 'updating', retry: true, headline: 'The database is being updated', detail: 'This takes a few seconds. This page checks again by itself.', action: '' };
     case 'failed':
-      return { state: 'failed', headline: 'A database update failed and was rolled back', detail: names('failed').map((unit) => unit.reason).join(' '), action: 'Nothing was lost. Press "Try again"; if it fails again, send the message above to whoever maintains the site.' };
+      // The database being busy with other requests (a deadlock, a lock that could not be had) is not a fault in the
+      // update: it was rolled back whole, is tried again by itself, and is never shown as a failure.
+      if (names('failed').length > 0 && names('failed').every((unit) => unit.transient)) {
+        return { state: 'updating', retry: true, headline: 'The database was busy', detail: 'The update could not finish just now and nothing was changed. It tries again by itself.', action: '' };
+      }
+      return { state: 'failed', headline: 'A database update did not finish', detail: 'Nothing was lost: the database is exactly as it was before.', action: 'Press "Try again". If it fails again, send the technical details to whoever maintains the site.' };
     case 'manual':
       return { state: 'manual', headline: 'A database update could not be applied automatically', detail: names('manual').map((unit) => unit.reason).join(' '), action: 'It was held back on purpose so that no data can be lost. Send the message above to whoever maintains the site.' };
     case 'pending':
@@ -121,7 +126,9 @@ export function createSchemaUpdater({ sources, config = null, withClient }) {
     /** Applies what is waiting and nothing else: a status read first, so an up-to-date site opens no write session. */
     async ensure(stored = '') {
       const current = await status(stored);
-      return current.status === 'pending' ? run(stored) : current;
+      // A failure that was only the database being busy is tried again here once it is old enough, so it heals when
+      // an admin opens the page instead of waiting for a click.
+      return current.status === 'pending' || shouldRetryFailure(current) ? run(stored) : current;
     },
     /** Reads the status through `connectionString` without applying anything — used to test a pasted string. */
     probe: async (connectionString) => readSchemaStatus({ connectionString, units: await units(), ...(withClient ? { withClient } : {}) }),

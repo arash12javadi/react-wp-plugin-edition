@@ -56,79 +56,96 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
   if (hidden) return null;
   if (!link) return error ? <p className={styles.error} role="alert">{error}</p> : null;
 
-  return (
-    <section className={styles.panel} aria-labelledby="license-link-heading">
-      <h3 id="license-link-heading">Connect to react-wp.com</h3>
-      {link.connected ? (
-        <>
-          <p>
-            This site (<strong>{link.domain}</strong>) fetches its licence keys from your react-wp.com account, so renewals arrive by themselves.
-            Last checked: {readable(link.lastSyncAt)}. Next automatic check: {readable(link.nextSyncAt)}.
-          </p>
-          {link.lastResult && (
-            <p className={link.lastResult.ok ? styles.ok : styles.error} role="status">{link.lastResult.message}</p>
-          )}
-          <label className={styles.check}>
-            <input
-              type="checkbox"
-              checked={link.autoInstall}
-              disabled={Boolean(busy)}
-              onChange={(event) => void run('settings', '/settings', { autoInstall: event.target.checked })}
-            />{' '}
-            Install the plugins I assigned to this site on react-wp.com automatically
-          </label>
-          <p className={styles.hint}>
-            A plugin is added to this site&rsquo;s GitHub repository only after its signature and checksum verify, arrives switched off,
-            and needs GitHub and Vercel connected under Settings → Integrations. You still press Activate.
-          </p>
+  // The sync's one-line result is shown only when there is something to say: it did something, or it went wrong.
+  // "Checked 1 key: already current" every time would be noise.
+  const result = link.lastResult;
+  const worthShowing = Boolean(result && (!result.ok || /installed|updated|not installed|still to install/i.test(result.message)));
+
+  if (link.connected) {
+    return (
+      <section className={styles.strip} aria-labelledby="license-link-heading">
+        <div className={styles.stripMain}>
+          <span className={styles.dot} aria-hidden="true" />
+          <div className={styles.stripText}>
+            <strong id="license-link-heading">Connected to react-wp.com</strong>
+            <span className={styles.sub}>{link.domain} · checked {readable(link.lastSyncAt)}</span>
+          </div>
           <div className={styles.actions}>
             <button type="button" className={styles.primary} disabled={Boolean(busy)} onClick={() => void run('sync', '/sync')}>
               {busy === 'sync' ? 'Checking…' : 'Sync now'}
             </button>
-            <button
-              type="button"
-              className={styles.secondary}
-              disabled={Boolean(busy)}
-              onClick={() => { if (window.confirm('Disconnect this site? It keeps the keys it already has, but stops receiving renewals.')) void run('disconnect', '/disconnect'); }}
-            >
-              Disconnect
-            </button>
+            <details className={styles.menu}>
+              <summary className={styles.secondary}>Settings</summary>
+              <div className={styles.menuBody}>
+                <label className={styles.check}>
+                  <input
+                    type="checkbox"
+                    checked={link.autoInstall}
+                    disabled={Boolean(busy)}
+                    onChange={(event) => void run('settings', '/settings', { autoInstall: event.target.checked })}
+                  />{' '}
+                  Install what I buy automatically
+                </label>
+                <p className={styles.hint}>New plugins are added to your site switched off; you turn them on yourself.</p>
+                <button
+                  type="button"
+                  className={styles.link}
+                  disabled={Boolean(busy)}
+                  onClick={() => { if (window.confirm('Disconnect this site? It keeps the keys it already has, but stops receiving renewals.')) void run('disconnect', '/disconnect'); }}
+                >
+                  Disconnect this site
+                </button>
+              </div>
+            </details>
           </div>
-        </>
-      ) : (
-        <form onSubmit={connect}>
-          <p>
-            Skip pasting keys: on <a href={PLUGIN_LICENSE_SHOP_URL} target="_blank" rel="noreferrer noopener">react-wp.com</a> open
-            <strong> My licenses → Connect a site</strong>, then enter the code it shows. You never type your account password here.
+        </div>
+        {worthShowing && result && (
+          <p className={result.ok ? styles.ok : styles.error} role="status">{result.message}</p>
+        )}
+        {message && !worthShowing && <p className={styles.ok} role="status">{message}</p>}
+        {error && <p className={styles.error} role="alert">{error}</p>}
+      </section>
+    );
+  }
+
+  return (
+    <section className={styles.strip} aria-labelledby="license-link-heading">
+      <div className={styles.stripText}>
+        <strong id="license-link-heading">Connect your react-wp.com account</strong>
+        <span className={styles.sub}>Plugins you buy show up here and install with one click.</span>
+      </div>
+      <form onSubmit={connect} className={styles.connectForm}>
+        {!link.secretBox && (
+          <p className={styles.error} role="alert">
+            This site cannot store the connection yet: set <code>RWP_SECRET_BOX_KEY</code> in its environment and restart it.
           </p>
-          {!link.secretBox && (
-            <p className={styles.error} role="alert">
-              This server cannot store the connection yet: set <code>RWP_SECRET_BOX_KEY</code> in its environment and restart it.
-            </p>
-          )}
-          <div className={styles.actions}>
-            <label htmlFor="license-link-code" className={styles.srOnly}>Pairing code</label>
-            <input
-              id="license-link-code"
-              className={styles.input}
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="ABCDE-12345"
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={16}
-            />
-            <button type="submit" className={styles.primary} disabled={Boolean(busy) || !code.trim() || !link.secretBox}>
-              {busy === 'connect' ? 'Connecting…' : 'Connect'}
-            </button>
-          </div>
-          <label className={styles.check}>
-            <input type="checkbox" checked={autoInstall} onChange={(event) => setAutoInstall(event.target.checked)} />{' '}
-            Install the plugins I assign to this site on react-wp.com automatically
-          </label>
-        </form>
-      )}
-      {message && !link.lastResult?.message && <p className={styles.ok} role="status">{message}</p>}
+        )}
+        <div className={styles.actions}>
+          <label htmlFor="license-link-code" className={styles.srOnly}>Pairing code</label>
+          <input
+            id="license-link-code"
+            className={styles.input}
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="Code, like ABCDE-12345"
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={16}
+          />
+          <button type="submit" className={styles.primary} disabled={Boolean(busy) || !code.trim() || !link.secretBox}>
+            {busy === 'connect' ? 'Connecting…' : 'Connect'}
+          </button>
+        </div>
+        <label className={styles.check}>
+          <input type="checkbox" checked={autoInstall} onChange={(event) => setAutoInstall(event.target.checked)} />{' '}
+          Install what I buy automatically
+        </label>
+        <p className={styles.hint}>
+          Find the code on <a href={PLUGIN_LICENSE_SHOP_URL} target="_blank" rel="noreferrer noopener">react-wp.com</a> under
+          My licenses → Connect a site.
+        </p>
+      </form>
+      {message && <p className={styles.ok} role="status">{message}</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}
     </section>
   );

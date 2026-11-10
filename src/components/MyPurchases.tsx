@@ -1,26 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { client, getSystemSetting, setSystemSetting } from '../lib/db';
+import { installPurchased, loadPurchases, type Purchase, type PurchaseOverview } from '../lib/purchasedPlugins';
 import styles from './MyPurchases.module.css';
 
 /**
  * Plugins → My Purchases.
  *
- * A marketplace purchase happens on react-wp.com (the marketplace is development-edition-only and
- * never ships here), so this site cannot read it from its own database — it has to ask the
- * marketplace, by the one thing a buyer actually holds: the licence key. Pasting it here is the
- * handshake; after that this screen re-checks it on its own, and installing is one click that reuses
- * the exact path Plugins → Upload Plugin already uses (`/api/admin/plugins/upload` with a URL), so a
- * licensed plugin lands the same way an uploaded ZIP would — on disk, or committed to this site's
- * connected GitHub repository, whichever this host does.
+ * What this site bought on react-wp.com, with one button. A site connected to its react-wp.com account already
+ * holds its keys (the account link fetches them), so each purchase is listed by name and **Install** adds it the one
+ * safe way: react-wp.com signs the package for this site, the site checks it, and only then commits it to its own
+ * repository (`POST /api/admin/license-link/install`).
  *
- * Stored keys live in `system_settings.plugin_purchase_licenses` rather than `options`: every `options`
- * row is public (the homepage reads `site_title` before anyone signs in), and a licence key is a
- * credential a visitor must never be able to read back.
+ * A site that is not connected can still paste a key by hand (the closed section at the bottom). That older path
+ * asks the marketplace to verify the key and then uploads the package by URL, exactly like Plugins → Upload.
+ * Those keys live in `system_settings.plugin_purchase_licenses` rather than `options`: every `options` row is public,
+ * and a licence key is a credential a visitor must never be able to read back.
  */
 
 const MARKETPLACE_ORIGIN = 'https://www.react-wp.com';
 const SETTING_KEY = 'plugin_purchase_licenses';
 const UPLOAD_ENDPOINT = '/api/admin/plugins/upload';
+const PLUGINS_SCREEN = '/admin?section=plugins&tab=installed';
 
 interface VerifyResult {
   plugin_id: string;
@@ -69,10 +69,10 @@ async function resolveDownloadUrl(key: string): Promise<string> {
     body: JSON.stringify({ license_key: key, domain: domain() }),
   });
   const body = await response.json().catch(() => null) as { download_url?: string; error?: string } | null;
-  if (!response.ok || !body?.download_url) {
+  if (!response.ok || !/^https:\/\//i.test(String(body?.download_url || ''))) {
     throw new Error(body?.error || 'The marketplace did not return a package for this licence.');
   }
-  return body.download_url;
+  return String(body?.download_url);
 }
 
 type InstallEvent =
@@ -80,7 +80,22 @@ type InstallEvent =
   | { type: 'result'; result: { plugin: { name: string; version: string }; mode?: string; commit?: { repository: string; branch: string } } }
   | { type: 'error'; error: string };
 
-/** Streams `/api/admin/plugins/upload`'s NDJSON response and returns the last step reached. */
+const parseLine = (line: string, onStep: (step: string) => void, last: InstallEvent): InstallEvent => {
+  if (!line.trim()) return last;
+  try {
+    const event = JSON.parse(line) as InstallEvent;
+    if (event.type === 'step') {
+      onStep(event.step);
+      return last;
+    }
+    return event;
+  } catch {
+    // A line that is not JSON is skipped rather than failing the whole install over one bad chunk.
+    return last;
+  }
+};
+
+/** Streams `/api/admin/plugins/upload`'s NDJSON response and returns the last event reached. */
 async function installFromUrl(url: string, onStep: (step: string) => void): Promise<InstallEvent> {
   const token = await accessToken();
   if (!token) throw new Error('Sign in again as a plugin manager, then retry.');
@@ -89,34 +104,29 @@ async function installFromUrl(url: string, onStep: (step: string) => void): Prom
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ url }),
   });
-  if (!response.body) {
+  // A refusal is one JSON body, not a stream: read it as the reason instead of waiting for steps that never come.
+  if (!response.ok || !(response.headers.get('content-type') || '').includes('ndjson')) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(body?.error || `The upload endpoint answered HTTP ${response.status}.`);
+    if (!response.ok) throw new Error(body?.error || 'This site could not install the package. Try again in a moment.');
   }
+  if (!response.body) throw new Error('This site could not install the package. Try again in a moment.');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let last: InstallEvent = { type: 'error', error: 'The install produced no result.' };
+  let last: InstallEvent = { type: 'error', error: 'The install did not finish. Try again in a moment.' };
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let newline = buffer.indexOf('\n');
     while (newline !== -1) {
-      const line = buffer.slice(0, newline).trim();
+      last = parseLine(buffer.slice(0, newline), onStep, last);
       buffer = buffer.slice(newline + 1);
       newline = buffer.indexOf('\n');
-      if (!line) continue;
-      try {
-        const event = JSON.parse(line) as InstallEvent;
-        if (event.type === 'step') onStep(event.step);
-        else last = event;
-      } catch {
-        // A line that is not JSON is skipped rather than failing the whole install over one bad chunk.
-      }
     }
   }
-  return last;
+  // The last line has no newline after it when the stream ends, and it is usually the one that says how it went.
+  return parseLine(buffer + decoder.decode(), onStep, last);
 }
 
 const readStoredKeys = (value: unknown): string[] => {
@@ -125,6 +135,10 @@ const readStoredKeys = (value: unknown): string[] => {
 };
 
 export default function MyPurchases() {
+  const [overview, setOverview] = useState<PurchaseOverview | null>(null);
+  const [working, setWorking] = useState('');
+  const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
+
   const [entries, setEntries] = useState<Entry[]>([]);
   const [newKey, setNewKey] = useState('');
   const [loading, setLoading] = useState(true);
@@ -133,9 +147,13 @@ export default function MyPurchases() {
   const [installStep, setInstallStep] = useState('');
   const [installMessage, setInstallMessage] = useState<Record<string, { ok: boolean; text: string }>>({});
 
+  const refreshOverview = useCallback(async () => {
+    setOverview(await loadPurchases().catch(() => ({ connected: false, purchases: [] })));
+  }, []);
+
   const refreshOne = useCallback(async (key: string): Promise<Entry> => {
     const result = await verifyKey(key);
-    return { key, result, checked: true, error: result ? '' : 'Not active for this site (check the key, or activate it here first).' };
+    return { key, result, checked: true, error: result ? '' : 'Not active for this site. Check the key.' };
   }, []);
 
   const load = useCallback(async () => {
@@ -153,7 +171,23 @@ export default function MyPurchases() {
     }
   }, [refreshOne]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void refreshOverview(); void load(); }, [refreshOverview, load]);
+
+  const installOne = async (purchase: Purchase) => {
+    setWorking(purchase.id);
+    setNotes((current) => ({ ...current, [purchase.id]: { ok: true, text: '' } }));
+    try {
+      const text = await installPurchased(purchase.id, purchase.latestVersion);
+      setNotes((current) => ({ ...current, [purchase.id]: { ok: true, text } }));
+    } catch (failure) {
+      setNotes((current) => ({
+        ...current,
+        [purchase.id]: { ok: false, text: failure instanceof Error ? failure.message : `${purchase.name} could not be installed.` },
+      }));
+    } finally {
+      setWorking('');
+    }
+  };
 
   const saveKeys = async (keys: string[]) => {
     const ok = await setSystemSetting(SETTING_KEY, { keys });
@@ -162,7 +196,7 @@ export default function MyPurchases() {
 
   const install = async (key: string) => {
     setInstalling(key);
-    setInstallStep('downloading from the marketplace');
+    setInstallStep('downloading');
     setInstallMessage((prev) => ({ ...prev, [key]: { ok: true, text: '' } }));
     try {
       const url = await resolveDownloadUrl(key);
@@ -171,8 +205,8 @@ export default function MyPurchases() {
       if (outcome.type === 'result') {
         const { plugin, mode, commit } = outcome.result;
         const where = mode === 'github' && commit
-          ? `committed to ${commit.repository}@${commit.branch} — it goes live on the next build`
-          : 'installed';
+          ? 'was added to your site and goes live with the next build'
+          : 'is installed';
         setInstallMessage((prev) => ({ ...prev, [key]: { ok: true, text: `${plugin.name} ${plugin.version} ${where}.` } }));
       }
     } catch (installError) {
@@ -198,7 +232,6 @@ export default function MyPurchases() {
       await saveKeys(next.map((item) => item.key));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Could not save this licence key.');
-      return;
     }
   };
 
@@ -212,66 +245,109 @@ export default function MyPurchases() {
     }
   };
 
+  const purchases = overview?.purchases || [];
+
   return (
     <div className={styles.panel}>
       <h1 className={styles.heading}>My Purchases</h1>
       <p className={styles.intro}>
-        Plugins bought on <a href={MARKETPLACE_ORIGIN} target="_blank" rel="noreferrer">react-wp.com</a>.
-        Paste a licence key once — it is checked against this site's domain. When it is active, press
-        Install to add the plugin to this site. A saved key is re-checked and can be reinstalled (for an update) any time.
+        Plugins you bought on <a href={MARKETPLACE_ORIGIN} target="_blank" rel="noreferrer">react-wp.com</a>.
       </p>
 
-      <div className={styles.addRow}>
-        <input
-          className={styles.input}
-          value={newKey}
-          onChange={(event) => setNewKey(event.target.value)}
-          placeholder="RWPM-… or RWP2-…"
-          onKeyDown={(event) => { if (event.key === 'Enter') void addKey(); }}
-        />
-        <button type="button" className={styles.primary} onClick={() => void addKey()} disabled={!newKey.trim()}>
-          Add licence key
-        </button>
-      </div>
-
-      {error && <p className={styles.error} role="alert">{error}</p>}
-      {loading ? (
-        <p className={styles.muted} role="status">Checking your licences…</p>
-      ) : entries.length === 0 ? (
-        <p className={styles.muted}>No licence keys yet. Paste one above after buying a plugin.</p>
-      ) : (
-        <ul className={styles.list}>
-          {entries.map((entry) => (
-            <li key={entry.key} className={styles.row}>
-              <div className={styles.rowMain}>
-                <span className={styles.title}>
-                  {entry.result ? `${entry.result.title} v${entry.result.version}` : entry.key}
-                </span>
-                <code className={styles.key}>{entry.key}</code>
-                <span className={entry.result ? styles.statusOk : styles.statusBad}>
-                  {entry.result ? entry.result.status : entry.error || 'Not active'}
-                </span>
+      {overview === null ? (
+        <p className={styles.muted} role="status">Looking for your purchases…</p>
+      ) : purchases.length > 0 ? (
+        <ul className={styles.cards}>
+          {purchases.map((purchase) => (
+            <li key={purchase.id} className={styles.card}>
+              <div className={styles.cardMain}>
+                <span className={styles.cardName}>{purchase.name}</span>
+                {purchase.installed ? (
+                  <span className={styles.chipOk}>Installed{purchase.installedVersion ? ` · v${purchase.installedVersion}` : ''}</span>
+                ) : purchase.licensed ? (
+                  <span className={styles.chipWait}>Ready to install</span>
+                ) : (
+                  <span className={styles.chipBad}>Licence expired</span>
+                )}
               </div>
-              <div className={styles.rowActions}>
+              {!purchase.installed && purchase.licensed && (
                 <button
                   type="button"
-                  className={styles.secondary}
-                  disabled={!entry.result || installing === entry.key}
-                  onClick={() => void install(entry.key)}
+                  className={styles.primary}
+                  disabled={working !== ''}
+                  onClick={() => void installOne(purchase)}
                 >
-                  {installing === entry.key ? `${installStep || 'working'}…` : 'Install'}
+                  {working === purchase.id ? 'Installing…' : 'Install'}
                 </button>
-                <button type="button" className={styles.danger} onClick={() => void removeKey(entry.key)}>Remove</button>
-              </div>
-              {installMessage[entry.key]?.text && (
-                <p className={installMessage[entry.key].ok ? styles.notice : styles.error}>
-                  {installMessage[entry.key].text}
-                </p>
+              )}
+              {notes[purchase.id]?.text && (
+                <p className={notes[purchase.id].ok ? styles.notice : styles.error} role="status">{notes[purchase.id].text}</p>
               )}
             </li>
           ))}
         </ul>
+      ) : overview.connected ? (
+        <p className={styles.empty}>
+          Nothing to install yet. When you buy a plugin on react-wp.com it shows up here by itself.
+        </p>
+      ) : (
+        <div className={styles.empty}>
+          <p>Connect this site to your react-wp.com account and what you bought appears here, ready to install.</p>
+          <a className={styles.primary} href={PLUGINS_SCREEN}>Connect this site</a>
+        </div>
       )}
+
+      <details className={styles.more}>
+        <summary>Have a licence key? Add it by hand</summary>
+        <div className={styles.addRow}>
+          <input
+            className={styles.input}
+            value={newKey}
+            onChange={(event) => setNewKey(event.target.value)}
+            placeholder="RWPM-… or RWP2-…"
+            onKeyDown={(event) => { if (event.key === 'Enter') void addKey(); }}
+          />
+          <button type="button" className={styles.secondary} onClick={() => void addKey()} disabled={!newKey.trim()}>
+            Add key
+          </button>
+        </div>
+
+        {error && <p className={styles.error} role="alert">{error}</p>}
+        {loading ? (
+          <p className={styles.muted} role="status">Checking your keys…</p>
+        ) : entries.length > 0 && (
+          <ul className={styles.list}>
+            {entries.map((entry) => (
+              <li key={entry.key} className={styles.row}>
+                <div className={styles.rowMain}>
+                  <span className={styles.title}>
+                    {entry.result ? `${entry.result.title} v${entry.result.version}` : 'Licence key'}
+                  </span>
+                  <span className={entry.result ? styles.statusOk : styles.statusBad}>
+                    {entry.result ? entry.result.status : entry.error || 'Not active'}
+                  </span>
+                </div>
+                <div className={styles.rowActions}>
+                  <button
+                    type="button"
+                    className={styles.secondary}
+                    disabled={!entry.result || installing === entry.key}
+                    onClick={() => void install(entry.key)}
+                  >
+                    {installing === entry.key ? `${installStep || 'working'}…` : 'Install'}
+                  </button>
+                  <button type="button" className={styles.danger} onClick={() => void removeKey(entry.key)}>Remove</button>
+                </div>
+                {installMessage[entry.key]?.text && (
+                  <p className={installMessage[entry.key].ok ? styles.notice : styles.error} role="status">
+                    {installMessage[entry.key].text}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
     </div>
   );
 }

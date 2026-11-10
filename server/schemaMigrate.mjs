@@ -37,6 +37,25 @@ export const SCHEMA_STATE_KEY = SCHEMA_STATE_SETTING_KEY;
 /** One fixed bigint for `pg_try_advisory_lock`: "RWPSCHEM" folded into 53 bits, so it is a safe JS integer. */
 export const SCHEMA_LOCK_KEY = 5_757_464_716_333;
 
+/** How long a run waits for another run's lock, and how often it asks. Long enough for a normal update to finish. */
+const LOCK_WAIT_MS = 25_000;
+const LOCK_POLL_MS = 500;
+/** An updater session idle for this long is ended by Postgres, which frees a lock a dead function left behind. */
+const IDLE_SESSION_MS = 90_000;
+
+/**
+ * Failures that mean "the database was busy", not "the update is wrong": 40P01 deadlock detected, 55P03 lock not
+ * available (the unit's own lock timeout), 40001 serialization failure. The unit is rolled back whole either way.
+ */
+const TRANSIENT_CODES = new Set(['40P01', '55P03', '40001']);
+export const isTransientDbError = (error) => TRANSIENT_CODES.has(String(error?.code || ''));
+/** How often a unit is tried, how long it waits before the next try, and how long one statement may wait for a lock. */
+const UNIT_ATTEMPTS = 4;
+const UNIT_BACKOFF_MS = [500, 1500, 4000];
+const UNIT_LOCK_TIMEOUT_MS = 8000;
+/** A transient failure is tried again by an admin opening the page once it is this old (and never sooner). */
+export const TRANSIENT_RETRY_AFTER_MS = 30_000;
+
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
 const REFUSALS = [
@@ -200,12 +219,22 @@ export function summariseState(units, state) {
       status = 'failed';
       reason = recorded.reason || 'The last attempt failed and was rolled back.';
     }
-    return { id: unit.id, label: unit.label, status, reason, at: recorded?.at || null };
+    return { id: unit.id, label: unit.label, status, reason, at: recorded?.at || null, transient: status === 'failed' && recorded?.transient === true };
   });
   const pick = (status) => rows.find((row) => row.status === status);
   const overall = pick('failed') ? 'failed' : pick('manual') ? 'manual' : pick('pending') ? 'pending' : 'ok';
   return { status: overall, units: rows, lastAppliedAt: rows.map((row) => row.at).filter(Boolean).sort().pop() || null };
 }
+
+/**
+ * Whether a recorded failure is worth running again by itself: every failed unit failed only because the database
+ * was busy, and the last attempt is old enough that it has probably passed.
+ */
+export const shouldRetryFailure = (summary, nowMs = Date.now()) => {
+  if (summary?.status !== 'failed') return false;
+  const failed = (summary.units || []).filter((unit) => unit.status === 'failed');
+  return failed.length > 0 && failed.every((unit) => unit.transient && nowMs - Date.parse(unit.at || '') >= TRANSIENT_RETRY_AFTER_MS);
+};
 
 const upsertState = (client, state) => client.query(
   `insert into public.system_settings (setting_key, setting_value) values ($1, $2)
@@ -268,13 +297,25 @@ export async function readSchemaStatus({ connectionString, units, withClient = d
  * Returns `{ status: 'busy' | 'needs_connection' | 'unreachable' | <summary status>, units, ran }`.
  * `ran` lists the unit ids that were actually executed this call.
  */
-export async function runSchemaUpdate({ connectionString, units, withClient = defaultWithClient, now = () => new Date() }) {
+export async function runSchemaUpdate({
+  connectionString, units, withClient = defaultWithClient, now = () => new Date(),
+  lockWaitMs = LOCK_WAIT_MS, lockPollMs = LOCK_POLL_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
   if (!str(connectionString)) return { status: 'needs_connection', units: [], ran: [], lastAppliedAt: null };
   const ran = [];
   try {
     return await withClient(connectionString, async (client) => {
-      const lock = await client.query('select pg_try_advisory_lock($1) as locked', [SCHEMA_LOCK_KEY]);
-      if (!lock.rows[0]?.locked) return { status: 'busy', units: [], ran, lastAppliedAt: null };
+      // Another run holding the lock is usually this same site, started a moment earlier by another tab, the
+      // admin shell or its own start-up. So it is waited for: once it finishes, the recorded state below says
+      // every unit is already applied and this run answers "up to date". Only a lock that stays taken for the
+      // whole wait is reported as busy.
+      const tryLock = async () => (await client.query('select pg_try_advisory_lock($1) as locked', [SCHEMA_LOCK_KEY])).rows[0]?.locked === true;
+      let locked = await tryLock();
+      for (let waited = 0; !locked && waited < lockWaitMs; waited += lockPollMs) {
+        await sleep(lockPollMs);
+        locked = await tryLock();
+      }
+      if (!locked) return { status: 'busy', units: [], ran, lastAppliedAt: null };
       try {
         const state = await readState(client);
         state.units = state.units || {};
@@ -294,23 +335,37 @@ export async function runSchemaUpdate({ connectionString, units, withClient = de
             continue;
           }
           if (unitDone(state, unit)) continue;
-          try {
-            await client.query('begin');
-            for (const statement of unit.statements) await client.query(statement);
-            if (unit.tail) await client.query(unit.tail);
-            state.units[unit.id] = { fingerprint: unit.fingerprint, status: 'ok', at, version: unit.version, statements: unit.statements.length };
-            await upsertState(client, state); // same transaction: applied and recorded together
-            await client.query('commit');
-            ran.push(unit.id);
-          } catch (error) {
-            await client.query('rollback').catch(() => {});
-            state.units[unit.id] = {
-              fingerprint: unit.fingerprint,
-              status: 'failed',
-              at,
-              reason: `${unit.label}'s database update failed and was rolled back, so the database is unchanged: ${describeDbError(error, connectionString)}`,
-            };
-            if (unit.id === 'core') coreOk = false;
+          // A deadlock or a lock that could not be had is the database being busy with other requests (the admin
+          // loads many at once), not a fault in the update. The unit is rolled back whole, which leaves nothing
+          // behind, so it is simply tried again a few times, a little later each time.
+          for (let attempt = 1; ; attempt += 1) {
+            try {
+              await client.query('begin');
+              await client.query(`set local lock_timeout = '${UNIT_LOCK_TIMEOUT_MS}ms'`);
+              for (const statement of unit.statements) await client.query(statement);
+              if (unit.tail) await client.query(unit.tail);
+              state.units[unit.id] = { fingerprint: unit.fingerprint, status: 'ok', at, version: unit.version, statements: unit.statements.length };
+              await upsertState(client, state); // same transaction: applied and recorded together
+              await client.query('commit');
+              ran.push(unit.id);
+              break;
+            } catch (error) {
+              await client.query('rollback').catch(() => {});
+              const transient = isTransientDbError(error);
+              if (transient && attempt < UNIT_ATTEMPTS) {
+                await sleep(UNIT_BACKOFF_MS[attempt - 1] ?? 4000);
+                continue;
+              }
+              state.units[unit.id] = {
+                fingerprint: unit.fingerprint,
+                status: 'failed',
+                at,
+                transient,
+                reason: `${unit.label}'s database update failed and was rolled back, so the database is unchanged: ${describeDbError(error, connectionString)}`,
+              };
+              if (unit.id === 'core') coreOk = false;
+              break;
+            }
           }
         }
         // Manual and failed outcomes are recorded after the fact (their transactions are gone). The row may not
@@ -321,7 +376,7 @@ export async function runSchemaUpdate({ connectionString, units, withClient = de
       } finally {
         await client.query('select pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
       }
-    });
+    }, { idleSessionTimeoutMs: IDLE_SESSION_MS });
   } catch (error) {
     return { status: 'unreachable', units: [], ran, lastAppliedAt: null, reason: describeDbError(error, connectionString) };
   }

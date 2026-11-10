@@ -123,7 +123,7 @@ const IDLE_IN_TRANSACTION_MS = 30000;
  * inside begin/commit, so a schema that fails half way leaves nothing behind — the reason plugin
  * install and uninstall are all-or-nothing.
  */
-export async function withClient(connectionString, work, { transaction = false, lockTimeoutMs = 0 } = {}) {
+export async function withClient(connectionString, work, { transaction = false, lockTimeoutMs = 0, idleSessionTimeoutMs = 0 } = {}) {
   const client = new Client({
     connectionString,
     ssl: { rejectUnauthorized: false },
@@ -141,6 +141,10 @@ export async function withClient(connectionString, work, { transaction = false, 
     // schema.sql is unaffected. Ignored on a pooler that refuses SET.
     await client.query(`set idle_in_transaction_session_timeout = '${IDLE_IN_TRANSACTION_MS}'`).catch(() => {});
     if (lockTimeoutMs > 0) await client.query(`set lock_timeout = '${Math.floor(lockTimeoutMs)}'`).catch(() => {});
+    // A session-level advisory lock outlives a transaction: a function frozen or killed while it holds one
+    // leaves the lock taken until the backend goes away. Postgres ends a session that sits idle this long
+    // (14+; refused and ignored on an older server), which releases the lock. A running statement is not idle.
+    if (idleSessionTimeoutMs > 0) await client.query(`set idle_session_timeout = '${Math.floor(idleSessionTimeoutMs)}ms'`).catch(() => {});
     if (transaction) await client.query('begin');
     const result = await work(client);
     if (transaction) await client.query('commit');
