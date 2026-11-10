@@ -119,7 +119,7 @@ const siteSupabase = async () => {
     config,
     error: config?.installed
       ? 'This site is installed on a non-Supabase backend, and this server authorises uploads through a Supabase project. Run the universal server instead (npm run start:hono), which speaks every backend.'
-      : 'This site is not installed yet: no Supabase project is configured. Run the Setup Wizard, or put DB_TYPE and VITE_SUPABASE_URL/VITE_SUPABASE_PUBLISHABLE_KEY in .env.local.',
+      : 'This site is not installed yet: no Supabase project is configured. Run the Setup Wizard, or put VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in .env.local.',
   };
 };
 

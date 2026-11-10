@@ -128,9 +128,9 @@ function bodyToConfig(body: Record<string, unknown>): RuntimeConfig {
 
 /** Builds the `.env` block for serverless/read-only hosts (Step 5 of the wizard). */
 function buildEnvString(config: RuntimeConfig): string {
-  const lines: string[] = [];
-  lines.push(`DB_TYPE=${config.dbType}`);
-  lines.push(`VITE_DB_TYPE=${config.dbType}`);
+  // Mirrors server/installEnv.mjs: one engine variable, none for Supabase (every reader defaults to it).
+  const dbType = config.dbType || 'supabase';
+  const lines: string[] = dbType === 'supabase' ? [] : [`VITE_DB_TYPE=${dbType}`];
   if (config.databaseUrl) lines.push(`DATABASE_URL=${config.databaseUrl}`);
   if (config.supabaseUrl) {
     lines.push(`VITE_SUPABASE_URL=${config.supabaseUrl}`);
@@ -145,7 +145,8 @@ function buildEnvString(config: RuntimeConfig): string {
   }
   if (config.sqliteFile) lines.push(`SQLITE_FILE=${config.sqliteFile}`);
   if (config.libsqlAuthToken) lines.push(`LIBSQL_AUTH_TOKEN=${config.libsqlAuthToken}`);
-  lines.push(`JWT_SECRET=${config.jwtSecret || ''}`);
+  // A non-Supabase engine refuses to start without JWT_SECRET, so it is always there for one; Supabase signs its own.
+  if (config.jwtSecret || dbType !== 'supabase') lines.push(`JWT_SECRET=${config.jwtSecret || ''}`);
   // Only what a host needs to *boot* is emitted here. Everything else the wizard collected — the
   // storage driver and its S3 credentials above all — is persisted to the `system_settings` table by
   // the install handler and read back from the database, so the platform stays agnostic.
@@ -222,7 +223,7 @@ app.get('/api/health', async (c) => {
 
 /**
  * GET /api/install/check — reports whether a site has been provisioned. Environment-aware: a
- * serverless/edge run is "installed" when `DATABASE_URL` + `DB_TYPE` are present; a persistent host
+ * serverless/edge run is "installed" when `DATABASE_URL` and an engine are present (`VITE_DB_TYPE`/`DB_TYPE`, or a Supabase URL); a persistent host
  * is "installed" when `data/react-wp-config.json` says so. Re-reads the file so it stays current even
  * in the very same process that just ran Step 5 (`POST /api/install-schema`).
  */
@@ -447,7 +448,7 @@ async function installSupabase(
     // Lock the installer once the site is provisioned. A second run must not overwrite the seeded
     // options, promote a different administrator or re-apply schema over a live site. The check reads
     // the `installed` option over the direct connection rather than the environment, so it also holds
-    // on Vercel — where the read-only filesystem keeps no config file and `DATABASE_URL`/`DB_TYPE`
+    // on Vercel — where the read-only filesystem keeps no config file and `DATABASE_URL`
     // are not set until the returned block is pasted in and the site redeployed. A factory reset
     // drops the `public` schema (and this option with it), which is what re-opens the wizard.
     const lock = await client.query(
@@ -498,7 +499,7 @@ async function installSupabase(
       admin = await promoteSupabaseAdmin(client, str(body.adminUserId) || '', adminEmail);
     }
 
-    // The connection just used travels in the block in both modes: without `DATABASE_URL` + `DB_TYPE`
+    // The connection just used travels in the block in both modes: without `DATABASE_URL` (plus the Supabase URL, or `VITE_DB_TYPE` for another engine)
     // a deployment cannot report itself provisioned, and `SUPABASE_DB_URL`-style access is what lets
     // plugin SQL and the site reset run there without asking for the password again.
     const env = buildEnvString({ ...config, databaseUrl: config.databaseUrl || connectionString, installed: true });

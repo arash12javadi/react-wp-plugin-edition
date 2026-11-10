@@ -11,14 +11,20 @@
  * driver and its S3 credentials above all — is written to the `system_settings` table and read back
  * from the database, so the platform stays agnostic and the block stays short enough to paste.
  *
- * `JWT_SECRET` is emitted only when there is one: the universal runtime refuses to start without it
+ * One engine variable, and none for Supabase: every reader (`runtimeConfigFromEnv`, `server/autoSetup.mjs`,
+ * `server/db.mjs`, `getRuntimeConfig`) defaults to `supabase` and accepts `VITE_DB_TYPE` (the one name the
+ * browser can also read) or the older `DB_TYPE`. So a Supabase block carries neither, another engine carries
+ * `VITE_DB_TYPE` only, and `JWT_SECRET` appears only for a non-Supabase engine (which refuses to start without
+ * it) or when one was supplied. Fewer variables is fewer things for a client to paste wrongly.
+ *
+ * `JWT_SECRET` is emitted only when there is one or the engine needs one: the universal runtime refuses to start without it
  * on a non-Supabase backend (hence the unconditional line in the Hono builder), while this server
  * signs no tokens of its own — an empty `JWT_SECRET=` would only invite someone to paste a blank
  * secret into their host.
  */
 export function buildEnvString(config = {}) {
   const dbType = config.dbType || 'supabase';
-  const lines = [`DB_TYPE=${dbType}`, `VITE_DB_TYPE=${dbType}`];
+  const lines = dbType === 'supabase' ? [] : [`VITE_DB_TYPE=${dbType}`];
   if (config.databaseUrl) lines.push(`DATABASE_URL=${config.databaseUrl}`);
   if (config.supabaseUrl) {
     lines.push(`VITE_SUPABASE_URL=${config.supabaseUrl}`);
@@ -33,6 +39,6 @@ export function buildEnvString(config = {}) {
   }
   if (config.sqliteFile) lines.push(`SQLITE_FILE=${config.sqliteFile}`);
   if (config.libsqlAuthToken) lines.push(`LIBSQL_AUTH_TOKEN=${config.libsqlAuthToken}`);
-  if (config.jwtSecret) lines.push(`JWT_SECRET=${config.jwtSecret}`);
+  if (config.jwtSecret || dbType !== 'supabase') lines.push(`JWT_SECRET=${config.jwtSecret || ''}`);
   return lines.join('\n');
 }

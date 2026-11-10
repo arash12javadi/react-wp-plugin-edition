@@ -56,12 +56,12 @@ const OTHER_HOSTS: ComingSoonOption[] = [
 const SUPABASE_URL_PATTERN = /^https:\/\/[a-z0-9][a-z0-9-]*\.supabase\.co\/?$/i;
 
 const VARIABLE_GUIDE: Record<string, string> = {
-  DB_TYPE: 'The database backend. Keep as supabase.',
-  VITE_DB_TYPE: 'Mirror of DB_TYPE for the browser bundle.',
+  DB_TYPE: 'Older name for VITE_DB_TYPE. Not needed: you can delete it.',
+  VITE_DB_TYPE: 'The database engine. Only written for a non-Supabase engine; Supabase needs no engine variable.',
   DATABASE_URL: 'Server-only direct PostgreSQL connection (contains the database password). Add it to Vercel as a server variable, never prefixed with VITE_.',
   VITE_SUPABASE_URL: 'Public Supabase project URL. Safe to ship to the browser.',
   VITE_SUPABASE_PUBLISHABLE_KEY: 'Public anon/publishable key. Safe to ship to the browser.',
-  JWT_SECRET: 'Server-only secret for non-Supabase auth. Never prefixed with VITE_.',
+  JWT_SECRET: 'Server-only secret for non-Supabase auth. Only needed for a non-Supabase engine. Never prefixed with VITE_.',
 };
 
 const trim = (value: string): string => value.trim();

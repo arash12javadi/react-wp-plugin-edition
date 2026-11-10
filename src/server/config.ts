@@ -78,7 +78,8 @@ let cachedRuntimeConfig: RuntimeConfig | null = null;
  * The server's resolved runtime config, cached in memory for the life of the process.
  *
  * Resolution order is deliberate and environment-aware:
- *   1. `process.env.DATABASE_URL` + `process.env.DB_TYPE` win outright. A serverless/edge run is
+ *   1. `process.env.DATABASE_URL` plus an engine (`VITE_DB_TYPE`, the older `DB_TYPE`, or - with no engine
+ *      variable at all - a Supabase URL, since Supabase is the default) win outright. A serverless/edge run is
  *      read-only (`EROFS`), so it must never touch `data/react-wp-config.json` — the presence of the
  *      env pair is itself the "installed" signal.
  *   2. Otherwise `data/react-wp-config.json` is read (persistent Node hosts), and the file merges
@@ -96,7 +97,8 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   if (!cachedRuntimeConfig) {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
     let base: RuntimeConfig;
-    if (env.DATABASE_URL && env.DB_TYPE) {
+    const engine = env.VITE_DB_TYPE || env.DB_TYPE || (env.VITE_SUPABASE_URL || env.SUPABASE_URL ? 'supabase' : '');
+    if (env.DATABASE_URL && engine) {
       base = { ...runtimeConfigFromEnv(env), installed: true };
     } else {
       base = mergeRuntimeConfig(resolveServerConfig(), await readConfigFile());

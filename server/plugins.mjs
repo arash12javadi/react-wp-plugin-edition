@@ -33,7 +33,7 @@
  * every plugin, so the Plugins screen can tell a free plugin (`required: false`) from a locked one; a
  * plugin that declares that route itself keeps it.
  *
- * The development-edition plugins (`rwp-ai-factory`, `rwp-saas-installer` and `rwp-plugin-marketplace`,
+ * The development-edition plugins (`rwp-ai-factory`, `rwp-saas-installer`, `rwp-plugin-marketplace` and `rwp-owner-vault`,
  * listed in `src/lib/pluginEdition.js`) are not registered at all when this is built as a public site
  * (`RWP_EDITION=public`), so their routes answer 404 there whatever is in `plugins/`.
  */
@@ -55,6 +55,7 @@ const loaded = await Promise.allSettled([
   import('../plugins/rwp-page-builder/server.mjs'),
   import('../plugins/rwp-shop/server.mjs'),
   import('../plugins/rwp-plugin-marketplace/server.mjs'),
+  import('../plugins/rwp-owner-vault/server.mjs'),
   // rwp:server-plugin-imports:end
 ]);
 
@@ -219,6 +220,42 @@ const matchRoute = (routes, method, path) => {
 const PUBLIC_ROUTE_PLUGINS = new Set(['rwp-plugin-marketplace']);
 
 /**
+ * Plugins allowed to supply configuration to this process before a plugin route runs.
+ *
+ * Only the development edition's Owner Vault (`plugins/rwp-owner-vault`) does: it keeps the platform owner's
+ * non-essential settings (signing keys, SMTP, payment keys) sealed in the database and copies them into
+ * `process.env` so the code that already reads `process.env.X` sees a value the owner changed a minute ago,
+ * with no redeploy. It is an allow-list of ids, like `PUBLIC_ROUTE_PLUGINS`: a ZIP that exports
+ * `prepareEnvironment` is ignored, because a plugin that may rewrite the environment of every other plugin
+ * is not something an upload may claim. A client edition has no such plugin (it is development-edition
+ * only), so on a client this is a no-op. The call is bounded and never throws: a vault that cannot be read
+ * leaves the environment exactly as the deployment set it.
+ */
+const ENVIRONMENT_PLUGINS = new Set(['rwp-owner-vault']);
+const ENVIRONMENT_TIMEOUT_MS = 4000;
+
+async function prepareEnvironment(request, activeIds) {
+  for (const plugin of serverPlugins) {
+    if (!ENVIRONMENT_PLUGINS.has(plugin.id) || typeof plugin.prepareEnvironment !== 'function') continue;
+    if (!activeIds.includes(plugin.id)) continue;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => plugin.prepareEnvironment({
+          supabaseUrl: request.supabase.url,
+          secretKey: process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+        })),
+        new Promise((resolve) => { timer = setTimeout(resolve, ENVIRONMENT_TIMEOUT_MS); }),
+      ]);
+    } catch (error) {
+      console.error(`[${plugin.id}] could not prepare the environment:`, error instanceof Error ? error.message : String(error));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
  * `__public/licenses/sync` → `rwp-plugin-marketplace/licenses/sync`, when an allowed plugin declares
  * `publicRoutes: { 'GET licenses/sync': 'licenses/sync' }` (key: METHOD + path under /api/v1/; value: its own route).
  * Any other `__public/…` path is rewritten to one no plugin owns, so it answers the usual 404.
@@ -379,6 +416,9 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
 
   const route = matchRoute(plugin.routes, request.method, routePath);
   if (!route) return { status: 404, body: { error: `${plugin.id} has no route ${request.method} ${routePath}.` } };
+
+  // The owner's stored settings, applied before the route reads process.env (development edition only).
+  await prepareEnvironment(request, activeIds);
 
   let parsed;
   const json = () => {
