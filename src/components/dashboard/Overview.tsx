@@ -4,7 +4,6 @@ import { hasCapability, type Capability, type UserRole } from '../../lib/roles';
 import { rwp, type RwpSetupLevel } from '../../lib/rwp';
 import type { AdminStatus } from '../../lib/adminStatus';
 import type { SetupNotice } from '../../lib/setupChecks';
-import { availableUpdates } from '../../lib/updates';
 import styles from './Dashboard.module.css';
 
 type Navigate = (section: string, subsection?: string) => void;
@@ -179,8 +178,6 @@ export default function Overview({ role, status, navigate, siteTitle }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isAdmin = hasCapability(role, 'manage_options');
-  const updates = availableUpdates(status.updateStatus);
   const widgets = rwp.getDashboardWidgets().filter((widget) => !widget.capability || hasCapability(role, widget.capability as Capability));
 
   return (
@@ -198,16 +195,6 @@ export default function Overview({ role, status, navigate, siteTitle }: {
           <a href="/" target="_blank" rel="noreferrer">🌐 View site ↗</a>
         </div>
       </section>
-
-      {isAdmin && (updates.length > 0 || status.updateStatus?.error || status.updateError) && (
-        <button type="button" className={`${styles.updateBanner} ${updates.length ? '' : styles.updateBannerMuted}`} onClick={() => navigate('dashboard', 'updates')}>
-          <span aria-hidden="true">🔄</span>
-          {updates.length
-            ? `${updates.length} update${updates.length === 1 ? ' is' : 's are'} available: ${updates.map((update) => `${update.name} ${update.release.tag || `v${update.release.version.replace(/^v/i, '')}`}`).join(', ')}.`
-            : `The last update check failed: ${status.updateStatus?.error || status.updateError}`}
-          <span className={styles.bannerLink}>Open Updates →</span>
-        </button>
-      )}
 
       <div className={styles.columns}>
         <div className={styles.column}>

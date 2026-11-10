@@ -353,15 +353,17 @@ export async function syncLicenses({ io, licenseIo, credentials = null, env = gl
     const platform = await platformMessage(response);
     const message = response.status === 401
       ? `react-wp.com no longer accepts this connection (${platform}) Connect the site again with a new code.`
-      : `react-wp.com refused the sync: ${platform}`;
+      // Only what the customer can act on is passed on. Anything else is react-wp.com's own business and is not
+      // forwarded word for word (it may name its configuration).
+      : response.status === 429 ? `react-wp.com asks this site to wait: ${platform}` : 'react-wp.com could not complete the check just now. It tries again by itself.';
     await record({}, message, false);
     throw new LicenseLinkError(response.status === 429 ? 429 : 502, message, response.status === 401 ? 'disconnected' : 'refused');
   }
 
   const answer = await response.json().catch(() => null);
   if (!answer || !Array.isArray(answer.licenses)) {
-    await record({}, 'react-wp.com answered with something that is not a key list. Nothing was changed.', false);
-    throw new LicenseLinkError(502, 'react-wp.com answered with something that is not a key list. Nothing was changed.', 'bad_answer');
+    await record({}, 'react-wp.com could not complete the check just now. It tries again by itself.', false);
+    throw new LicenseLinkError(502, 'react-wp.com could not complete the check just now. It tries again by itself.', 'bad_answer');
   }
   const held = readPluginLicenses(await licenseIo.read());
   const { next, updated, ignored } = mergeDeliveredKeys({ delivered: answer.licenses, held, now });

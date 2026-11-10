@@ -103,7 +103,7 @@ const LICENCE_REASONS: Record<string, string> = {
   license_expired: 'the licence has expired',
   license_revoked: 'the licence has been revoked',
   license_pending_renewal: 'a renewal is due',
-  not_configured: 'the marketplace server is not configured for this build',
+  not_configured: 'the marketplace is not available right now',
   network_error: 'the licensing server could not be reached',
 };
 
@@ -154,7 +154,7 @@ const catalogProblem = (reason?: string) => {
   if (reason === 'not_configured') {
     // The tab always asks *somewhere* — react-wp.com when this build names no licensing server — so this
     // is the host that answered, not a variable this administrator could have set.
-    return 'The marketplace host answering the catalogue is not configured: its licensing database is missing. Try again later, or contact whoever provides the marketplace.';
+    return 'The marketplace is not available right now. Please try again later.';
   }
   if (reason === 'network_error') {
     return 'The marketplace server could not be reached. Check this site\'s connection, then press Check again.';
@@ -168,7 +168,7 @@ const checkoutProblem = (result: { reason?: string; status?: string } | null, pl
   if (result.reason === 'not_activated' || result.reason === 'missing_identity') {
     return 'This site has no stored licence identity yet. Add your licence key under Plugins → My Purchases, then buy.';
   }
-  if (result.reason === 'not_configured') return 'The marketplace server is not configured for this build.';
+  if (result.reason === 'not_configured') return 'The marketplace is not available right now. Please try again later.';
   if (result.reason === 'network_error') return 'The marketplace server could not be reached. Try again in a moment.';
   if (result.reason === 'unknown_plugin') return `${plugin.name} is no longer listed in the marketplace.`;
   if (result.reason === 'missing_plugin') return 'No plugin was named in the checkout request.';

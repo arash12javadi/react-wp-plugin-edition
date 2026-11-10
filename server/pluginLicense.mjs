@@ -216,7 +216,7 @@ export const pluginLicenseState = ({ pluginId, key, addon, now = new Date(), pub
       ...empty,
       key: maskPluginLicense(parts.key),
       status: 'unverifiable',
-      message: `This build has no license public key (${PLUGIN_LICENSE_PUBLIC_KEY_ENV} is not set and none is built in), so no key can be verified and ${pluginId || 'the plugin'} stays locked. Ask the vendor for a current release.`,
+      message: `This site cannot check licence keys yet, so ${pluginId || 'the plugin'} stays locked. Please update React-WP, or contact support if it keeps happening.`,
     };
   }
   if (verdict !== 'ok') {

@@ -37,6 +37,16 @@ export const GITHUB_CONFIG_KEY = 'github_config';
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
 /**
+ * What a client is told when the cause is on react-wp.com's side (the package key is not set, a signature does not
+ * verify, the description is wrong, the platform answered 5xx). The client can do nothing about any of those, and the
+ * names of the vendor's keys are none of their business: they get one calm sentence, and the vendor sees the real
+ * state on their own dashboard ("Finish setting up").
+ */
+export const NOT_READY = 'This plugin cannot be installed from here right now. Please try again later.';
+/** A failure the vendor must fix: shown to clients as `NOT_READY`, and silent during a sync. */
+class NotReadyError extends Error {}
+
+/**
  * `getOption` / `setOption` over PostgREST on `public.options`, the two calls the installer pins
  * `rwp_active_plugins` with (so the new plugin arrives inactive). The credential is whoever started the sync:
  * an administrator's own session, or the server's secret key for the daily run.
@@ -84,7 +94,8 @@ async function fetchPackageDescription({ baseUrl, token, domain, id, mode = 'ins
     throw new Error(`react-wp.com could not be reached for ${id}: ${error instanceof Error ? error.message : 'network error'}.`);
   }
   const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(str(body?.error) || `react-wp.com refused to hand over ${id} (HTTP ${response.status}).`);
+  // A refusal the customer can act on (not licensed, not assigned, renew) is passed on; anything the vendor must fix is not.
+  if (!response.ok) throw response.status >= 500 || !str(body?.error) ? new NotReadyError(NOT_READY) : new Error(str(body.error));
   return body;
 }
 
@@ -98,17 +109,15 @@ async function fetchVerifiedPackage({ id, wantedVersion, mode, baseUrl, token, d
   const sha256 = str(description?.sha256).toLowerCase();
   const version = str(description?.version);
   if (str(description?.plugin) !== id || (wantedVersion && version !== wantedVersion) || !version || !SHA256.test(sha256) || !str(description?.url)) {
-    throw new Error('react-wp.com described a different package than the one asked for, so it was not installed.');
+    throw new NotReadyError(NOT_READY);
   }
   const verdict = verifyPackage({ pluginId: id, version, domain, sha256, exp: str(description?.exp), sig: str(description?.sig) }, { publicKey, now });
   if (verdict !== 'ok') {
-    throw new Error(verdict === 'expired'
-      ? 'The package description had already expired. It will be asked for again on the next sync.'
-      : `The package signature for ${id} did not verify (${verdict}), so nothing was committed.`);
+    throw new NotReadyError(NOT_READY);
   }
   const zip = await d.downloadZip(str(description.url));
   if (sha256Hex(zip) !== sha256) {
-    throw new Error(`The downloaded ${id} does not match the signed checksum, so nothing was committed.`);
+    throw new NotReadyError(NOT_READY);
   }
   d.assertPackageMatches({ zip, id, version });
   return { zip, version };
@@ -138,15 +147,15 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
   // Without a package key this release cannot verify anything, which is the safe direction: install nothing.
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
-    return { complete: false, installed: [], message: 'Your purchased plugins were not installed: automatic install is not switched on at react-wp.com yet. Nothing is wrong with your site.' };
+    // Silent on purpose: the missing key is the vendor's to set, and the next sync tries again.
+    return { complete: false, installed: [], message: '' };
   }
 
   let target;
   try {
     target = d.githubTargetFrom(await io.read(GITHUB_CONFIG_KEY));
   } catch (error) {
-    const reason = error instanceof Error ? error.message : 'The GitHub connection could not be read.';
-    return { complete: false, installed: [], message: `Plugins assigned to this site were not installed. Connect GitHub and Vercel under Settings → Integrations first. (${reason})` };
+    return { complete: false, installed: [], message: 'Your purchased plugins are waiting: connect GitHub and Vercel under Settings → Integrations and they install by themselves.' };
   }
 
   let present;
@@ -160,6 +169,7 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
   const installed = [];
   const failures = [];
   const later = [];
+  let vendorSide = false;
   const startedAt = Date.now();
   for (const item of wanted) {
     if (present.has(item.plugin)) continue;
@@ -179,7 +189,8 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
       installed.push({ plugin: item.plugin, version, name: str(result?.plugin?.name) || item.plugin, sha: str(result?.commit?.sha).slice(0, 7) });
       present.add(item.plugin);
     } catch (error) {
-      failures.push(`${item.plugin}: ${error instanceof Error ? error.message : 'the install failed'}`);
+      if (error instanceof NotReadyError) vendorSide = true;
+      else failures.push(`${item.plugin}: ${error instanceof Error ? error.message : 'the install failed'}`);
     }
   }
 
@@ -189,7 +200,7 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
   }
   if (failures.length) parts.push(`Not installed: ${failures.join(' ')}`);
   if (later.length) parts.push(`Still to install on the next sync: ${later.join(', ')}.`);
-  return { complete: failures.length === 0 && later.length === 0, installed, message: parts.join(' ') };
+  return { complete: failures.length === 0 && later.length === 0 && !vendorSide, installed, message: parts.join(' ') };
 }
 
 /**
@@ -216,13 +227,13 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
   }
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
-    throw new InstallError('Automatic install is not switched on at react-wp.com yet, so this plugin cannot be installed from here. Nothing is wrong with your site.', 503);
+    throw new InstallError(NOT_READY, 503);
   }
   let target;
   try {
     target = d.githubTargetFrom(await io.read(GITHUB_CONFIG_KEY));
-  } catch (error) {
-    throw new InstallError(`Connect GitHub and Vercel under Settings → Integrations first. (${error instanceof Error ? error.message : 'The GitHub connection could not be read.'})`, 501);
+  } catch {
+    throw new InstallError('Connect GitHub and Vercel under Settings → Integrations first, then try again.', 501);
   }
   const present = (await d.installedPluginVersions(target)).find((row) => row.id === id);
   if (!present) {
@@ -266,7 +277,7 @@ export async function installSoldPlugin({ plugin, version = '', token, domain, b
   }
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
-    throw new InstallError('Automatic install is not switched on at react-wp.com yet, so this plugin cannot be installed from here. Nothing is wrong with your site.', 503);
+    throw new InstallError(NOT_READY, 503);
   }
   let target;
   try {
