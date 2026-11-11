@@ -160,8 +160,8 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Activate it here. Activation is what creates the shop tables; a site that never activates the shop never gets them.',
       'Open Shop → Settings → General and fill in the store address: tax "based on shop base address", local pickup and the order emails all read it.',
       'Turn on at least one payment method under Shop → Settings → Payments. Cash on delivery, bank transfer and cheque need nothing else; Stripe and PayPal need the keys in the next step.',
-      'Put STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET, or PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET and PAYPAL_MODE, in .env.local, plus SUPABASE_SECRET_KEY — without the secret key a paid order can never be marked as paid.',
-      'For order emails add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and SMTP_FROM, then send a test from Shop → Settings → Emails.',
+      'For Stripe or PayPal, enter the keys in Settings → Integrations → Shop payments. They are stored in your database and never shown again. The site also needs SUPABASE_SECRET_KEY on the server: without it a paid order can never be marked as paid.',
+      'For order emails, either fill in Settings → Integrations → Shop email (a sender of its own) or leave it empty to use Settings → Integrations → Email, then send a test email from either card.',
       "Publish products under Shop → Products, then place [rwp_products] on a page or use the shop's widgets in the Page Builder. /shop, /cart, /checkout and /my-account are routes, so they need no page of their own.",
     ],
     notes: [

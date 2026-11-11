@@ -8,10 +8,7 @@ type Navigate = (section: string, subsection?: string) => void;
 
 const envVars: Array<[string, string, string]> = [
   ['VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY', 'Only without the installer', 'The Supabase project the browser connects to. The installer writes these to data/react-wp-config.json instead, so most sites never set them.'],
-  ['SUPABASE_SECRET_KEY', 'Shop payments, guest order emails, builder form emails', 'Supabase → Project Settings → API Keys → secret key. Server only: never give it a VITE_ prefix and never paste it into an admin screen.'],
-  ['STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET', 'Card payments', 'Stripe → Developers → API keys / Webhooks. Use sk_test_… while testing.'],
-  ['PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, PAYPAL_MODE', 'PayPal payments', 'PayPal developer dashboard → Apps & Credentials. PAYPAL_MODE is sandbox or live.'],
-  ['SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM', 'Order and form emails', 'From your email provider (for example the SMTP settings of Gmail, Brevo, Mailgun or your host).'],
+  ['SUPABASE_SECRET_KEY', 'Shop payments, guest order emails, builder form emails, the stored integration settings', 'Supabase → Project Settings → API Keys → secret key. Server only: never give it a VITE_ prefix and never paste it into an admin screen.'],
   ['SITE_URL', 'Payment return links and email links', 'Your public address, if the server sees a different host name (for example behind a proxy).'],
   ['PORT', 'npm start', 'The port the server listens on. Default 3000.'],
 ];

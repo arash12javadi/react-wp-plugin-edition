@@ -35,6 +35,8 @@ import {
 } from '../../lib/githubConnection';
 import styles from './IntegrationsHub.module.css';
 
+export { styles as hubStyles };
+
 /**
  * GitHub is core's card, not a plugin's: the server commits plugin uploads and uninstalls with this
  * row on every edition, and the plugin that used to register it (`rwp-saas-installer`) never ships to
@@ -84,11 +86,11 @@ const deploymentCard: RwpIntegrationCard = {
 };
 
 /** The one place a caught value becomes a sentence. */
-const messageOf = (value: unknown, fallback: string): string =>
+export const messageOf = (value: unknown, fallback: string): string =>
   value instanceof Error && value.message ? value.message : fallback;
 
 /** The state pill in a card's heading: the same three classes every card — built-in or plugin — uses. */
-function Pill({ tone = 'quiet', children }: { tone?: 'on' | 'off' | 'quiet'; children: ReactNode }) {
+export function Pill({ tone = 'quiet', children }: { tone?: 'on' | 'off' | 'quiet'; children: ReactNode }) {
   const className = tone === 'on' ? styles.pillOn : tone === 'off' ? styles.pillOff : styles.pillQuiet;
   return <span className={className}>{children}</span>;
 }
@@ -116,7 +118,7 @@ function Card({ id, title, meta, pill, children }: {
 }
 
 /** One labelled field, with the small print that says where the value comes from. */
-function Field({ label, help, className, children }: {
+export function Field({ label, help, className, children }: {
   label: string;
   help?: ReactNode;
   className?: string;
@@ -359,7 +361,8 @@ function AiCard({ onChanged }: { onChanged: () => void }) {
  * once instead of in every card. `normalize` turns whatever the row holds into a full configuration, so a
  * card never has to test for a missing field.
  */
-function useStoredConfig<T>(key: string, normalize: (value: unknown) => T) {
+export function useStoredConfig<T>(key: string, normalize: (value: unknown) => T, options: { sealed?: boolean } = {}) {
+  const sealed = options.sealed === true;
   const [config, setConfig] = useState<T>(() => normalize(null));
   const [saved, setSaved] = useState<T>(() => normalize(null));
   const [loading, setLoading] = useState(true);
@@ -387,7 +390,19 @@ function useStoredConfig<T>(key: string, normalize: (value: unknown) => T) {
     setError('');
     setNotice('');
     try {
-      if (!(await setSystemSetting(key, next))) {
+      if (sealed) {
+        // The server seals the secret fields (the key is never in a browser) and answers with the row as it
+        // is now stored, so the form keeps opaque values and never the plain text it was typed with.
+        const { data } = await client.auth.getSession();
+        const response = await fetch('/api/integrations/row/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token || ''}` },
+          body: JSON.stringify({ key, value: next }),
+        });
+        const payload = (await response.json().catch(() => null)) as { value?: unknown; error?: string } | null;
+        if (!response.ok) throw new Error(payload?.error || `The configuration could not be saved (HTTP ${response.status}).`);
+        next = normalize(payload?.value ?? next);
+      } else if (!(await setSystemSetting(key, next))) {
         throw new Error('This browser is not allowed to store the configuration. Sign in again as an administrator and retry.');
       }
       setConfig(next);
@@ -400,13 +415,13 @@ function useStoredConfig<T>(key: string, normalize: (value: unknown) => T) {
     } finally {
       setBusy(false);
     }
-  }, [key]);
+  }, [key, sealed, normalize]);
 
   return { config, setConfig, saved, loading, busy, error, setError, notice, setNotice, save, reload };
 }
 
 /** The inline error/notice pair every card shows above its fields. */
-function Feedback({ error, notice }: { error: string; notice: string }) {
+export function Feedback({ error, notice }: { error: string; notice: string }) {
   return (
     <>
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
@@ -423,7 +438,7 @@ function Feedback({ error, notice }: { error: string; notice: string }) {
  * whole row — but it is not rendered into an input, so a screenshot or a shared screen shows nothing.
  * Typing replaces the value, and "Remove" empties it.
  */
-function useSecret(stored: string) {
+export function useSecret(stored: string) {
   const [draft, setDraft] = useState<string | null>(null);
   return {
     /** The value the input shows: empty, so a saved secret is never on screen. */
@@ -745,9 +760,18 @@ function MediaCard({ status, onChanged }: { status: IntegrationStatus | null; on
  * message is delivered to a third party: proving a configuration works means proving the one this site
  * will really use.
  */
-function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; onChanged: () => void }) {
+export function EmailConfigForm({ rowKey, testUrl, onChanged, saveLabel = 'Save email config', intro, resetLabel }: {
+  rowKey: string;
+  testUrl: string;
+  onChanged: () => void;
+  saveLabel?: string;
+  /** Shown above the fields: a plugin uses it to say what happens when this form is left empty. */
+  intro?: ReactNode;
+  /** When set, a button that clears the row so the plugin falls back to the site's email settings. */
+  resetLabel?: string;
+}) {
   const { config, setConfig, loading, busy, error, setError, notice, setNotice, save } =
-    useStoredConfig(emailConfigKey, emailConfigFrom);
+    useStoredConfig(rowKey, emailConfigFrom, { sealed: true });
   const [recipient, setRecipient] = useState('');
   const [sending, setSending] = useState(false);
   const apiKey = useSecret(config.api_key);
@@ -774,7 +798,7 @@ function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; on
       // Administrator-only, like the AI test: the same access token proves who is asking, so the
       // server's `manage_options` check sees a session rather than an anonymous caller.
       const { data } = await client.auth.getSession();
-      const response = await fetch('/api/integrations/email/test', {
+      const response = await fetch(testUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -795,14 +819,8 @@ function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; on
   const usesSmtp = config.provider === 'smtp';
 
   return (
-    <Card
-      id="integration-email"
-      title="Email"
-      meta="Password resets, invitations, order confirmations and form notifications sent through this site."
-      pill={status?.email.configured
-        ? <Pill tone="on">{emailProviderLabels[config.provider]} ready</Pill>
-        : <Pill tone="off">Not configured</Pill>}
-    >
+    <>
+      {intro}
       <Feedback error={error} notice={notice} />
 
       {loading ? <p className={styles.targetNote} role="status">Reading the saved settings…</p> : (
@@ -926,7 +944,7 @@ function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; on
               onClick={() => void saveAll()}
               disabled={busy || sending}
             >
-              {busy ? 'Saving…' : 'Save email config'}
+              {busy ? 'Saving…' : saveLabel}
             </button>
             {(apiKey.saved && !apiKey.clearing) || (smtpPassword.saved && !smtpPassword.clearing) ? (
               <button
@@ -936,6 +954,18 @@ function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; on
                 disabled={busy || sending}
               >
                 Remove saved {usesSmtp ? 'password' : 'key'}
+              </button>
+            ) : null}
+            {resetLabel ? (
+              <button
+                type="button"
+                className={styles.secondary}
+                onClick={() => {
+                  void save(emailConfigFrom(null), 'Removed. This plugin now sends through the site's email settings.').then((ok) => { if (ok) { apiKey.keep(); smtpPassword.keep(); onChanged(); } });
+                }}
+                disabled={busy || sending}
+              >
+                {resetLabel}
               </button>
             ) : null}
           </div>
@@ -968,6 +998,21 @@ function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; on
           </div>
         </>
       )}
+    </>
+  );
+}
+
+function EmailCard({ status, onChanged }: { status: IntegrationStatus | null; onChanged: () => void }) {
+  return (
+    <Card
+      id="integration-email"
+      title="Email"
+      meta="Password resets, invitations, order confirmations and form notifications sent through this site."
+      pill={status?.email.configured
+        ? <Pill tone="on">{emailProviderLabels[(status.email.provider as EmailProvider) || 'resend']} ready</Pill>
+        : <Pill tone="off">Not configured</Pill>}
+    >
+      <EmailConfigForm rowKey={emailConfigKey} testUrl="/api/integrations/email/test" onChanged={onChanged} />
     </Card>
   );
 }

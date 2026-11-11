@@ -40,6 +40,7 @@ import { supabaseSchemaSql } from './schemaText';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
 import { PLATFORM_SETTING_KEYS } from '../../server/integrationConfig.mjs';
+import { isSealedRowKey, plaintextSecrets } from '../../server/sealedRows.mjs';
 
 export const app = new Hono();
 
@@ -839,6 +840,14 @@ function authorizeRequest(action: string, body: Record<string, unknown>, role: U
     if (PLATFORM_SETTING_KEYS.includes(key)) {
       return { status: role ? 403 : 401, message: `"${key}" belongs to the platform owner: only the administrator and super_admin roles may read or change it.` };
     }
+  }
+
+  // The rows that hold a sending or payment credential are stored sealed, and only the server can seal.
+  // A plain-text secret written here would sit in the table readable, so it is refused and the caller is
+  // told which route stores it (the Supabase database refuses the same write in `rwp_sealed_setting_guard`).
+  if (action === 'setSystemSetting' && isSealedRowKey(str(body.key) ?? '')
+    && plaintextSecrets(str(body.key) ?? '', body.value).length > 0) {
+    return { status: 403, message: `"${str(body.key)}" holds credentials, which are stored sealed: save it from Settings → Integrations, which uses POST /api/integrations/row/save.` };
   }
 
   // System settings can hold secrets, so even reading one needs manage_options.

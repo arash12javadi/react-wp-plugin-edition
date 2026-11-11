@@ -51,14 +51,17 @@ import {
   testAiConnection,
 } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
+import { isSealedRowKey, openRow, sealRow, SealedRowError } from './sealedRows.mjs';
+import { settingsIo } from './gitDeploy/connection.mjs';
 
 const STATUS_PATH = '/api/integrations/status';
 const AI_TEST_PATH = '/api/integrations/ai/test';
 const EMAIL_TEST_PATH = '/api/integrations/email/test';
+const ROW_SAVE_PATH = '/api/integrations/row/save';
 
 /** The paths this module answers, so `server.mjs` can skip the call without repeating the list. */
 export const ownsIntegrationPath = (pathname) =>
-  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH;
+  pathname === STATUS_PATH || pathname === AI_TEST_PATH || pathname === EMAIL_TEST_PATH || pathname === ROW_SAVE_PATH;
 
 
 /**
@@ -69,14 +72,24 @@ export const ownsIntegrationPath = (pathname) =>
  */
 const loadHubSettings = async (reader) => {
   const rows = await readIntegrationRows(INTEGRATION_CONFIG_KEYS, reader);
+  // The email row is stored sealed. Presence needs no opening; a test or a send does, and a key that can no
+  // longer be opened is reported by the caller that needs it, not by the status read.
+  let emailRow = rows.settings[EMAIL_CONFIG_KEY];
+  let emailError = '';
+  try {
+    emailRow = openRow(EMAIL_CONFIG_KEY, emailRow);
+  } catch (error) {
+    emailError = error instanceof Error ? error.message : 'The saved email credentials could not be opened.';
+  }
   return {
+    emailError,
     // Presence only, for the two rows whose cards now live in a plugin: they say whether this
     // installation has ever published, and neither the token nor the hook is read out here at all.
     github: githubStatusFrom(rows.settings[GITHUB_CONFIG_KEY]),
     deploy: deployStatusFrom(rows.settings[DEPLOY_CONFIG_KEY]),
     ai: aiConfigFrom(rows.settings[AI_CONFIG_KEY]),
     media: mediaStorageConfigFrom(rows.settings[MEDIA_STORAGE_CONFIG_KEY]),
-    email: emailConfigFrom(rows.settings[EMAIL_CONFIG_KEY]),
+    email: emailConfigFrom(emailRow),
     credentials: { readable: rows.readable, source: rows.source, error: rows.error },
   };
 };
@@ -164,6 +177,7 @@ export async function handleIntegrationsRequest(options) {
     const permission = await authorize(options);
     if (!permission.ok) return json(permission.status || 403, { error: permission.error });
     const settings = await loadHubSettings(reader);
+    if (settings.emailError) return json(409, { error: settings.emailError });
     // Unlike the AI test this uses only what is stored: the message goes to a third party, so the
     // configuration behind it has to be the one the site will really use.
     const result = await sendTestEmail(settings.email, {
@@ -171,6 +185,40 @@ export async function handleIntegrationsRequest(options) {
       siteTitle: String(env.SITE_NAME || '').trim() || 'this site',
     });
     return json(result.ok ? 200 : 400, result.ok ? { message: result.message } : { error: result.error });
+  }
+
+  if (pathname === ROW_SAVE_PATH && method === 'POST') {
+    // The one write path for the rows that hold a sending or payment credential. The browser cannot seal
+    // (the key is server-only), so it posts the row here; the secret fields come back sealed, and the
+    // database refuses the plain-text ones (`rwp_sealed_setting_guard`). The caller's own session writes
+    // the row, so `manage_options` is enforced twice: here and by row level security.
+    const permission = await authorize(options);
+    if (!permission.ok) return json(permission.status || 403, { error: permission.error });
+    const key = String(body.key || '');
+    if (!isSealedRowKey(key)) return json(400, { error: `"${key}" is not a setting this route stores.` });
+    let sealed;
+    try {
+      sealed = sealRow(key, body.value, env);
+    } catch (error) {
+      if (error instanceof SealedRowError) return json(error.status, { error: error.message });
+      throw error;
+    }
+    try {
+      const io = settingsIo({
+        supabaseUrl: config.supabaseUrl,
+        supabaseKey: config.supabasePublishableKey,
+        accessToken: bearerToken(headers),
+        writeSetting: options.writeSetting,
+      });
+      await io.write(key, sealed);
+    } catch (error) {
+      const status = Number(error?.status) >= 400 ? Number(error.status) : 502;
+      if (status === 403) {
+        return json(403, { error: 'Your account cannot change this setting: it needs the manage_options capability. Nothing was saved.' });
+      }
+      return json(status, { error: error instanceof Error ? error.message : 'The setting could not be saved.' });
+    }
+    return json(200, { message: 'Saved.', value: sealed });
   }
 
   // The deploy hook is no longer tested from here: the hook, the GitHub credential and the template it

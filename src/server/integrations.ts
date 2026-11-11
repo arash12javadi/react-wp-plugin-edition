@@ -80,6 +80,7 @@ async function integrationAccess(): Promise<{
   config: Record<string, unknown>;
   env: Record<string, string | undefined>;
   readSetting?: (key: string) => Promise<unknown>;
+  writeSetting?: (key: string, value: unknown) => Promise<boolean>;
   authorize: (token: string) => Promise<{ ok: boolean; status?: number; error?: string }>;
 }> {
   const config = await getRuntimeConfig();
@@ -96,10 +97,21 @@ async function integrationAccess(): Promise<{
       }
     }
     : undefined;
+  const writeSetting = config.dbType !== 'supabase'
+    ? async (key: string, value: unknown) => {
+      const db = await createServerDbAdapter(config);
+      try {
+        return await db.setSystemSetting(key, value);
+      } finally {
+        await db.close().catch(() => undefined);
+      }
+    }
+    : undefined;
   return {
     config: config as unknown as Record<string, unknown>,
     env,
     readSetting,
+    writeSetting,
     authorize: authorizeSettingsManager,
   };
 }
@@ -132,6 +144,7 @@ async function handleRequest(c: Context): Promise<Response> {
     config: access.config,
     env: access.env,
     readSetting: access.readSetting,
+    writeSetting: access.writeSetting,
     authorize: access.authorize,
   });
 

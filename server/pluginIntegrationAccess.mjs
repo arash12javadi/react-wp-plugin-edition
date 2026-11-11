@@ -16,7 +16,9 @@
  * imports this policy as well. One declaration, both hosts, and the plugin authors' rule in
  * `plugins/README.md` § "Reading the site's settings".
  */
-import { DEPLOY_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY } from './integrationConfig.mjs';
+import {
+  DEPLOY_CONFIG_KEY, EMAIL_CONFIG_KEY, GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY,
+} from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
 
 /**
@@ -29,8 +31,20 @@ import { readIntegrationRows } from './integrationSettings.mjs';
  * plugin. A plugin absent from this map may read nothing, which is the answer for a plugin whose needs
  * are its own tables rather than this site's connections.
  */
+/**
+ * The rows a client-edition plugin owns, so its own card and its server route name them once. Each is a
+ * `system_settings` row (RLS: `manage_options`), so a visitor can never read a credential in it.
+ * The browser spells them again in `plugins/<id>/lib`; `tests/pluginMail.test.mjs` fails if they differ.
+ */
+export const SHOP_EMAIL_CONFIG_KEY = 'shop_email_config';
+export const SHOP_PAYMENTS_CONFIG_KEY = 'shop_payments_config';
+export const PAGE_BUILDER_EMAIL_CONFIG_KEY = 'page_builder_email_config';
+
 export const PLUGIN_INTEGRATION_KEYS = Object.freeze({
   'rwp-saas-installer': Object.freeze([SAAS_INSTALLER_CONFIG_KEY, GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY]),
+  // Own email row first, then the site's: the plugin's address wins, the site's is the fallback.
+  'rwp-shop': Object.freeze([SHOP_EMAIL_CONFIG_KEY, EMAIL_CONFIG_KEY, SHOP_PAYMENTS_CONFIG_KEY]),
+  'rwp-page-builder': Object.freeze([PAGE_BUILDER_EMAIL_CONFIG_KEY, EMAIL_CONFIG_KEY]),
 });
 
 /** The rows `pluginId` declared, or none. Never the whole table. */

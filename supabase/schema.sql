@@ -3117,4 +3117,51 @@ create policy "Platform settings belong to the platform owner"
   using (not public.rwp_platform_setting(setting_key) or public.current_user_role() in ('administrator', 'super_admin'))
   with check (not public.rwp_platform_setting(setting_key) or public.current_user_role() in ('administrator', 'super_admin'));
 
+-- Rows of `system_settings` that hold a sending or payment credential are stored sealed
+-- (`server/sealedRows.mjs`): only the server holds RWP_SECRET_BOX_KEY, so the browser saves them through
+-- POST /api/integrations/row/save. This trigger is the database's half: a plain-text secret in one of
+-- these rows is refused whoever writes it, so a leaked table, a backup or a role granted manage_options
+-- never meets a usable key. A value is acceptable when empty or when it starts with 'rwp-sealed:'.
+-- The key list is in step with SEALED_ROW_SECRETS (server/sealedRows.mjs); change both or neither.
+create or replace function public.rwp_sealed_setting_guard()
+returns trigger language plpgsql set search_path = public as $$
+declare
+  secret_paths text[];
+  doc jsonb;
+  path text;
+  secret text;
+begin
+  secret_paths := case new.setting_key
+    when 'email_config' then array['api_key', 'smtp.password']
+    when 'shop_email_config' then array['api_key', 'smtp.password']
+    when 'page_builder_email_config' then array['api_key', 'smtp.password']
+    when 'shop_payments_config' then array['stripe_secret_key', 'stripe_webhook_secret', 'paypal_client_secret']
+    else null
+  end;
+  if secret_paths is null then
+    return new;
+  end if;
+  begin
+    doc := new.setting_value::jsonb;
+  exception when others then
+    raise exception 'The "%" setting must be a JSON object.', new.setting_key using errcode = '22023';
+  end;
+  foreach path in array secret_paths loop
+    secret := doc #>> string_to_array(path, '.');
+    if secret is not null and btrim(secret) <> '' and secret not like 'rwp-sealed:%' then
+      raise exception 'The "%" setting holds credentials, which are stored sealed: save it from Settings -> Integrations (field %).', new.setting_key, path
+        using errcode = '42501';
+    end if;
+  end loop;
+  return new;
+end;
+$$;
+
+revoke execute on function public.rwp_sealed_setting_guard() from public, anon, authenticated;
+
+drop trigger if exists rwp_sealed_setting_guard on public.system_settings;
+create trigger rwp_sealed_setting_guard
+  before insert or update on public.system_settings
+  for each row execute function public.rwp_sealed_setting_guard();
+
 notify pgrst, 'reload schema';

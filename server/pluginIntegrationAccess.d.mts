@@ -8,6 +8,10 @@
 import type { IntegrationReadOptions, IntegrationRowsResult } from './integrationSettings.mjs';
 
 /** The rows each plugin declared, by plugin id. A plugin that is not listed may read nothing. */
+export const SHOP_EMAIL_CONFIG_KEY: string;
+export const SHOP_PAYMENTS_CONFIG_KEY: string;
+export const PAGE_BUILDER_EMAIL_CONFIG_KEY: string;
+
 export const PLUGIN_INTEGRATION_KEYS: Readonly<Record<string, readonly string[]>>;
 
 export function pluginIntegrationKeys(pluginId: string): readonly string[];

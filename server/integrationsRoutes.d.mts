@@ -26,6 +26,8 @@ export interface IntegrationRequestOptions {
   env?: Record<string, string | undefined>;
   /** A reader backed by the engine's own database adapter, where it has one. */
   readSetting?: (key: string) => Promise<unknown>;
+  /** Writes a setting through the engine's own adapter (every backend except Supabase). */
+  writeSetting?: (key: string, value: unknown) => Promise<boolean>;
   /** Checks the caller may spend a credential on a test; supplied by the engine. */
   authorize?: (token: string) => Promise<{ ok: boolean; status?: number; error?: string }>;
 }
