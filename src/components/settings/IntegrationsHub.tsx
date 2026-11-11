@@ -961,7 +961,7 @@ export function EmailConfigForm({ rowKey, testUrl, onChanged, saveLabel = 'Save 
                 type="button"
                 className={styles.secondary}
                 onClick={() => {
-                  void save(emailConfigFrom(null), 'Removed. This plugin now sends through the site's email settings.').then((ok) => { if (ok) { apiKey.keep(); smtpPassword.keep(); onChanged(); } });
+                  void save(emailConfigFrom(null), "Removed. This plugin now sends through the site’s email settings.").then((ok) => { if (ok) { apiKey.keep(); smtpPassword.keep(); onChanged(); } });
                 }}
                 disabled={busy || sending}
               >
