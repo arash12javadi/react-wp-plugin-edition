@@ -37,6 +37,7 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  commitsFor,
   latestCommitFor,
   ownerCommitView,
   readUpdatesConfig,
@@ -173,6 +174,18 @@ async function check(body, config, headers, readOptions, owner) {
   });
 }
 
+/** POST /api/admin/updates/commits { page?, perPage? } — one page of the owner's commits; the platform owner only. */
+async function commits(body, config, headers) {
+  if (!(await viewerCommitOwner(config, headers))) {
+    throw new UpdateError('Only the platform owner can read the commit list.', 403);
+  }
+  const answer = await commitsFor({ owner: true, perPage: body.perPage, page: body.page });
+  if (!answer) {
+    throw new UpdateError('GitHub did not return commits. Check OWNER_GITHUB_REPO and OWNER_GITHUB_TOKEN_FOR_COMMIT_READING.', 502);
+  }
+  return answer;
+}
+
 /** POST /api/admin/updates/releases { refresh? } */
 async function releases(body, config, headers, readOptions, owner) {
   if (!(await viewerMayPick(config, headers, owner))) {
@@ -229,6 +242,7 @@ export async function handleUpdateRequest({
   const owned = pathname === '/api/admin/updates'
     || pathname === '/api/admin/updates/check'
     || pathname === '/api/admin/updates/releases'
+    || pathname === '/api/admin/updates/commits'
     || pathname === '/api/admin/system/update'
     || pathname === '/api/admin/system/update-status';
   if (!owned) return null;
@@ -247,6 +261,9 @@ export async function handleUpdateRequest({
     const input = body && typeof body === 'object' ? body : {};
     if (pathname === '/api/admin/updates/check') {
       return { status: 200, body: await check(input, config, headers, readOptions, owner) };
+    }
+    if (pathname === '/api/admin/updates/commits') {
+      return { status: 200, body: await commits(input, config, headers) };
     }
     if (pathname === '/api/admin/updates/releases') {
       return { status: 200, body: await releases(input, config, headers, readOptions, owner) };

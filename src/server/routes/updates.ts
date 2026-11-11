@@ -48,6 +48,7 @@ import {
   describeGithubSource,
   describeUpdateConfig,
   installedPluginsFrom,
+  commitsFor,
   latestCommitFor,
   ownerCommitView,
   readUpdatesConfig,
@@ -204,6 +205,24 @@ async function check(c: Context): Promise<Response> {
   }
 }
 
+/** `POST /api/admin/updates/commits { page?, perPage? }` — one page of the owner's commits; the platform owner only. */
+async function commits(c: Context): Promise<Response> {
+  try {
+    const config = await prepare(c);
+    if (!(await viewerCommitOwner(config, c))) {
+      throw new UpdateError('Only the platform owner can read the commit list.', 403);
+    }
+    const body = await readJson(c);
+    const answer = await commitsFor({ owner: true, perPage: Number(body.perPage), page: Number(body.page) });
+    if (!answer) {
+      throw new UpdateError('GitHub did not return commits. Check OWNER_GITHUB_REPO and OWNER_GITHUB_TOKEN_FOR_COMMIT_READING.', 502);
+    }
+    return c.json(answer);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
 /** `POST /api/admin/updates/releases { refresh? }` — the five most recent stable releases. */
 async function releases(c: Context): Promise<Response> {
   try {
@@ -268,6 +287,7 @@ async function updateStatus(c: Context): Promise<Response> {
 updatesRouter.get('/updates', overview);
 updatesRouter.post('/updates/check', check);
 updatesRouter.post('/updates/releases', releases);
+updatesRouter.post('/updates/commits', commits);
 updatesRouter.post('/system/update', applyUpdate);
 updatesRouter.get('/system/update-status', updateStatus);
 
@@ -276,6 +296,6 @@ updatesRouter.get('/system/update-status', updateStatus);
  * handlers above so `GET`/`POST` still win. Without it the engine would leave the path unmatched and answer
  * Hono's own 404 — the same mistake answered two different ways depending on which host served it.
  */
-for (const path of ['/updates', '/updates/check', '/updates/releases', '/system/update', '/system/update-status']) {
+for (const path of ['/updates', '/updates/check', '/updates/releases', '/updates/commits', '/system/update', '/system/update-status']) {
   updatesRouter.all(path, (c) => c.json({ error: 'Method not allowed' }, 405));
 }

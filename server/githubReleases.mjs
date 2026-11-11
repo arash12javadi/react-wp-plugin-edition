@@ -320,6 +320,51 @@ export async function fetchLatestCommit({ repo, token = '', fetchImpl = fetch, o
   }
 }
 
+/** Clamps a page request: GitHub caps `per_page` at 100, and `page` is 0-based here (GitHub's is 1-based). */
+export const commitPageFrom = (perPage, page) => {
+  const size = Math.min(100, Math.max(1, Math.floor(Number(perPage)) || 10));
+  const index = Math.max(0, Math.min(1000, Math.floor(Number(page)) || 0));
+  return { perPage: size, page: index };
+};
+
+/**
+ * One page of commits on the default branch, newest first. Same contract as `fetchLatestCommit` (never
+ * throws; the token is never returned), but a failure answers `null` so the caller can tell it from an empty
+ * page. `hasMore` is true when the page came back full, so the next page may exist.
+ *
+ * @param {{ repo: string, token?: string, fetchImpl?: typeof fetch, origin?: string, perPage?: number, page?: number }} options
+ * @returns {Promise<{ commits: Array<{ sha: string, title: string, description: string, author: string, date: string, url: string }>, hasMore: boolean, page: number, perPage: number } | null>}
+ */
+export async function fetchCommits({ repo, token = '', fetchImpl = fetch, origin = GITHUB_API_ORIGIN, perPage = 10, page = 0 }) {
+  const target = repoFrom(repo);
+  if (!target) return null;
+  const name = `${target.owner}/${target.repo}`;
+  const size = commitPageFrom(perPage, page);
+  try {
+    const list = await githubList({
+      name,
+      url: `${trimmed(origin) || GITHUB_API_ORIGIN}/repos/${name}/commits?per_page=${size.perPage}&page=${size.page + 1}`,
+      token,
+      fetchImpl,
+    });
+    const commits = list.map((commit) => {
+      const message = String(commit?.commit?.message || '').replace(/\r\n?/g, '\n');
+      const [title, ...rest] = message.split('\n');
+      return {
+        sha: String(commit?.sha || ''),
+        title: title.trim(),
+        description: rest.join('\n').trim(),
+        author: String(commit?.commit?.author?.name || ''),
+        date: String(commit?.commit?.author?.date || ''),
+        url: String(commit?.html_url || ''),
+      };
+    });
+    return { commits, hasMore: commits.length >= size.perPage, page: size.page, perPage: size.perPage };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * `GET /repos/{owner}/{repo}/releases`, newest first, and `GET /repos/{owner}/{repo}/tags` when that list
  * has nothing that can be compared.

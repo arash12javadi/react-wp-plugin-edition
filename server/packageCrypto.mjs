@@ -22,7 +22,7 @@ import { base32Encode, generateLicenseKeyPair, verifyPayload } from './licenseCr
  * the pair `keygen-package` printed: with no key a site refuses to install anything automatically, which is
  * the safe direction. It is not a secret and is meant to be committed.
  */
-export const BUILT_IN_PACKAGE_PUBLIC_KEY = '';
+export const BUILT_IN_PACKAGE_PUBLIC_KEY = 'MCowBQYDK2VwAyEAt2eJbB2c4Ka80TrIREGb8hSVftnonJ1IOYVxHInWW3k=';
 
 export const PLUGIN_PACKAGE_PUBLIC_KEY_ENV = 'PLUGIN_PACKAGE_PUBLIC_KEY';
 export const PLUGIN_PACKAGE_PRIVATE_KEY_ENV = 'PLUGIN_PACKAGE_PRIVATE_KEY';

@@ -172,6 +172,20 @@ export function latestCommitFor(options?: {
   env?: Record<string, string | undefined>;
 }): Promise<{ sha: string; title: string; description: string; author: string; date: string; url: string } | null>;
 
+/** One page of the owner's commits (`page` 0-based, `perPage` 1–100); `null` for a non-owner, no repo, or a failure. */
+export function commitsFor(options?: {
+  owner?: boolean;
+  perPage?: number;
+  page?: number;
+  fetchImpl?: typeof fetch;
+  env?: Record<string, string | undefined>;
+}): Promise<{
+  commits: Array<{ sha: string; title: string; description: string; author: string; date: string; url: string }>;
+  hasMore: boolean;
+  page: number;
+  perPage: number;
+} | null>;
+
 /**
  * The repository a check may read directly: `updates_config.repository` when Settings → Updates names one,
  * else `RWP_RELEASE_REPO`/`GITHUB_REPO` and `RWP_RELEASE_TOKEN`/`GITHUB_TOKEN` from the environment, else

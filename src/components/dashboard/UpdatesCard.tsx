@@ -28,9 +28,9 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
-  applyUpdate, checkForUpdates, fetchUpdateRun, fetchUpdateRuns, fetchUpdatesOverview, installedAppVersion,
+  applyUpdate, checkForUpdates, fetchOwnerCommits, fetchUpdateRun, fetchUpdateRuns, fetchUpdatesOverview, installedAppVersion,
   isRunInFlight, readVersionState, recordVersionState, saveUpdateConfig, updateStatusFrom,
-  type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview, type VersionStateEntry,
+  type OwnerCommit, type SelfUpdateRun, type UpdateCheckAnswer, type UpdateConfigView, type UpdatesOverview, type VersionStateEntry,
 } from '../../lib/updateCenter';
 import { autoCheckIntervals, compareVersions, saveUpdateStatus, type AutoCheck, type UpdateStatus } from '../../lib/updates';
 import type { UserRole } from '../../lib/roles';
@@ -104,6 +104,9 @@ const stageOfStep = (step: string): UpdateStage => {
   if (['applying', 'preserving-plugins'].includes(step)) return 'committing';
   return 'deploying';
 };
+
+/** Commits shown per page in the owner's Latest commit panel; "Show more" loads the next page. */
+const COMMITS_PER_PAGE = 6;
 
 const message = (value: unknown, fallback: string) => (value instanceof Error && value.message ? value.message : fallback);
 
@@ -447,6 +450,28 @@ export default function UpdatesCard({ role, onStatus }: {
     return () => { cancelled = true; };
   }, [ownerView, check, publish]);
 
+  // Owner commit list: six per page, "Show more" appends the next page. Platform owner only; the route refuses anyone else.
+  const [commitList, setCommitList] = useState<OwnerCommit[]>([]);
+  const [commitPage, setCommitPage] = useState(0);
+  const [commitMore, setCommitMore] = useState(false);
+  const [commitLoading, setCommitLoading] = useState(false);
+  const [commitError, setCommitError] = useState('');
+  const loadCommits = useCallback(async (page: number) => {
+    setCommitLoading(true);
+    setCommitError('');
+    try {
+      const answer = await fetchOwnerCommits(page, COMMITS_PER_PAGE);
+      setCommitList((current) => (page === 0 ? answer.commits : [...current, ...answer.commits]));
+      setCommitPage(page);
+      setCommitMore(answer.hasMore);
+    } catch (commitFailure) {
+      setCommitError(message(commitFailure, 'The commits could not be read.'));
+    } finally {
+      setCommitLoading(false);
+    }
+  }, []);
+  useEffect(() => { if (ownerView) void loadCommits(0); }, [ownerView, loadCommits]);
+
   if (loading) {
     return (
       <section className={styles.panel} aria-busy="true">
@@ -470,7 +495,6 @@ export default function UpdatesCard({ role, onStatus }: {
   const cannotApply = isOwner && !gitDeploy && Boolean(support) && support!.supported === false && !overview?.can_self_update;
 
   if (ownerView) {
-    const commit = check?.latestCommit;
     return (
       <div className={styles.dashboard}>
         {error && <div className={styles.error} role="alert">{error}</div>}
@@ -485,25 +509,41 @@ export default function UpdatesCard({ role, onStatus }: {
         </section>
         <section className={styles.panel} aria-labelledby="owner-commit-heading">
           <h2 id="owner-commit-heading">Latest commit</h2>
-          {commit ? (
+          {commitError && <div className={styles.error} role="alert">{commitError}</div>}
+          {commitList.length > 0 ? (
             <>
-              <p className={styles.muted}>
-                {commit.sha ? <code>{commit.sha.slice(0, 7)}</code> : null}
-                {commit.author ? ` · ${commit.author}` : ''}
-                {commit.date ? ` · ${new Date(commit.date).toLocaleString()}` : ''}
-                {commit.url && (
-                  <> <a className={styles.versionLink} href={commit.url} target="_blank" rel="noreferrer">↗</a></>
-                )}
-              </p>
-              <h3>{commit.title}</h3>
-              {commit.description && (
-                <pre style={{ whiteSpace: 'pre-wrap', margin: 0, font: 'inherit' }}>{commit.description}</pre>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+                {commitList.map((commit) => (
+                  <article key={commit.sha || commit.title} aria-label="Commit">
+                    <p className={styles.muted}>
+                      {commit.sha ? <code>{commit.sha.slice(0, 7)}</code> : null}
+                      {commit.author ? ` · ${commit.author}` : ''}
+                      {commit.date ? ` · ${new Date(commit.date).toLocaleString()}` : ''}
+                      {commit.url && (
+                        <> <a className={styles.versionLink} href={commit.url} target="_blank" rel="noreferrer">↗</a></>
+                      )}
+                    </p>
+                    <h3>{commit.title}</h3>
+                    {commit.description && (
+                      <pre style={{ whiteSpace: 'pre-wrap', margin: 0, font: 'inherit' }}>{commit.description}</pre>
+                    )}
+                  </article>
+                ))}
+              </div>
+              {commitMore && (
+                <p>
+                  <button type="button" disabled={commitLoading} onClick={() => void loadCommits(commitPage + 1)}>
+                    {commitLoading ? 'Reading…' : 'Show more'}
+                  </button>
+                </p>
               )}
             </>
           ) : (
-            <p className={styles.muted}>
-              {check ? 'GitHub did not return a commit. Check OWNER_GITHUB_REPO and OWNER_GITHUB_TOKEN_FOR_COMMIT_READING.' : 'Reading…'}
-            </p>
+            !commitError && (
+              <p className={styles.muted}>
+                {commitLoading ? 'Reading…' : 'GitHub did not return a commit. Check OWNER_GITHUB_REPO and OWNER_GITHUB_TOKEN_FOR_COMMIT_READING.'}
+              </p>
+            )
           )}
         </section>
       </div>

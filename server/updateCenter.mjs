@@ -29,7 +29,7 @@
  */
 import { GITHUB_CONFIG_KEY, SAAS_INSTALLER_CONFIG_KEY, githubTokenFrom, saasInstallerConfigFrom } from './integrationConfig.mjs';
 import { readIntegrationRows } from './integrationSettings.mjs';
-import { fetchLatestCommit, repoFrom } from './githubReleases.mjs';
+import { fetchCommits, fetchLatestCommit, repoFrom } from './githubReleases.mjs';
 import {
   assertDowngradeConfirmed,
   describeRecentReleases,
@@ -428,6 +428,19 @@ export async function latestCommitFor({ owner = true, fetchImpl = fetch, env = p
   const repo = trimmed(env.OWNER_GITHUB_REPO);
   if (!owner || !repo) return null;
   return fetchLatestCommit({ repo, token: trimmed(env.OWNER_GITHUB_TOKEN_FOR_COMMIT_READING), fetchImpl });
+}
+
+/**
+ * One page of the owner's commits (`page` is 0-based, `perPage` is clamped to 1–100), read with the same
+ * variables and the same owner-only rule as `latestCommitFor`. `null` for a non-owner, an unset
+ * `OWNER_GITHUB_REPO`, or a repository that cannot be read; the token is never returned.
+ *
+ * @param {{ owner?: boolean, perPage?: number, page?: number, fetchImpl?: typeof fetch, env?: Record<string, string | undefined> }} [input]
+ */
+export async function commitsFor({ owner = true, perPage = 10, page = 0, fetchImpl = fetch, env = process.env } = {}) {
+  const repo = trimmed(env.OWNER_GITHUB_REPO);
+  if (!owner || !repo) return null;
+  return fetchCommits({ repo, token: trimmed(env.OWNER_GITHUB_TOKEN_FOR_COMMIT_READING), fetchImpl, perPage, page });
 }
 
 /**

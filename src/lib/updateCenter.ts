@@ -366,6 +366,34 @@ export const fetchRecentReleases = async (refresh = false): Promise<RecentReleas
   return body;
 };
 
+/** One commit of the owner's repository, as the owner-only Latest commit panel shows it. */
+export interface OwnerCommit {
+  sha: string;
+  title: string;
+  description: string;
+  author: string;
+  date: string;
+  url: string;
+}
+
+/** `POST /api/admin/updates/commits`: one page of commits. `page` is 0-based. */
+export interface OwnerCommitPage {
+  commits: OwnerCommit[];
+  hasMore: boolean;
+  page: number;
+  perPage: number;
+}
+
+/** `POST /api/admin/updates/commits` — one page of the owner's commits (platform owner only). */
+export const fetchOwnerCommits = async (page = 0, perPage = 10): Promise<OwnerCommitPage> => {
+  const { status, body } = await request<OwnerCommitPage & { error?: string }>('/api/admin/updates/commits', {
+    method: 'POST',
+    body: JSON.stringify({ page, perPage }),
+  });
+  if (status !== 200) throw refusalOf(status, body);
+  return body;
+};
+
 /**
  * `POST /api/admin/system/update` — applies one of the five listed releases, however this host can.
  *
