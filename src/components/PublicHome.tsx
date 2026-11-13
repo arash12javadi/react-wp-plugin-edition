@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { client } from '../lib/db';
+import { filterExcerpt, filterPosts, filterTitle } from '../lib/rwp-api/templateTags';
+import { rwp_set_queried_object } from '../lib/rwp-api/query';
 import { fetchProfile } from '../lib/profiles';
 import { getUserRole, type UserRole } from '../lib/roles';
 import { resolveExcerpt } from '../lib/excerpt';
@@ -158,7 +160,7 @@ export default function PublicHome({ onReconfigure }: { onReconfigure?: () => vo
               // Keep the default menu when an option contains invalid JSON.
             }
           }
-          setPosts(rwp.filters.apply('rwp_posts', (data || []) as Post[]));
+          setPosts(filterPosts((data || []) as Post[], { home: true }));
           setTotalPosts(count || 0);
         }
       } catch (loadError: unknown) {
@@ -169,6 +171,7 @@ export default function PublicHome({ onReconfigure }: { onReconfigure?: () => vo
     };
     void loadHome();
     rwp.actions.do('rwp_public_loaded');
+    rwp_set_queried_object({ kind: 'home' });
     return () => { mounted = false; };
     // startPage is read once: changing pages is a navigation, which remounts the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,7 +189,7 @@ export default function PublicHome({ onReconfigure }: { onReconfigure?: () => vo
         .order('created_at', { ascending: false })
         .range(from, from + settings.posts_per_page - 1);
       if (moreError) throw moreError;
-      setPosts((current) => [...current, ...rwp.filters.apply('rwp_posts', (data || []) as Post[])]);
+      setPosts((current) => [...current, ...filterPosts((data || []) as Post[], { home: true, paged: true })]);
       setPage((current) => current + 1);
     } catch (moreError: unknown) {
       setError(moreError instanceof Error ? moreError.message : 'More posts could not be loaded.');
@@ -238,8 +241,8 @@ export default function PublicHome({ onReconfigure }: { onReconfigure?: () => vo
               {visiblePosts.length ? visiblePosts.map((post) => (
                 <article className={`${styles.postCard} rwp-post-card`} key={post.id}>
                   {s.show_meta && appSettings.general.show_post_dates && <p className={styles.postMeta}>{formatDate(post.created_at)} · {post.status}</p>}
-                  <h3 className={appSettings.general.show_post_titles ? undefined : styles.srOnly}>{rwp.filters.apply('rwp_post_title', post.title, post)}</h3>
-                  {s.show_excerpt && <p>{rwp.filters.apply('rwp_post_excerpt', resolveExcerpt(post, excerptLength, settings.excerpt_unit), post)}</p>}
+                  <h3 className={appSettings.general.show_post_titles ? undefined : styles.srOnly}>{filterTitle(post.title, post)}</h3>
+                  {s.show_excerpt && <p>{filterExcerpt(resolveExcerpt(post, excerptLength, settings.excerpt_unit), post)}</p>}
                   <a href={`/${post.slug}`}>{String(s.read_more || 'Read More')} <span aria-hidden="true">→</span></a>
                   {post.id > 0 && (
                     <EngagementBar compact context="archive" targetType="page" targetId={post.id} placement="auto" showSave={false} showFollow={false} />

@@ -5,6 +5,8 @@ import { canAccessAdmin } from './roles';
 import { loadSettings, type SiteSettings } from './settings';
 import { endGovernedSession } from './session';
 import { rwp } from './rwp';
+import { applyFilters } from '../core/hooks';
+import { fireUserLogout } from './rwp-api/userEvents';
 
 /**
  * The account pages: sign in, register, lost password, profile and the visitors' dashboard.
@@ -98,13 +100,19 @@ export const loginHref = (returnTo = window.location.pathname) => `/login?redire
  */
 export const afterLoginUrl = async (userId: string, settings?: SiteSettings): Promise<string> => {
   const requested = requestedRedirect();
-  if (requested) return requested;
-  const configured = (settings || await loadSettings().catch(() => null))?.login_redirect.trim() || '';
-  if (configured && isSafeUrl(configured)) return configured;
-  // The grants were loaded while signed out, so load them again for the person who just signed in.
-  await loadCapabilityGrants().catch(() => undefined);
-  const profile = await fetchProfile(userId).catch(() => null);
-  return profile && canAccessAdmin(profile.role) ? '/admin' : '/dashboard';
+  const destination = await (async (): Promise<string> => {
+    if (requested) return requested;
+    const configured = (settings || await loadSettings().catch(() => null))?.login_redirect.trim() || '';
+    if (configured && isSafeUrl(configured)) return configured;
+    // The grants were loaded while signed out, so load them again for the person who just signed in.
+    await loadCapabilityGrants().catch(() => undefined);
+    const profile = await fetchProfile(userId).catch(() => null);
+    return profile && canAccessAdmin(profile.role) ? '/admin' : '/dashboard';
+  })();
+  // WordPress's login_redirect(redirect_to, requested_redirect_to, user). An answer that is not a
+  // same-site address is ignored: a filter must not be able to send people off the site after sign-in.
+  const filtered = applyFilters<string>('rwp_login_redirect', destination, requested || '', { id: userId });
+  return typeof filtered === 'string' && isSafeUrl(filtered) ? filtered : destination;
 };
 
 /** Signs out everywhere on the site and goes where Settings → Accounts says. */
@@ -113,8 +121,17 @@ export const signOutAndRedirect = async (settings?: SiteSettings) => {
   // Clears the governed session cookie as well as the Supabase session. Leaving it behind would
   // keep the page cache switched off for this browser long after the person signed out.
   await endGovernedSession();
+  // The id has to be read first: after signOut() there is no one left to ask.
+  const leaving = await client.auth.getUser().then(({ data }) => data.user?.id ?? null).catch(() => null);
   await client.auth.signOut();
   rwp.actions.do('rwp_user_logged_out');
+  fireUserLogout(leaving);
+  // WordPress's logout_redirect(redirect_to, requested_redirect_to, user); same-site answers only.
+  const filtered = applyFilters<string>('rwp_logout_redirect', target, '', { id: leaving });
+  if (typeof filtered === 'string' && filtered !== target && isSafeUrl(filtered)) {
+    window.location.href = filtered;
+    return;
+  }
   if (target && isSafeUrl(target)) window.location.href = target;
   else window.location.reload();
 };

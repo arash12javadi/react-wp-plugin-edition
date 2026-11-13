@@ -1,5 +1,6 @@
 import { describeDbError, client } from './db';
 import { rwp } from './rwp';
+import { fireBeforePostDelete, firePostDeleted, firePostSaved, firePostTrashChange, type PostRow } from './rwp-api/postEvents';
 
 /** Status values a row in public.pages can hold. 'trash' needs the 20260926 migration. */
 export type ContentStatus = 'draft' | 'published' | 'trash';
@@ -18,6 +19,8 @@ export const pageViewLink = (page: { slug: string; status?: string | null }) => 
 interface ContentRef {
   id: number;
   title?: string;
+  /** The status before the change; lets the transition hooks name the old one. */
+  status?: string | null;
   is_post?: boolean;
   is_site_template?: boolean;
 }
@@ -50,14 +53,20 @@ export async function setContentStatus(rows: ContentRef[], status: ContentStatus
     .select('id');
   if (error) throw new Error(explainContentError(error));
   const changed = ((data || []) as Array<{ id: number }>).map((row) => row.id);
-  rows.filter((row) => changed.includes(row.id))
-    .forEach((row) => rwp.actions.do(row.is_post ? 'rwp_post_updated' : 'rwp_page_updated', { ...row, status }));
+  rows.filter((row) => changed.includes(row.id)).forEach((row) => {
+    // The WordPress lifecycle: trash/untrash, status transition, save_post. `status` on a row may be
+    // missing (callers only need an id), in which case the transition is reported from 'draft'.
+    const previous = { ...row, status: row.status ?? 'draft' };
+    firePostTrashChange(previous, previous.status, status);
+    firePostSaved({ id: row.id, post: { ...previous, status }, previous, update: true });
+  });
   return { changed, blockedReason };
 }
 
 /** Permanently deletes several pages/posts. Returns the ids that were really deleted. */
 export async function deleteContent(rows: ContentRef[]): Promise<{ changed: number[]; blockedReason: string }> {
   if (!rows.length) return { changed: [], blockedReason };
+  fireBeforePostDelete(rows as unknown as PostRow[]);
   const { data, error } = await client
     .from('pages')
     .delete()
@@ -65,8 +74,8 @@ export async function deleteContent(rows: ContentRef[]): Promise<{ changed: numb
     .select('id');
   if (error) throw new Error(explainContentError(error));
   const changed = ((data || []) as Array<{ id: number }>).map((row) => row.id);
-  rows.filter((row) => changed.includes(row.id))
-    .forEach((row) => rwp.actions.do(row.is_post ? 'rwp_post_deleted' : 'rwp_page_deleted', row));
+  const deleted = rows.filter((row) => changed.includes(row.id));
+  firePostDeleted(deleted as unknown as PostRow[]);
   return { changed, blockedReason };
 }
 

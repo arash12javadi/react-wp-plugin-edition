@@ -6,6 +6,7 @@ import { afterLoginUrl, requestedRedirect, signOutAndRedirect } from '../../lib/
 import { openGovernedSession } from '../../lib/session';
 import { CaptchaNotice, useHumanCheck } from '../security/HumanCheck';
 import { rwp } from '../../lib/rwp';
+import { fireUserLogin, fireUserRegister } from '../../lib/rwp-api/userEvents';
 import styles from '../AuthPage.module.css';
 
 export type AuthMode = 'login' | 'register' | 'lost_password';
@@ -111,6 +112,7 @@ export default function AuthForm({
         // server.mjs has no such endpoint, and that must not stop anyone signing in.
         await openGovernedSession(remember);
         rwp.actions.do('rwp_user_logged_in', data.session.user);
+        fireUserLogin(data.session.user);
         await continueTo(data.session.user.id);
         return;
       }
@@ -143,6 +145,8 @@ export default function AuthForm({
         },
       });
       if (signUpError) throw new Error(signUpError.message);
+      // An existing address comes back as a user without identities when confirmation is on.
+      if (data.user && data.user.identities?.length !== 0) fireUserRegister(data.user);
 
       // Supabase returns a session only when email confirmation is disabled. Without this
       // branch the form would look like it had silently done nothing.

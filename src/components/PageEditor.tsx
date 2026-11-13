@@ -6,8 +6,10 @@ import { defaultExcerptLength, makeExcerpt } from '../lib/excerpt';
 import { loadSettings, type SiteSettings } from '../lib/settings';
 import { appSettingsMigration, useAppSettings } from '../lib/appSettings';
 import { rwp } from '../lib/rwp';
+import { applyFilters } from '../core/hooks';
 import { pageViewLink } from '../lib/contentBulk';
 import { purgePageCacheQuietly } from '../lib/security';
+import { filterPostData, firePostSaved, firePrePostUpdate, type PostRow } from '../lib/rwp-api/postEvents';
 import ClassicEditor from './ClassicEditor';
 import SeoPanel, { type SeoPanelProps } from './SeoPanel';
 import styles from './PostEditor.module.css';
@@ -22,6 +24,18 @@ interface PageEditorProps {
 
 const pageChromeMigration = 'supabase/schema.sql';
 
+/** A new item's starting values, through WordPress's default_title, default_content and default_excerpt filters. */
+const newContent = (isPost: boolean) => {
+  const post = { post_type: isPost ? 'post' : 'page' };
+  return {
+    ...empty,
+    is_post: isPost,
+    title: applyFilters<string>('rwp_default_title', '', post),
+    content: applyFilters<string>('rwp_default_content', '', post),
+    excerpt: applyFilters<string>('rwp_default_excerpt', '', post),
+  };
+};
+
 const slugify =(value: string) => value.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
 const empty = {
   title: '', slug: '', content: '', excerpt: '', status: 'draft', is_post: false,
@@ -34,7 +48,7 @@ const empty = {
 };
 
 export default function PageEditor({ page, initialIsPost = false, onSaved, onCancel, role }: PageEditorProps) {
-  const [form, setForm] = useState({ ...empty });
+  const [form, setForm] = useState(() => newContent(initialIsPost));
   const [categories, setCategories] = useState<Category[]>([]);
   const [slugTouched, setSlugTouched] = useState(Boolean(page));
   const [excerptLength, setExcerptLength] = useState(defaultExcerptLength);
@@ -68,7 +82,7 @@ export default function PageEditor({ page, initialIsPost = false, onSaved, onCan
       og_description: page.og_description || '', og_image: page.og_image || '',
       twitter_card: page.twitter_card || 'summary_large_image',
       meta_keywords: page.meta_keywords || '',
-    } : { ...empty, is_post: initialIsPost });
+    } : newContent(initialIsPost));
     setSlugTouched(Boolean(page));
     const supabase = client;
     void supabase.from('categories').select('*').order('name').then(({ data, error: queryError }) => {
@@ -108,9 +122,14 @@ export default function PageEditor({ page, initialIsPost = false, onSaved, onCan
         keywordColumn.meta_keywords = metaKeywords.trim() || null;
       }
       const payload = { ...fields, ...keywordColumn, ...chromeColumns, title, slug, content: form.content, excerpt: form.excerpt.trim(), category_id: form.is_post ? form.category_id || null : null, featured_category_id: form.featured_category_id || null, posts_limit: Math.max(1, Number(form.posts_limit) || 6), updated_at: new Date().toISOString(), author_id: userData.user.id };
+      // WordPress's wp_insert_post_data: plugins may adjust the row before it is written.
+      const writeData = filterPostData(payload, { id: page?.id ?? null, update: Boolean(page) });
+      if (page) firePrePostUpdate(page.id, writeData);
+      // .select('id'): the row id is needed for the save_post hooks, and an UPDATE that row level
+      // security skipped answers with no error and no rows.
       const result = page
-        ? await supabase.from('pages').update(payload).eq('id', page.id)
-        : await supabase.from('pages').insert(payload);
+        ? await supabase.from('pages').update(writeData).eq('id', page.id).select('id')
+        : await supabase.from('pages').insert(writeData).select('id');
       if (result.error) {
         if (result.error.message.includes('meta_keywords')) {
           throw new Error(`The pages table has no meta_keywords column yet, but meta keywords are enabled under Settings → SEO. Run ${appSettingsMigration} in the Supabase SQL Editor. (${result.error.message})`);
@@ -123,13 +142,21 @@ export default function PageEditor({ page, initialIsPost = false, onSaved, onCan
         }
         throw new Error(result.error.code === '23505' ? 'That slug is already in use.' : result.error.message);
       }
+      if (page && !((result.data as unknown[] | null)?.length)) {
+        throw new Error('Nothing was saved: the database skipped this row. Editing content written by someone else needs the edit_others_posts capability.');
+      }
       // The cached HTML for this page (and for the home page, which may list it) is now wrong.
       // Quiet on purpose: a stale cache entry that expires on its own is not a failed save.
       await purgePageCacheQuietly(['/', `/${slug}`, ...(page && page.slug !== slug ? [`/${page.slug}`] : [])]);
-      const action = page
-        ? (form.is_post ? 'rwp_post_updated' : 'rwp_page_updated')
-        : (form.is_post ? 'rwp_post_created' : 'rwp_page_created');
-      rwp.actions.do(action, { ...payload, id: page?.id, is_post: form.is_post });
+      const savedId = page?.id ?? (result.data as Array<{ id: number }> | null)?.[0]?.id;
+      if (savedId !== undefined) {
+        firePostSaved({
+          id: savedId,
+          post: { ...writeData, id: savedId, is_post: form.is_post } as PostRow,
+          previous: (page as unknown as PostRow | undefined) ?? null,
+          update: Boolean(page),
+        });
+      }
       onSaved();
     } catch (saveError: unknown) { setError(saveError instanceof Error ? saveError.message : 'Unable to save content.'); }
     finally { setLoading(false); }

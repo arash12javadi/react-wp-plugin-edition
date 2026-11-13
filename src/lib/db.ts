@@ -7,6 +7,7 @@
  * `DBAdapter` / `AuthAdapter` / `StorageAdapter`. The pre-universal names `getSupabaseClient` and
  * `tryGetSupabaseClient` are kept as aliases below, for plugins that still import them.
  */
+import { applyFilters, doAction, hasAction, hasFilter } from '../core/hooks';
 import { client, tryGetClient, resetClient as resetClientInstance, type AuthFacade, type Client, type Session, type User } from './client';
 import { getDbAdapter, resetDbAdapter as resetDbAdapterInstance, type DBAdapter } from './db/index';
 import { resetAuthAdapter } from './auth/index';
@@ -74,12 +75,58 @@ export const tryGetSupabaseClient = tryGetClient;
 
 export const getStorageAdapter = () => createStorageAdapter(getRuntimeConfig());
 
-// WordPress-style Options API
-export const getOption = async <T = string>(optionName: string, defaultValue: T | null = null): Promise<T | null> =>
-  getDbAdapter().getOption<T>(optionName, defaultValue);
+// WordPress-style Options API, with WordPress's option hooks around it.
 
-export const updateOption = async (optionName: string, optionValue: unknown): Promise<boolean> =>
-  getDbAdapter().setOption(optionName, optionValue);
+/** Returned by the adapter for an option that does not exist, so "missing" is not confused with null. */
+const MISSING_OPTION = Symbol('rwp-missing-option');
+
+/**
+ * Reads an option.
+ *   rwp_pre_option_{name}   (false, name, default)  return anything but false to skip the database
+ *   rwp_option_{name}       (value, name)           the value after it was read
+ */
+export const getOption = async <T = string>(optionName: string, defaultValue: T | null = null): Promise<T | null> => {
+  const pre = applyFilters<unknown>(`rwp_pre_option_${optionName}`, false, optionName, defaultValue);
+  if (pre !== false) return pre as T | null;
+  const value = await getDbAdapter().getOption<T>(optionName, defaultValue);
+  return applyFilters<T | null>(`rwp_option_${optionName}`, value, optionName);
+};
+
+/**
+ * Writes an option (creating it when it does not exist).
+ *   rwp_pre_update_option_{name} / rwp_pre_update_option   filters on the new value
+ *   rwp_add_option_{name}, rwp_add_option, rwp_added_option                    when it did not exist
+ *   rwp_update_option_{name}, rwp_update_option, rwp_updated_option            when it did
+ *
+ * The previous value is read only when something is listening, so a site without option hooks pays
+ * for no extra query.
+ */
+export const updateOption = async (optionName: string, optionValue: unknown): Promise<boolean> => {
+  const listening = hasFilter(`rwp_pre_update_option_${optionName}`) || hasFilter('rwp_pre_update_option')
+    || [`rwp_add_option_${optionName}`, 'rwp_add_option', 'rwp_added_option',
+      `rwp_update_option_${optionName}`, 'rwp_update_option', 'rwp_updated_option'].some((name) => hasAction(name));
+  if (!listening) return getDbAdapter().setOption(optionName, optionValue);
+
+  const previous = await getDbAdapter().getOption<unknown>(optionName, MISSING_OPTION as unknown);
+  const exists = previous !== MISSING_OPTION;
+  let value = optionValue;
+  if (exists) {
+    value = applyFilters(`rwp_pre_update_option_${optionName}`, value, previous, optionName);
+    value = applyFilters('rwp_pre_update_option', value, optionName, previous);
+  }
+  if (!exists) doAction('rwp_add_option', optionName, value);
+  const saved = await getDbAdapter().setOption(optionName, value);
+  if (!saved) return false;
+  if (!exists) {
+    doAction(`rwp_add_option_${optionName}`, optionName, value);
+    doAction('rwp_added_option', optionName, value);
+  } else if (JSON.stringify(previous) !== JSON.stringify(value)) {
+    doAction('rwp_update_option', optionName, previous, value);
+    doAction(`rwp_update_option_${optionName}`, previous, value, optionName);
+    doAction('rwp_updated_option', optionName, previous, value);
+  }
+  return true;
+};
 
 /**
  * The system-settings API: an administrator-only key-value store (`system_settings`) for

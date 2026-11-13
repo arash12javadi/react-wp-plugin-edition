@@ -16,12 +16,6 @@ export type RwpActionName =
   | 'rwp_public_loaded'
   | 'rwp_user_logged_in'
   | 'rwp_user_logged_out'
-  | 'rwp_post_created'
-  | 'rwp_post_updated'
-  | 'rwp_post_deleted'
-  | 'rwp_page_created'
-  | 'rwp_page_updated'
-  | 'rwp_page_deleted'
   | 'rwp_settings_saved'
   | 'rwp_menu_saved'
   | 'rwp_plugin_activated'
@@ -40,7 +34,7 @@ export type RwpFilterName =
   | 'rwp_page_content'
   | 'rwp_admin_navigation'
   /** (items, group) — the default pages a new site gets; see src/lib/defaultContent.ts. */
-  | 'rwp_default_content'
+  | 'rwp_default_site_content'
   /** (choices, key) — extra addresses offered for an account page, e.g. the shop's /my-account. */
   | 'rwp_account_page_choices';
 

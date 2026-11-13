@@ -13,6 +13,7 @@ import {
   listMediaFolders, mediaFoldersMigration, normalizeMediaFolder, renameMediaFolder,
 } from '../lib/mediaFolders';
 import FolderSidebar, { MEDIA_DRAG_TYPE, type FolderDeleteChoice, type FolderNode } from './media/FolderSidebar';
+import { fireAttachmentAdded, fireAttachmentDeleting, fireAttachmentUpdated, type MediaRow } from '../lib/rwp-api/mediaEvents';
 import styles from './MediaManager.module.css';
 
 type Tab = 'library' | 'upload' | 'url';
@@ -317,6 +318,7 @@ export default function MediaManager({ onSelect, onSelectMany, onClose, heading 
     const item = data as MediaItem;
     setItems((current) => [item, ...current]);
     setSelected(item);
+    fireAttachmentAdded(item as unknown as MediaRow);
     return item;
   };
 
@@ -543,9 +545,11 @@ export default function MediaManager({ onSelect, onSelectMany, onClose, heading 
     const next = { ...selected, ...changes };
     setSelected(next);
     setItems((current) => current.map((item) => (item.id === next.id ? next : item)));
-    const { error: updateError } = await client
-      .from('media').update(changes).eq('id', selected.id);
+    // .select('id'): a row that row level security skipped comes back missing, not as an error.
+    const { data: changed, error: updateError } = await client
+      .from('media').update(changes).eq('id', selected.id).select('id');
     if (updateError) setError(explainMediaError(updateError));
+    else if ((changed as unknown[] | null)?.length) fireAttachmentUpdated(next as unknown as MediaRow, selected as unknown as MediaRow);
   };
 
   /** Deletes the file at its provider. Returns why it failed, or null on success. */
@@ -593,6 +597,7 @@ export default function MediaManager({ onSelect, onSelectMany, onClose, heading 
         }
       }
 
+      fireAttachmentDeleting([selected as unknown as MediaRow]);
       const { error: deleteError } = await client.from('media').delete().eq('id', selected.id);
       if (deleteError) throw deleteError;
       setItems((current) => current.filter((item) => item.id !== selected.id));
@@ -653,6 +658,7 @@ export default function MediaManager({ onSelect, onSelectMany, onClose, heading 
 
       let deletedCount = 0;
       if (removable.length) {
+        fireAttachmentDeleting(removable as unknown as MediaRow[]);
         // .select() because row level security skips rows silently instead of raising an error.
         const { data, error: deleteError } = await client
           .from('media').delete().in('id', removable.map((item) => item.id)).select('id');

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { describeDbError, client } from './db';
+import { hasFilter } from '../core/hooks';
+import { rwp_check_filetype } from './rwp-api/site';
 import type { UserRole } from './roles';
 import { sanitizeTrackingHtml } from './scriptSanitizer.js';
 
@@ -326,6 +328,11 @@ export const checkUploadRules = async (
   if (allowance && !allowance.can_upload) {
     problems.push('your role does not have the upload_files capability');
     return problems;
+  }
+  // WordPress's upload_mimes: enforced only when a plugin filters the list, so a site without one
+  // keeps accepting what it always accepted.
+  if (hasFilter('rwp_upload_mimes') && !rwp_check_filetype(file.name).type) {
+    problems.push(`its file type (.${file.name.split('.').pop() || 'unknown'}) is not an allowed upload type`);
   }
   if (rules.max_upload_kb !== null && file.size > rules.max_upload_kb * 1024) {
     problems.push(`it is ${Math.ceil(file.size / 1024)} KB, over the ${rules.max_upload_kb} KB upload limit`);

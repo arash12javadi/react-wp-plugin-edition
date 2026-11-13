@@ -1,4 +1,5 @@
 import { client, updateOption, getSystemSetting, setSystemSetting } from './db';
+import { applyFilters } from '../core/hooks';
 import { purgePageCacheQuietly } from './security';
 import { defaultExcerptLength, type ExcerptUnit } from './excerpt';
 
@@ -248,7 +249,15 @@ export const placeholderTitle = 'React-WP';
 
 export const applyDocumentTitle = (siteTitle: string, screen?: string) => {
   const site = siteTitle.trim() || defaultSettings.site_title;
-  document.title = screen ? `${screen} ‹ ${site}` : site;
+  // WordPress's pre_get_document_title, document_title_parts and document_title_separator.
+  const pre = applyFilters<string>('rwp_pre_get_document_title', '');
+  if (pre) {
+    document.title = pre;
+    return;
+  }
+  const parts = applyFilters<{ title: string; site: string }>('rwp_document_title_parts', { title: screen || '', site });
+  const separator = applyFilters<string>('rwp_document_title_separator', '‹');
+  document.title = parts.title ? `${parts.title} ${separator} ${parts.site}` : parts.site;
 };
 
 export const applySiteIcon = (iconUrl: string) => {

@@ -4,6 +4,7 @@ import AdminToolbar from './AdminToolbar';
 import { ThemeChromeProvider, ThemeFooter, ThemeHeader, ThemePreviewBanner, useThemeDocument, type ThemeChrome } from './theme/ThemeLayoutRenderer';
 import { loadWidgetAreas } from '../lib/widgets';
 import { HookSlot } from '../core/HookSlot';
+import { firePublicViewEnd, firePublicViewStart, registerShutdownHook } from '../lib/rwp-api/lifecycle';
 import SiteTemplate from './SiteTemplate';
 import FloatingLoginButton from './floatingLogin/FloatingLoginButton';
 import { canAccessAdmin, type UserRole } from '../lib/roles';
@@ -64,6 +65,14 @@ export default function PublicLayout({
 
   useEffect(() => {
     loadWidgetAreas().then(setWidgets).catch(() => setWidgets({ sidebar: [], footer: [] }));
+  }, []);
+
+  // WordPress's template_redirect, enqueue_scripts, wp_head and wp_body_open before a public view,
+  // wp_footer after it (src/lib/rwp-api/lifecycle.ts).
+  useEffect(() => {
+    firePublicViewStart();
+    firePublicViewEnd();
+    registerShutdownHook();
   }, []);
 
   const chrome = useMemo<ThemeChrome>(() => ({

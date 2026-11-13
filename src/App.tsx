@@ -30,6 +30,7 @@ import { initThemePreview, loadTheme } from './lib/theme';
 import { applyThemeDocument } from './components/theme/ThemeLayoutRenderer';
 import { useAdminStatus } from './lib/adminStatus';
 import { rwp } from './lib/rwp';
+import { fireAdminHooks, fireBootHooks, fireLoadedHook, registerShutdownHook } from './lib/rwp-api/lifecycle';
 import { HookSlot } from './core/HookSlot';
 import { initI18n } from './lib/i18n';
 import { initDatabaseTranslations } from './lib/translations';
@@ -295,6 +296,8 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
 
   useEffect(() => {
     rwp.actions.do('rwp_admin_loaded');
+    fireAdminHooks();
+    registerShutdownHook();
     let mounted = true;
     supabase.auth.getSession()
       .then(async ({ data, error }) => {
@@ -541,12 +544,6 @@ export default function App() {
   }), []);
 
   useEffect(() => {
-    // Once only: `rwp_init` fires for every plugin that subscribes to it, and a retry must not
-    // register those twice.
-    if (!booted.current) {
-      booted.current = true;
-      rwp.actions.do('rwp_init');
-    }
     let mounted = true;
     setCheckingDatabase(true);
     setBootFailure(null);
@@ -578,6 +575,14 @@ export default function App() {
         // and for the signed-in person.
         loadCapabilityGrants().catch(() => undefined),
       ]);
+      // WordPress's boot order: plugins_loaded, after_setup_theme, init. It runs here, once the active
+      // plugins have registered (their `register()` is what adds their hooks), because a plugin ported
+      // from WordPress puts its setup in an init callback and an init that had already fired would
+      // never reach it. Once only: a retried boot must not run every plugin's setup twice.
+      if (!booted.current) {
+        booted.current = true;
+        fireBootHooks();
+      }
       // After the plugins, so their dictionaries and i18n filters are in place, and after the locale,
       // because these are the Settings → Translations strings for it. Text must not change from the
       // bundled wording to the edited one after the first paint.
@@ -613,6 +618,8 @@ export default function App() {
       if (!mounted) return;
       setRouting(publicRouting);
       setSupabase(client);
+      // WordPress's wp_loaded: everything is initialised and the first render is about to happen.
+      fireLoadedHook();
     };
 
     /**

@@ -4,6 +4,7 @@ import type { Post, PostInput } from '../lib/types';
 import { canManageAllPosts, canPublishPosts, type UserRole } from '../lib/roles';
 import styles from './PostEditor.module.css';
 import { rwp } from '../lib/rwp';
+import { filterPostData, firePostSaved, firePrePostUpdate, type PostRow } from '../lib/rwp-api/postEvents';
 
 interface PostEditorProps {
   post?: Post | null;
@@ -85,16 +86,26 @@ export default function PostEditor({ post, onSaved, onCancel, role }: PostEditor
       if (!canManageAllPosts(role) && post?.author_id !== userData.user.id) {
         throw new Error('You can only edit your own posts.');
       }
+      const writeData = filterPostData(payload, { id: post?.id ?? null, update: Boolean(post) });
+      if (post) firePrePostUpdate(post.id, writeData);
       const result = post
-        ? await supabase.from('posts').update(payload).eq('id', post.id)
-        : await supabase.from('posts').insert({ ...payload, author_id: userData.user.id });
+        ? await supabase.from('posts').update(writeData).eq('id', post.id).select('id')
+        : await supabase.from('posts').insert({ ...writeData, author_id: userData.user.id }).select('id');
       if (result.error) {
         if (result.error.code === '23505') {
           throw new Error('That slug is already in use. Choose a different one.');
         }
         throw result.error;
       }
-      rwp.actions.do(post ? 'rwp_post_updated' : 'rwp_post_created', { ...payload, id: post?.id });
+      const savedId = post?.id ?? (result.data as Array<{ id: number }> | null)?.[0]?.id;
+      if (savedId !== undefined) {
+        firePostSaved({
+          id: savedId,
+          post: { ...writeData, id: savedId, is_post: true } as PostRow,
+          previous: post ? ({ ...post, is_post: true } as unknown as PostRow) : null,
+          update: Boolean(post),
+        });
+      }
       onSaved();
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : 'Unable to save this post.');

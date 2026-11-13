@@ -7,6 +7,7 @@ import {
 import { useTheme, type ThemeBlock } from '../lib/theme';
 import { useTranslation } from '../context/I18nContext';
 import { HookSlot } from '../core/HookSlot';
+import { fireCommentInserted, filterCommentData } from '../lib/rwp-api/commentEvents';
 import ContentRenderer from './ContentRenderer';
 import { useHumanCheck } from './security/HumanCheck';
 import { BlockFrame } from './theme/ThemeLayoutRenderer';
@@ -187,7 +188,8 @@ export default function CommentSection({ pageId, commentsOpen, moderated, maxDep
     setError('');
     setNotice('');
     try {
-      const { error: insertError } = await client.from('comments').insert({
+      // WordPress's preprocess_comment: a plugin may adjust or annotate the comment before storage.
+      const row = filterCommentData({
         page_id: pageId,
         parent_id: parentId,
         author_id: userId,
@@ -197,7 +199,12 @@ export default function CommentSection({ pageId, commentsOpen, moderated, maxDep
         content,
         status: moderated ? 'pending' : 'approved',
       });
+      // .select('id'): the id is what the comment_post hooks are given. A visitor who cannot read
+      // the row back (a pending comment, say) gets no id, and then no hook rather than a wrong one.
+      const { data: inserted, error: insertError } = await client.from('comments').insert(row).select('id');
       if (insertError) throw insertError;
+      const newId = (inserted as Array<{ id: number }> | null)?.[0]?.id;
+      if (newId !== undefined) fireCommentInserted({ ...row, id: newId });
       setReplyingTo(null);
       setNotice(moderated ? 'Thanks — your comment is awaiting approval.' : 'Comment posted.');
       await load();

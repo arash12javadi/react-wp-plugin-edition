@@ -3,6 +3,7 @@ import { client, updateOption } from '../lib/db';
 import type { Page } from '../lib/types';
 import styles from './MenuManager.module.css';
 import { rwp } from '../lib/rwp';
+import { doAction } from '../core/hooks';
 import { hasProfilePlaceholder, menuPlaceholders, type DynamicMenuLink, type LoggedOutRule, type MenuItemRules } from '../lib/dynamicMenu';
 
 interface MenuItem extends MenuItemRules {
@@ -109,6 +110,8 @@ export default function MenuManager() {
     setActiveId(menu.id);
     setName('');
     rwp.actions.do('rwp_menu_saved', menu);
+    // WordPress's wp_create_nav_menu(menu_id, menu_data).
+    doAction('rwp_create_nav_menu', menu.id, { menu_name: menu.name, location: menu.location });
   };
 
   const updateActiveItems = (items: MenuItem[]) => {
@@ -152,6 +155,8 @@ export default function MenuManager() {
       }
       setFeedback('Menu saved successfully.');
       rwp.actions.do('rwp_menu_saved', activeMenu);
+      // WordPress's wp_update_nav_menu(menu_id, menu_data).
+      doAction('rwp_update_nav_menu', activeMenu.id, { menu_name: activeMenu.name, location: activeMenu.location });
     } catch (saveError: unknown) {
       setError(saveError instanceof Error ? saveError.message : 'Unable to save menu.');
     } finally {

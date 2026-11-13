@@ -4,6 +4,7 @@ import { resolveExcerpt } from '../lib/excerpt';
 import type { RwpArchive } from '../lib/rwp';
 import { applyDocumentTitle, loadSettings } from '../lib/settings';
 import { translateTerm } from '../lib/translations';
+import { rwp_set_queried_object } from '../lib/rwp-api/query';
 import { useTranslation } from '../context/I18nContext';
 import PublicChrome from './PublicChrome';
 import SiteTemplate from './SiteTemplate';
@@ -48,6 +49,10 @@ function DefaultArchive({ archive }: { archive: RwpArchive }) {
   useEffect(() => {
     let active = true;
     const archive = JSON.parse(archiveKey) as RwpArchive;
+    // What is on screen, for rwp_is_search() / rwp_is_category() / rwp_is_archive().
+    rwp_set_queried_object(archive.kind === 'search'
+      ? { kind: 'search', search: archive.term }
+      : { kind: 'archive', taxonomy: archive.kind === 'category' ? 'category' : archive.kind, term: archive.kind === 'category' ? archive.slug : undefined });
     const load = async () => {
       const supabase = client;
       const settings = await loadSettings();

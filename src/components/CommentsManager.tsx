@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { client } from '../lib/db';
 import { explainCommentError, fetchAllComments, type CommentWithAuthor } from '../lib/comments';
+import {
+  fireCommentsDeleted, fireCommentsDeleting, fireCommentStatusChanged, type CommentRow,
+} from '../lib/rwp-api/commentEvents';
 import styles from './CommentsManager.module.css';
 
 const filters: Array<[string, string]> = [
@@ -41,11 +44,15 @@ export default function CommentsManager() {
     setBusy(true);
     setError('');
     setFeedback('');
-    const { error: updateError } = await client
-      .from('comments').update({ status: next }).in('id', targets);
+    // .select('id'): rows row level security skipped come back missing, not as an error.
+    const { data, error: updateError } = await client
+      .from('comments').update({ status: next }).in('id', targets).select('id');
     if (updateError) setError(explainCommentError(updateError));
     else {
-      setFeedback(`${targets.length} comment${targets.length === 1 ? '' : 's'} marked ${next}.`);
+      const changedIds = new Set(((data || []) as Array<{ id: number }>).map((row) => row.id));
+      const changed = comments.filter((comment) => changedIds.has(comment.id));
+      fireCommentStatusChanged(changed as unknown as CommentRow[], next, new Map(changed.map((comment) => [comment.id, comment.status])));
+      setFeedback(`${changedIds.size} comment${changedIds.size === 1 ? '' : 's'} marked ${next}.`);
       await load();
     }
     setBusy(false);
@@ -55,9 +62,13 @@ export default function CommentsManager() {
     if (targets.length === 0) return;
     if (!window.confirm(`Delete ${targets.length} comment${targets.length === 1 ? '' : 's'} and any replies?`)) return;
     setBusy(true);
-    const { error: deleteError } = await client.from('comments').delete().in('id', targets);
+    const doomed = comments.filter((comment) => targets.includes(comment.id)) as unknown as CommentRow[];
+    fireCommentsDeleting(doomed);
+    const { data, error: deleteError } = await client.from('comments').delete().in('id', targets).select('id');
     if (deleteError) setError(explainCommentError(deleteError));
     else {
+      const gone = new Set(((data || []) as Array<{ id: number }>).map((row) => row.id));
+      fireCommentsDeleted(doomed.filter((comment) => gone.has(comment.id)));
       setFeedback('Deleted.');
       await load();
     }

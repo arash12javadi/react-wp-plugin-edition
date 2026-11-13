@@ -98,7 +98,7 @@ export default function ContentRenderer({ html, className, applyContentFilters =
   const containerRef = useRef<HTMLDivElement>(null);
   // Filtered before sanitizing, never after: whatever a filter returns still has to survive
   // sanitizeHtml, or a plugin could smuggle a <script> into every page through this hook.
-  const filteredHtml = useApplyFilters<string>('the_content', html);
+  const filteredHtml = useApplyFilters<string>('rwp_the_content', html);
   const source = applyContentFilters ? filteredHtml : html;
   const { markup, nodes } = useMemo(() => buildMarkup(source), [source]);
   const [hosts, setHosts] = useState<HTMLElement[]>([]);

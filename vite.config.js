@@ -109,6 +109,11 @@ export default defineConfig({
             // CodeMirror upgrade would invalidate the vendor chunk they already have cached. Its own group
             // keeps it behind those two imports.
             { name: 'codemirror', test: /node_modules[\\/](@codemirror|@lezer|@uiw|crelt|style-mod|w3c-keyname)[\\/]/, priority: 20 },
+            // The TypeScript compiler (about 9 MB) is used by exactly one thing: the Plugin Check screen
+            // (plugins/rwp-plugin-check/lib/syntax.ts), through a dynamic import that runs only when an
+            // administrator checks a ZIP. In the catch-all below it would be shared with the entry chunk
+            // and every visitor would download it. Its own group keeps it behind that import.
+            { name: 'typescript', test: /node_modules[\\/]typescript[\\/]/, priority: 20 },
             // Catch-all for the rest of the third-party code, lowest priority so
             // the named groups above win. Keeps app code in the entry chunk.
             { name: 'vendor', test: /node_modules[\\/]/, priority: 1 },

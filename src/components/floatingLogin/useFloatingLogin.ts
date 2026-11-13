@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import type { User } from '../../lib/db';
 import { client, tryGetClient } from '../../lib/db';
 import { rwp } from '../../lib/rwp';
+import { fireUserLogin, fireUserRegister } from '../../lib/rwp-api/userEvents';
 import {
   defaultSocialProviders, getFloatingLoginState, loadFloatingLoginSettings, redirectTarget, subscribeFloatingLogin,
   type FloatingLoginProvider, type FloatingLoginSettings,
@@ -153,6 +154,7 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
     if (error) throw error;
     if (!data.session) throw new Error('Supabase accepted the password but returned no session.');
     rwp.actions.do('rwp_user_logged_in', data.session.user);
+    fireUserLogin(data.session.user);
     finish('You are signed in.');
   });
 
@@ -184,6 +186,7 @@ export function useFloatingLogin({ preview = false, settings: draft }: UseFloati
       },
     });
     if (error) throw error;
+    if (data.user && data.user.identities?.length !== 0) fireUserRegister(data.user);
     if (data.session) {
       finish('Your account is ready and you are signed in.');
       return;

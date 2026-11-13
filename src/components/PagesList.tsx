@@ -6,6 +6,7 @@ import { canManageAllPosts, canPublishPosts, type UserRole } from '../lib/roles'
 import { rwp } from '../lib/rwp';
 import { deleteContent, explainContentError, plural, setContentStatus, type ContentStatus } from '../lib/contentBulk';
 import { purgePageCacheQuietly } from '../lib/security';
+import { firePostSaved, type PostRow } from '../lib/rwp-api/postEvents';
 import {
   BulkBar, BulkInline, RowCheckbox, SelectAllCheckbox, describeBulkResult, useBulkSelection, type BulkAction,
 } from './BulkActions';
@@ -81,13 +82,19 @@ export default function PagesList({ onCreate, onEdit, role }: { onCreate: (isPos
   const toggle = async (page: PageRow) => {
     const next = page.status === 'published' ? 'draft' : 'published';
     if (next === 'published' && !canPublish) return;
-    const { error: updateError } = await client.from('pages').update({ status: next, updated_at: new Date().toISOString() }).eq('id', page.id);
-    if (updateError) setError(explainContentError(updateError));
-    else {
+    try {
+      // setContentStatus confirms the rows the database really changed (RLS skips silently) and
+      // fires WordPress's transition, post_updated and save_post hooks.
+      const result = await setContentStatus([page], next);
+      if (!result.changed.length) {
+        setError(`The status was not changed: ${result.blockedReason}`);
+        return;
+      }
       // Publishing or unpublishing changes both the page itself and any list that includes it.
       await purgePageCacheQuietly();
-      rwp.actions.do('rwp_post_updated', { ...page, status: next });
       void load();
+    } catch (toggleError: unknown) {
+      setError(toggleError instanceof Error ? toggleError.message : explainContentError(toggleError));
     }
   };
 
@@ -168,8 +175,9 @@ export default function PagesList({ onCreate, onEdit, role }: { onCreate: (isPos
       if (changed < rows.length) {
         setError(`${plural(rows.length - changed, 'item')} not changed: row level security skipped ${rows.length - changed === 1 ? 'it' : 'them'}. Changing someone else's content needs the edit_others_posts capability.`);
       }
-      rows.filter((row) => data?.some((item) => item.id === row.id))
-        .forEach((row) => rwp.actions.do(changes.is_post ? 'rwp_post_updated' : 'rwp_page_updated', { ...row, ...changes }));
+      rows.filter((row) => data?.some((item) => item.id === row.id)).forEach((row) => {
+        firePostSaved({ id: row.id, post: { ...row, ...changes }, previous: row as unknown as PostRow, update: true });
+      });
       selection.clear();
       await load();
     } catch (updateError: unknown) {

@@ -7,6 +7,7 @@ import {
 import { canUploadMedia, roleLabels, type UserRole } from '../lib/roles';
 import MediaManager from './MediaManager';
 import HookSlot from '../core/HookSlot';
+import { doAction } from '../core/hooks';
 import styles from './ProfileManager.module.css';
 
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
@@ -114,6 +115,8 @@ export default function ProfileManager({ role, embedded = false }: { role: UserR
         setProfile(data[0] as Profile);
       }
       setFeedback('Profile saved.');
+      // WordPress's profile_update(user_id, old_user_data, userdata).
+      doAction('rwp_profile_update', id, profile, changes);
     } catch (saveError: unknown) {
       const message = describeDbError(saveError);
       setError(/column .*(bio|avatar_url)|schema cache/i.test(message)

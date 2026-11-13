@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { client } from '../lib/db';
+import { filterExcerpt, filterTitle } from '../lib/rwp-api/templateTags';
+import { rwp_set_queried_object } from '../lib/rwp-api/query';
 import type { Page } from '../lib/types';
 import { fetchProfile } from '../lib/profiles';
 import { canManageAllPosts, getUserRole, type UserRole } from '../lib/roles';
@@ -115,6 +117,14 @@ export default function PublicContent({ slug, pageId, onReconfigure, fallback }:
   // Counted for every published page, whichever renderer draws it (classic, builder, template).
   useRecordView('page', page?.id, Boolean(page && page.status === 'published' && !previewing));
 
+  // What is on screen, for WordPress's conditional tags (rwp_is_single(), rwp_is_page(), rwp_is_404()).
+  useEffect(() => {
+    if (loading) return;
+    rwp_set_queried_object(page
+      ? { kind: page.is_post ? 'single' : 'page', post: { ID: page.id, id: page.id, post_name: page.slug, post_title: page.title, post_type: page.is_post ? 'post' : 'page' } }
+      : { kind: '404' });
+  }, [loading, page]);
+
   const canEdit = canManageAllPosts(role) || Boolean(page?.author_id && page.author_id === userId);
   const containerClass = page?.layout === 'full'
     ? styles.containerFull
@@ -148,8 +158,8 @@ export default function PublicContent({ slug, pageId, onReconfigure, fallback }:
         )}
       </p>
       {/* A hidden title stays in the document for screen readers and the page outline. */}
-      <h1 id="content-heading" className={showTitle ? undefined : styles.srOnly}>{rwp.filters.apply('rwp_post_title', page.title, page)}</h1>
-      {page.excerpt && <p>{rwp.filters.apply('rwp_post_excerpt', resolveExcerpt(page, excerptLength, settings.excerpt_unit), page)}</p>}
+      <h1 id="content-heading" className={showTitle ? undefined : styles.srOnly}>{filterTitle(page.title, page)}</h1>
+      {page.excerpt && <p>{filterExcerpt(resolveExcerpt(page, excerptLength, settings.excerpt_unit), page)}</p>}
       <ContentRenderer
         className={styles.content}
         html={rwp.filters.apply('rwp_page_content', page.content, page)}

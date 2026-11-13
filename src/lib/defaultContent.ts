@@ -13,7 +13,7 @@ import { rwp } from './rwp';
  *   account  Log In, Register, Lost Password, User Profile and Dashboard, each holding one
  *            shortcode, and chosen under Settings → Accounts / Site.
  *
- * Plugins change the items with the `rwp_default_content` filter, (items, group) → items; the
+ * Plugins change the items with the `rwp_default_site_content` filter, (items, group) → items; the
  * Page Builder uses it to give Home and Blog a layout and to add the site templates.
  */
 
@@ -67,7 +67,7 @@ export const accountPageItems = (): DefaultContentItem[] => accountPages.map((pa
 }));
 
 const itemsFor = (group: DefaultContentGroup) => rwp.filters.apply<DefaultContentItem[]>(
-  'rwp_default_content', group === 'site' ? siteItems() : accountPageItems(), group,
+  'rwp_default_site_content', group === 'site' ? siteItems() : accountPageItems(), group,
 );
 
 let running: Promise<void> | null = null;

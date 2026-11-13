@@ -16,11 +16,16 @@
     "check:updates": "node scripts/checkUpdateEngine.mjs",
     "check:release": "node scripts/checkRelease.mjs",
     "plugin:release": "node scripts/publishPluginRelease.mjs",
-    "test": "node --test \"tests/*.test.mjs\"",
+    "check:hooks": "node scripts/wpParity/check.mjs",
+    "wp:extract": "node scripts/wpParity/extract.mjs",
+    "wp:build": "node scripts/wpParity/build.mjs",
+    "wp:docs": "node scripts/wpParity/docs.mjs && node scripts/wpParity/pluginCheckData.mjs",
+    "test": "node --import ./tests/helpers/registerTs.mjs --test \"tests/*.test.mjs\"",
     "install:worker": "node scripts/rwpBuildWorker.mjs",
     "verify:install": "node scripts/verifyPluginInstall.mjs",
     "db:plugin-schema": "node scripts/installPluginSchema.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:parity": "tsc --noEmit -p tsconfig.parity.json",
     "preview": "vite preview"
   },
   "dependencies": {

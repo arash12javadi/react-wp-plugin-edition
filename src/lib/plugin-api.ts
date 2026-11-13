@@ -42,6 +42,10 @@ export {
   type SlotName,
 } from '../core/hooks';
 
+// WordPress's own names with the rwp_ prefix: rwp_add_action, rwp_get_option, rwp_insert_post,
+// rwp_esc_html, rwp_enqueue_script ... See docs/wordpress-parity.
+export * from './rwp-api';
+
 // Layout zones and the React bindings.
 export {
   HookSlot, addSlotContent, useApplyFilters, useDoAction, useAction, useFilter, useHooks,

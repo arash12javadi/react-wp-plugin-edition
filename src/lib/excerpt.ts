@@ -1,3 +1,5 @@
+import { applyFilters } from '../core/hooks';
+
 /**
  * DOMParser documents are inert. Assigning to innerHTML on a createElement('div') is not:
  * the browser starts loading <img> elements immediately, so <img src=x onerror=...> in post
@@ -16,17 +18,20 @@ export type ExcerptUnit = 'words' | 'characters';
  * Plain-text excerpt of at most `length` words or characters. Slicing raw HTML instead would
  * cut mid-tag. A character excerpt backs off to the last whole word when there is one.
  */
-export const makeExcerpt = (html: string, length: number = defaultExcerptLength, unit: ExcerptUnit = 'words'): string => {
+export const makeExcerpt = (html: string, requestedLength: number = defaultExcerptLength, unit: ExcerptUnit = 'words'): string => {
   const text = stripHtml(html);
   if (!text) return '';
+  // WordPress's excerpt_length and excerpt_more filters.
+  const length = applyFilters<number>('rwp_excerpt_length', requestedLength);
+  const more = applyFilters<string>('rwp_excerpt_more', '…');
   if (unit === 'characters') {
     if (text.length <= length) return text;
     const cut = text.slice(0, length);
     const lastSpace = cut.lastIndexOf(' ');
-    return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:.–—-]+$/, '')}…`;
+    return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:.–—-]+$/, '')}${more}`;
   }
   const parts = text.split(' ');
-  return parts.length <= length ? text : `${parts.slice(0, length).join(' ')}…`;
+  return parts.length <= length ? text : `${parts.slice(0, length).join(' ')}${more}`;
 };
 
 export const resolveExcerpt = (
