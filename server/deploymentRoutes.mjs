@@ -50,6 +50,7 @@ import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/c
 import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
 import { readBranch } from './pluginGitPush.mjs';
 import { applyPluginUpdate, checkPluginUpdates } from './pluginUpdates.mjs';
+import { catalogueFrom } from './catalogueUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
 const PATHS = new Set([
@@ -242,7 +243,7 @@ export async function handleDeploymentRequest(options) {
     // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
     if (pathname === `${PREFIX}/plugin-updates/check`) {
-      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl });
+      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env) });
       return ok(200, answer);
     }
     if (pathname === `${PREFIX}/plugin-updates/apply`) {
@@ -254,6 +255,7 @@ export async function handleDeploymentRequest(options) {
         coreVersion: await installedVersion(),
         channel: 'stable',
         fetchImpl,
+        catalogue: catalogueFrom(env),
       });
       return ok(200, { result, deployment: result.deployment });
     }

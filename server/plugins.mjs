@@ -55,6 +55,7 @@ const loaded = await Promise.allSettled([
   import('../plugins/rwp-page-builder/server.mjs'),
   import('../plugins/rwp-shop/server.mjs'),
   import('../plugins/rwp-plugin-marketplace/server.mjs'),
+  import('../plugins/rwp-developers/server.mjs'),
   import('../plugins/rwp-owner-vault/server.mjs'),
   // rwp:server-plugin-imports:end
 ]);

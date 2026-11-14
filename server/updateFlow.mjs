@@ -20,6 +20,7 @@
 import { UpdateError, applyDeployHookUpdate, checkForUpdates, describeGithubSource, describeUpdateConfig, resolveUpdateTarget, toUpdateError, updatePlan } from './updateCenter.mjs';
 import { describeRecentReleases, listRecentReleases, releaseSourceFrom } from './releaseList.mjs';
 import { latestFreePluginReleases } from './pluginUpdates.mjs';
+import { catalogueFrom } from './catalogueUpdates.mjs';
 import { startSelfUpdate } from './selfUpdate.mjs';
 
 const NOT_OWNER = 'Only the site owner (the Administrator account) can apply an update. Ask them to open Dashboard → Updates.';
@@ -51,7 +52,9 @@ const releasesFor = (list, installed, owner) => {
 export async function checkResponse({ stored, installed, plugins, owner, fetchImpl, latestCommit = null }) {
   // New versions of free plugins are reported beside the core answer, from the same release repository. They
   // never decide the core update (`updateAvailable`) and never fail the check.
-  const pluginReleases = await latestFreePluginReleases({ source: stored.github || releaseSourceFrom({}), fetchImpl });
+  const pluginReleases = await latestFreePluginReleases({
+    source: stored.github || releaseSourceFrom({}), fetchImpl, ids: (plugins || []).map((plugin) => plugin.id), catalogue: catalogueFrom(),
+  });
   const { releases, ...rest } = await checkForUpdates({ current: { app: installed, site: '' }, plugins, github: stored.github, fetchImpl, pluginReleases });
   return { ...rest, releases: owner ? releases : { ...releases, repository: '' }, ...viewOf(stored, owner), latestCommit };
 }

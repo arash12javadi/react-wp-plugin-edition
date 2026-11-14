@@ -30,6 +30,7 @@ import { InstallError, MAX_ZIP_BYTES, readManifest, unpack } from './pluginInsta
 import { isCommercialPlugin } from '../src/lib/pluginLicense.js';
 import { installPluginFromGit } from './pluginGitInstaller.mjs';
 import { readBranch, readTextFile } from './pluginGitPush.mjs';
+import { downloadCataloguePackage, fetchCatalogueReleases } from './catalogueUpdates.mjs';
 
 export const PLUGIN_TAG_PATTERN = /^([a-z0-9][a-z0-9-]{0,63})-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
 
@@ -115,15 +116,17 @@ export const clearPluginReleaseCache = () => releaseCache.clear();
  * release). It never throws: a GitHub outage or rate limit answers with the last good list, or none, because a
  * plugin notice must never make the core check fail.
  *
- * @param {{ source: { repo: string, token?: string }, fetchImpl?: typeof fetch, now?: number }} input
+ * With a `catalogue` and the installed plugin `ids`, the marketplace's offers are reported too (`releasesFromSources`).
+ *
+ * @param {{ source: { repo: string, token?: string }, fetchImpl?: typeof fetch, now?: number, ids?: string[], catalogue?: { origin: string } | null }} input
  * @returns {Promise<Record<string, { version: string, tag: string, title: string, released: string, notes: string[], changelog_url: string, critical: boolean }>>}
  */
-export async function latestFreePluginReleases({ source, fetchImpl = fetch, now = Date.now() }) {
-  const key = `${trimmed(source?.repo).toLowerCase()}|${trimmed(source?.token) ? 'auth' : 'anon'}`;
+export async function latestFreePluginReleases({ source, fetchImpl = fetch, now = Date.now(), ids = [], catalogue = null }) {
+  const key = `${trimmed(source?.repo).toLowerCase()}|${trimmed(source?.token) ? 'auth' : 'anon'}|${catalogue?.origin || ''}|${[...ids].sort().join(',')}`;
   const hit = releaseCache.get(key);
   if (hit && now - hit.at < RELEASE_CACHE_MS) return hit.value;
   try {
-    const listing = await fetchPluginReleases({ repo: source?.repo, token: source?.token, fetchImpl });
+    const listing = await releasesFromSources({ source, ids, fetchImpl, catalogue });
     const value = {};
     for (const [id, list] of listing.releases) {
       const latest = list[0];
@@ -244,12 +247,32 @@ export async function installedPluginVersions(target) {
   return rows.filter((row) => row && row.version);
 }
 
-/** The check: every installed plugin against the release repository. Writes nothing. */
-export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch }) {
-  const [installed, listing] = await Promise.all([
-    installedPluginVersions(target),
-    fetchPluginReleases({ repo: source?.repo, token: source?.token, channel, fetchImpl }),
+/**
+ * The release lists a check or an update works from: the release repository's, and, when a `catalogue` is given, the
+ * marketplace's offer for these plugin ids. For a plugin both know, the higher version wins and the catalogue wins a tie
+ * (it is the source whose packages were scanned and signed). A source that fails costs only its own part; when the release
+ * repository fails and the catalogue offers nothing either, the repository's error is the answer, as it always was.
+ */
+export async function releasesFromSources({ source, ids, channel = 'stable', fetchImpl = fetch, catalogue = null }) {
+  const [github, offered] = await Promise.all([
+    fetchPluginReleases({ repo: source?.repo, token: source?.token, channel, fetchImpl }).then((value) => ({ value }), (error) => ({ error })),
+    catalogue ? fetchCatalogueReleases({ catalogue, ids, fetchImpl }) : Promise.resolve(new Map()),
   ]);
+  if (github.error && !offered.size) throw github.error;
+  const releases = new Map(github.value ? github.value.releases : []);
+  for (const [id, list] of offered) {
+    const combined = [...list, ...(releases.get(id) || [])];
+    combined.sort((a, b) => compareVersions(b.version, a.version) || (a.asset?.kind === 'catalogue' ? -1 : 1));
+    releases.set(id, combined);
+  }
+  const from = github.value ? github.value.repo : (catalogue ? new URL(catalogue.origin).host : '');
+  return { repo: github.value && offered.size ? `${github.value.repo} + ${new URL(catalogue.origin).host}` : from, releases };
+}
+
+/** The check: every installed plugin against the release repository and, when given, the marketplace. Writes nothing. */
+export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch, catalogue = null }) {
+  const installed = await installedPluginVersions(target);
+  const listing = await releasesFromSources({ source, ids: installed.map((row) => row.id), channel, fetchImpl, catalogue });
   const names = new Map(installed.map((row) => [row.id, row.name]));
   return {
     repository: `${target.owner}/${target.repo}`,
@@ -262,7 +285,7 @@ export async function checkPluginUpdates({ target, source, channel = 'stable', f
  * Updates one installed plugin to one named release: a single commit under `plugins/<id>/`.
  * The caller has already required the platform owner and a connected Git deployment.
  */
-export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch }) {
+export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch, catalogue = null, publicKey }) {
   const pluginId = trimmed(id);
   const wanted = trimmed(version).replace(/^v/i, '');
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(pluginId)) throw new InstallError('A plugin id is required.', 400);
@@ -276,12 +299,14 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
   if (compareVersions(wanted, installed.version) <= 0) {
     throw new InstallError(`${pluginId} ${installed.version} is already installed; ${wanted} is not newer, and a plugin is never downgraded from here.`, 409);
   }
-  const listing = await fetchPluginReleases({ repo: source?.repo, token: source?.token, channel, fetchImpl });
+  const listing = await releasesFromSources({ source, ids: [pluginId], channel, fetchImpl, catalogue });
   const release = (listing.releases.get(pluginId) || []).find((item) => item.version === wanted);
   if (!release) throw new InstallError(`${listing.repo} has no published release ${pluginId}-v${wanted}.`, 404);
   if (!release.asset) throw new InstallError(`Release ${release.tag} has no ${pluginId}-${wanted}.zip asset to install.`, 409);
 
-  const zip = await downloadReleaseAsset({ asset: release.asset, token: source?.token, fetchImpl });
+  const zip = release.asset.kind === 'catalogue'
+    ? await downloadCataloguePackage({ release, catalogue, fetchImpl, publicKey })
+    : await downloadReleaseAsset({ asset: release.asset, token: source?.token, fetchImpl });
   assertPackageMatches({ zip, id: pluginId, version: wanted, coreVersion });
 
   const result = await installPluginFromGit({
@@ -292,5 +317,5 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
     expectedId: pluginId,
     gitDeploys: true,
   });
-  return { ...result, update: { id: pluginId, from: installed.version, to: wanted, tag: release.tag } };
+  return { ...result, update: { id: pluginId, from: installed.version, to: wanted, tag: release.tag, source: release.asset.kind === 'catalogue' ? 'marketplace' : 'github' } };
 }
