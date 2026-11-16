@@ -40,6 +40,7 @@ interface RemoteCatalogItem {
   category: string;
   integrity: string;
   author: string;
+  iconUrl: string;
   tags: string[];
   features: string[];
   docsUrl: string;
@@ -448,6 +449,7 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
             return (
               <li key={plugin.pluginId} className={styles.card}>
                 <div className={styles.cardTop}>
+                  {plugin.iconUrl ? <img className={styles.cardIcon} src={plugin.iconUrl} alt="" width={32} height={32} loading="lazy" referrerPolicy="no-referrer" /> : null}
                   <span className={styles.category}>{label(plugin.category)}</span>
                   {isMarketplaceListing(plugin) ? <span className={styles.listing}>Marketplace</span> : null}
                   {plugin.version ? <em className={styles.version}>v{plugin.version}</em> : null}

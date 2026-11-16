@@ -39,6 +39,7 @@ import { registerSchemaUpdateRoutes } from './schemaUpdate';
 import { supabaseSchemaSql } from './schemaText';
 import { registerAiAssistRoutes } from './aiAssist';
 import { applySchemaPrivileges } from '../../server/schemaPrivileges.mjs';
+import { recordCoreSchemaApplied } from '../../server/schemaMigrate.mjs';
 import { PLATFORM_SETTING_KEYS } from '../../server/integrationConfig.mjs';
 import { isSealedRowKey, plaintextSecrets } from '../../server/sealedRows.mjs';
 
@@ -461,12 +462,15 @@ async function installSupabase(
     if (lock.rows?.[0]?.installed === true) {
       return c.json({ error: 'This site is already installed. The installer is locked. To start over, use Settings → Advanced → Reset Website.' }, 409);
     }
-    await client.query(await supabaseSchemaSql());
+    const coreSchema = await supabaseSchemaSql();
+    await client.query(coreSchema);
     // Before the options seed, because a site whose `anon` role has no grant on `public.options`
     // installs "successfully" and then shows the Setup Wizard to every visitor (`permission denied
     // for table options`, SQLSTATE 42501). The grants also set the default privileges the plugin
     // schemas inherit, so a table added by the shop or the chat never reintroduces it.
     await applySchemaPrivileges(client);
+    // The installer just applied this exact schema: record it, so the first admin visit does not re-run it.
+    await recordCoreSchemaApplied(client, coreSchema).catch(() => false);
 
     // Persist the non-boot configuration to `system_settings` (this direct connection bypasses RLS),
     // so the wizard no longer has to emit RWP_STORAGE/S3_* environment variables.

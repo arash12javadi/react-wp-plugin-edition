@@ -40,6 +40,7 @@ import {
 } from './server/middleware/compression.mjs';
 import { describeDbError, projectRefFromUrl, resolveConnectionString, withClient } from './server/db.mjs';
 import { applySchemaPrivileges } from './server/schemaPrivileges.mjs';
+import { recordCoreSchemaApplied } from './server/schemaMigrate.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const root = path.resolve('dist');
@@ -222,6 +223,8 @@ const install = async (body) => {
     // install a working site. server/schemaPrivileges.mjs explains the failure it prevents — the
     // `permission denied for table options (42501)` that shows the Setup Wizard on a provisioned site.
     await applySchemaPrivileges(client);
+    // The installer just applied this exact schema: record it, so the first admin visit does not re-run it.
+    await recordCoreSchemaApplied(client, schema).catch(() => false);
     await client.query(
       `insert into public.options (option_name, option_value)
        values ($1, $2), ($3, $4), ($5, $6)

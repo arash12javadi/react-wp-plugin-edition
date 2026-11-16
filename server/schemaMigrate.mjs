@@ -242,6 +242,22 @@ const upsertState = (client, state) => client.query(
   [SCHEMA_STATE_KEY, JSON.stringify(state)],
 );
 
+/**
+ * Records that the core schema was just applied by the installer, so the first owner who opens the admin
+ * does not find it "pending" and re-run all of it. Without this record a fresh site re-applied the whole
+ * schema in one transaction on first admin visit, holding table locks that made every other request fail
+ * with a statement timeout. Returns false (and writes nothing) when the unit needs a human anyway.
+ */
+export async function recordCoreSchemaApplied(client, coreSql, now = () => new Date()) {
+  const unit = planUnit({ id: 'core', label: 'React-WP core', sql: coreSql, tail: SCHEMA_PRIVILEGES_SQL });
+  if (unit.refused.length) return false;
+  const state = await readState(client);
+  state.units = state.units || {};
+  state.units.core = { fingerprint: unit.fingerprint, status: 'ok', at: now().toISOString(), version: unit.version, statements: unit.statements.length };
+  await upsertState(client, state);
+  return true;
+}
+
 /** `undefined_table` (42P01) means a database that has not had the core schema yet: no state, not an error. */
 async function readState(client) {
   try {
@@ -342,7 +358,12 @@ export async function runSchemaUpdate({
             try {
               await client.query('begin');
               await client.query(`set local lock_timeout = '${UNIT_LOCK_TIMEOUT_MS}ms'`);
-              for (const statement of unit.statements) await client.query(statement);
+              // One round trip, not one per statement: the core schema is hundreds of statements, and from a
+              // serverless function a few hundred round trips to a remote database take longer than the
+              // function may run. The transaction then stays open (holding its table locks, which stalls
+              // every request to the site) until the platform kills the function. The unit was vetted
+              // statement by statement above; the simple query protocol runs the batch in order.
+              if (unit.statements.length) await client.query(`${unit.statements.join(';\n')};`);
               if (unit.tail) await client.query(unit.tail);
               state.units[unit.id] = { fingerprint: unit.fingerprint, status: 'ok', at, version: unit.version, statements: unit.statements.length };
               await upsertState(client, state); // same transaction: applied and recorded together

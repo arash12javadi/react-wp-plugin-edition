@@ -16,6 +16,7 @@ export function planSchemaUpdate(options: { coreSql: string; plugins?: Array<{ i
 export function manualReason(unit: SchemaUnit): string;
 export function parseState(value: unknown): { units: Record<string, any> };
 export function summariseState(units: SchemaUnit[], state: { units: Record<string, any> }): { status: string; units: any[]; lastAppliedAt: string | null };
+export function recordCoreSchemaApplied(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }, coreSql: string, now?: () => Date): Promise<boolean>;
 export function readActivePluginIds(client: { query: (sql: string) => Promise<{ rows: any[] }> }): Promise<string[] | null>;
 export function onlyActive(units: SchemaUnit[], activeIds: string[] | null): SchemaUnit[];
 export function readSchemaStatus(options: { connectionString: string; units: SchemaUnit[]; withClient?: any }): Promise<Record<string, any>>;

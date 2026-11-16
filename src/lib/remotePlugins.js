@@ -277,6 +277,8 @@ const catalogItem = (item) => ({
   description: String(item?.description || '').trim(),
   category: String(item?.category || 'utility').trim() || 'utility',
   author: String(item?.author || '').trim(),
+  // Only an https image: the address comes from the marketplace feed and is put in an <img src>.
+  iconUrl: /^https:\/\//i.test(String(item?.iconUrl || item?.icon_url || '')) ? String(item?.iconUrl || item?.icon_url).trim() : '',
   tags: stringList(item?.tags),
   features: stringList(item?.features),
   docsUrl: String(item?.docsUrl || item?.docs_url || '').trim(),

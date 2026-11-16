@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import type { User } from './db';
 import { describeDbError, client } from './db';
 import { getUserRole, roles, type UserRole } from './roles';
+import { isTransientDatabaseError } from './transientDatabaseError.js';
+
+/** Pauses between attempts to read the signed-in person's role when the database is busy. */
+const PROFILE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 export interface Profile {
   id: string;
@@ -160,7 +164,19 @@ export const useCurrentProfile = (user: User | null | undefined) => {
     }
     let mounted = true;
     setLoading(true);
-    fetchProfile(user.id)
+    // A busy database (statement timeout, schema cache rebuild) must not read as "this person is a
+    // subscriber": retry those, and only demote once the answer is a real one or the retries run out.
+    const fetchWithRetry = async (): Promise<Profile | null> => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await fetchProfile(user.id);
+        } catch (error) {
+          if (!mounted || attempt >= PROFILE_RETRY_DELAYS_MS.length || !isTransientDatabaseError(describeDbError(error))) throw error;
+          await new Promise((resolve) => setTimeout(resolve, PROFILE_RETRY_DELAYS_MS[attempt]));
+        }
+      }
+    };
+    fetchWithRetry()
       .then((result) => {
         if (!mounted) return;
         setProfile(result);
