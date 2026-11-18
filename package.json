@@ -19,6 +19,7 @@
     "check:hooks": "node scripts/wpParity/check.mjs",
     "wp:extract": "node scripts/wpParity/extract.mjs",
     "wp:build": "node scripts/wpParity/build.mjs",
+    "ai:index": "node scripts/aiFactoryIndex.mjs",
     "wp:docs": "node scripts/wpParity/docs.mjs && node scripts/wpParity/pluginCheckData.mjs",
     "test": "node --import ./tests/helpers/registerTs.mjs --test \"tests/*.test.mjs\"",
     "install:worker": "node scripts/rwpBuildWorker.mjs",

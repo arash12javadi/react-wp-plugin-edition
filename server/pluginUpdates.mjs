@@ -285,7 +285,7 @@ export async function checkPluginUpdates({ target, source, channel = 'stable', f
  * Updates one installed plugin to one named release: a single commit under `plugins/<id>/`.
  * The caller has already required the platform owner and a connected Git deployment.
  */
-export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch, catalogue = null, publicKey }) {
+export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch, catalogue = null, publicKey, firstInstall = false }) {
   const pluginId = trimmed(id);
   const wanted = trimmed(version).replace(/^v/i, '');
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(pluginId)) throw new InstallError('A plugin id is required.', 400);
@@ -293,16 +293,24 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
   if (isCommercialPlugin(pluginId)) throw new InstallError(commercialRefusal(pluginId), 403);
 
   const installed = (await installedPluginVersions(target)).find((row) => row.id === pluginId);
-  if (!installed) {
-    throw new InstallError(`"${pluginId}" is not in ${target.owner}/${target.repo}, so there is nothing to update. Install it from Plugins → Upload first.`, 404);
+  // A first install (Plugins → Marketplace → Install) takes only a package the marketplace scanned and signed; a plugin
+  // that is already here is updated, never installed over.
+  if (firstInstall && installed) {
+    throw new InstallError(`${pluginId} ${installed.version} is already installed. Use the update on the Plugins screen to move to a newer version.`, 409);
   }
-  if (compareVersions(wanted, installed.version) <= 0) {
+  if (!firstInstall && !installed) {
+    throw new InstallError(`"${pluginId}" is not in ${target.owner}/${target.repo}, so there is nothing to update. Install it from Plugins → Marketplace or Plugins → Upload first.`, 404);
+  }
+  if (installed && compareVersions(wanted, installed.version) <= 0) {
     throw new InstallError(`${pluginId} ${installed.version} is already installed; ${wanted} is not newer, and a plugin is never downgraded from here.`, 409);
   }
   const listing = await releasesFromSources({ source, ids: [pluginId], channel, fetchImpl, catalogue });
   const release = (listing.releases.get(pluginId) || []).find((item) => item.version === wanted);
   if (!release) throw new InstallError(`${listing.repo} has no published release ${pluginId}-v${wanted}.`, 404);
   if (!release.asset) throw new InstallError(`Release ${release.tag} has no ${pluginId}-${wanted}.zip asset to install.`, 409);
+  if (firstInstall && release.asset.kind !== 'catalogue') {
+    throw new InstallError(`${pluginId} is not offered by the marketplace, so it cannot be installed from here. Upload its ZIP on the Plugins screen instead.`, 404);
+  }
 
   const zip = release.asset.kind === 'catalogue'
     ? await downloadCataloguePackage({ release, catalogue, fetchImpl, publicKey })
@@ -317,5 +325,5 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
     expectedId: pluginId,
     gitDeploys: true,
   });
-  return { ...result, update: { id: pluginId, from: installed.version, to: wanted, tag: release.tag, source: release.asset.kind === 'catalogue' ? 'marketplace' : 'github' } };
+  return { ...result, update: { id: pluginId, from: installed?.version || '', to: wanted, tag: release.tag, source: release.asset.kind === 'catalogue' ? 'marketplace' : 'github' } };
 }

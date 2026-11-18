@@ -65,6 +65,7 @@ const PATHS = new Set([
   `${PREFIX}/core-update/redeploy`,
   `${PREFIX}/plugin-updates/check`,
   `${PREFIX}/plugin-updates/apply`,
+  `${PREFIX}/plugin-updates/install`,
 ]);
 
 /** The paths this module answers — the single list both engines route by. */
@@ -246,8 +247,10 @@ export async function handleDeploymentRequest(options) {
       const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env) });
       return ok(200, answer);
     }
-    if (pathname === `${PREFIX}/plugin-updates/apply`) {
+    // `install` is the first install of a marketplace plugin (signed package only); `apply` updates one already here.
+    if (pathname === `${PREFIX}/plugin-updates/apply` || pathname === `${PREFIX}/plugin-updates/install`) {
       const result = await applyPluginUpdate({
+        firstInstall: pathname.endsWith('/install'),
         target,
         source,
         id: str(body.id),

@@ -135,32 +135,45 @@ export function vetFiles(entries, { docsAreInert = false } = {}) {
     .map(([, bytes]) => decode(bytes))
     .filter(Boolean)
     .join('\n');
-  const combined = textOf((ext) => !(docsAreInert && DOC_EXTENSIONS.has(ext)));
+  /** The first scanned file a pattern matches, so a flag tells the author where to look. */
+  const fileOf = (re, keep) => {
+    for (const [name, bytes] of entries) {
+      if (isTextEntry(name) && keep(extensionOf(name)) && re.test(decode(bytes))) return name.replace(/^\/+/, '');
+    }
+    return '';
+  };
+  const where = (re, keep) => {
+    const file = fileOf(re, keep);
+    return file ? ` (in ${file})` : '';
+  };
+  const keepCode = (ext) => !(docsAreInert && DOC_EXTENSIONS.has(ext));
+  const keepNetwork = (ext) => !(docsAreInert && (DOC_EXTENSIONS.has(ext) || LINK_ONLY_EXTENSIONS.has(ext)));
+  const combined = textOf(keepCode);
   const networkText = docsAreInert ? textOf((ext) => !DOC_EXTENSIONS.has(ext) && !LINK_ONLY_EXTENSIONS.has(ext)) : combined;
 
   const network = NETWORK_PATTERNS.filter((re) => re.test(networkText));
   add('external network calls', network.length === 0, network.length
     ? `Found ${network.length} external network call pattern(s).`
     : 'No outbound network calls detected.');
-  network.forEach((re) => flags.push(`Network call: ${re}`));
+  network.forEach((re) => flags.push(`Network call: ${re}${where(re, keepNetwork)}`));
 
   const dangerous = DANGEROUS_PATTERNS.filter((re) => re.test(combined));
   add('disallowed imports / dynamic code', dangerous.length === 0, dangerous.length
     ? `Found ${dangerous.length} disallowed import or dynamic-code pattern(s).`
     : 'No disallowed imports or dynamic code.');
-  dangerous.forEach((re) => flags.push(`Disallowed pattern: ${re}`));
+  dangerous.forEach((re) => flags.push(`Disallowed pattern: ${re}${where(re, keepCode)}`));
 
   const exfil = EXFILTRATION_PATTERNS.filter((re) => re.test(combined));
   add('credential / data exfiltration', exfil.length === 0, exfil.length
     ? `Found ${exfil.length} cookie/storage access pattern(s).`
     : 'No cookie or storage exfiltration patterns.');
-  exfil.forEach((re) => flags.push(`Exfiltration pattern: ${re}`));
+  exfil.forEach((re) => flags.push(`Exfiltration pattern: ${re}${where(re, keepCode)}`));
 
   const obfuscation = OBFUSCATION_PATTERNS.filter((re) => re.test(combined));
   add('obfuscation markers', obfuscation.length === 0, obfuscation.length
     ? `Found ${obfuscation.length} obfuscation marker(s).`
     : 'No obfuscation markers.');
-  obfuscation.forEach((re) => flags.push(`Obfuscation: ${re}`));
+  obfuscation.forEach((re) => flags.push(`Obfuscation: ${re}${where(re, keepCode)}`));
 
   const usesApprovedApi = APPROVED_HOOKS.some((hook) => combined.includes(hook));
   add('react-wp hooks', usesApprovedApi, usesApprovedApi

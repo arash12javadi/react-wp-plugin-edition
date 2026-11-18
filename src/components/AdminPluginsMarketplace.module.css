@@ -580,3 +580,15 @@
   object-fit: cover;
   align-self: center;
 }
+
+/* Official: published by the marketplace owner. */
+.cardOfficial {
+  background: linear-gradient(160deg, #fff8e1 0%, #ffecb3 100%);
+  border: 2px solid #d4a017;
+}
+.cardOfficial .author { color: #5c4300; font-weight: 600; }
+.officialStars { color: #d98a00; font-weight: 900; letter-spacing: 2px; text-shadow: 0 0 1px #8a5a00; }
+.officialStars em {
+  margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: #7a5b00; color: #fff;
+  font-size: 0.68rem; font-style: normal; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}

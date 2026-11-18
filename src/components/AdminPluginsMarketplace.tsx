@@ -10,6 +10,7 @@ import {
   verifyRemoteLicense,
   waitForRemotePlugin,
 } from '../lib/remotePlugins';
+import { installMarketplacePlugin } from '../lib/gitDeployment';
 import { installPurchased, loadPurchases, purchaseFor, type Purchase, type PurchaseOverview } from '../lib/purchasedPlugins';
 import styles from './AdminPluginsMarketplace.module.css';
 
@@ -40,6 +41,8 @@ interface RemoteCatalogItem {
   category: string;
   integrity: string;
   author: string;
+  /** Published by the marketplace owner: shown as "by React-WP.com" with five bold stars on a gold card. */
+  official?: boolean;
   iconUrl: string;
   tags: string[];
   features: string[];
@@ -222,6 +225,22 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
     } finally {
       setBusy('');
       void refreshPurchases();
+    }
+  };
+
+  // A free marketplace plugin installs itself: the site fetches the package the marketplace scanned and signed, checks the
+  // signature and checksum, commits it to its own repository and redeploys. No ZIP is downloaded or uploaded by hand.
+  const installFree = async (plugin: RemoteCatalogItem) => {
+    setBusy(plugin.pluginId);
+    setError('');
+    setNotice('');
+    try {
+      await installMarketplacePlugin({ id: plugin.pluginId, version: plugin.version });
+      setNotice(`${plugin.name || plugin.pluginId} ${plugin.version} was added to your site and is being deployed. When the deployment finishes (about a minute), switch it on under Plugins.`);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : `${plugin.name} could not be installed.`);
+    } finally {
+      setBusy('');
     }
   };
 
@@ -447,7 +466,7 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
             const owned = entitled.has(plugin.pluginId) || Boolean(sold?.installed);
             const working = busy === plugin.pluginId;
             return (
-              <li key={plugin.pluginId} className={styles.card}>
+              <li key={plugin.pluginId} className={plugin.official ? `${styles.card} ${styles.cardOfficial}` : styles.card}>
                 <div className={styles.cardTop}>
                   {plugin.iconUrl ? <img className={styles.cardIcon} src={plugin.iconUrl} alt="" width={32} height={32} loading="lazy" referrerPolicy="no-referrer" /> : null}
                   <span className={styles.category}>{label(plugin.category)}</span>
@@ -458,6 +477,11 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
                   {plugin.name || plugin.pluginId}
                 </button>
                 {plugin.author ? <span className={styles.author}>by {plugin.author}</span> : null}
+                {plugin.official ? (
+                  <span className={styles.officialStars} role="img" aria-label="Official React-WP.com plugin, rated 5 out of 5 stars">
+                    <span aria-hidden="true">★★★★★</span> <em>Official</em>
+                  </span>
+                ) : null}
                 <p className={styles.excerpt}>
                   {plugin.description || 'The publisher has not described this plugin yet.'}
                 </p>
@@ -477,6 +501,10 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
                       disabled={Boolean(busy)}
                       onClick={() => void installSold(plugin, sold)}
                     >
+                      {working ? 'Installing…' : 'Install'}
+                    </button>
+                  ) : isMarketplaceListing(plugin) && plugin.priceUsd <= 0 ? (
+                    <button type="button" className={styles.primary} disabled={Boolean(busy)} onClick={() => void installFree(plugin)}>
                       {working ? 'Installing…' : 'Install'}
                     </button>
                   ) : isMarketplaceListing(plugin) ? (

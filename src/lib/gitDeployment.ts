@@ -179,6 +179,10 @@ export interface PluginUpdateRow {
 export const checkPluginUpdates = () =>
   call<{ repository: string; releaseRepository: string; plugins: PluginUpdateRow[] }>(`${BASE}/plugin-updates/check`, { method: 'POST', body: {} });
 
+/** First install of a marketplace plugin, from the package the marketplace scanned and signed. */
+export const installMarketplacePlugin = (input: { id: string; version: string }) =>
+  call<{ result: { update: { id: string; to: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[] }; deployment: { sha: string; state: 'pending' } | null }>(`${BASE}/plugin-updates/install`, { method: 'POST', body: input });
+
 export const applyPluginUpdate = (input: { id: string; version: string }) =>
   call<{
     result: { update: { id: string; from: string; to: string; tag: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[]; sql: Array<{ path: string }> };

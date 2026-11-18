@@ -326,16 +326,23 @@ export function normalisePackage(entries) {
   return { zip, manifest, entries: Object.entries(output), prefix };
 }
 
+const OWNER_REVIEWABLE = new Set(['disallowed imports / dynamic code', 'server secret usage']);
+
 /**
  * How serious the scan's findings are. `critical` blocks a plugin outright (no valid manifest or entry file,
  * dynamic code, or a server secret); `advisory` is something a person should read (network calls, storage access,
  * obfuscation markers, no registration hook); `clean` is neither.
  */
-export function severityOf(report) {
+export function severityOf(report, { ownerRepository = false } = {}) {
   if (!report) return 'critical';
   const failed = new Set((report.checks || []).filter((check) => !check.ok).map((check) => check.name));
   const critical = ['archive', 'manifest.json', 'manifest fields', 'entry file', 'disallowed imports / dynamic code', 'server secret usage'];
-  if (critical.some((name) => failed.has(name))) return 'critical';
+  // The marketplace owner's own repository (a plugin such as RWP Developers legitimately names `service_role` or
+  // describes `eval` in its own checker). The two content findings are then something the owner reads and approves,
+  // never an automatic publish and never an automatic rejection. A broken package stays blocked.
+  const blocking = ownerRepository ? critical.filter((name) => !OWNER_REVIEWABLE.has(name)) : critical;
+  if (blocking.some((name) => failed.has(name))) return 'critical';
+  if (ownerRepository && critical.some((name) => failed.has(name))) return 'advisory';
   return report.pass && !failed.size ? 'clean' : 'advisory';
 }
 
@@ -394,7 +401,10 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   }
 
   const report = vetFiles(unpacked.entries, { docsAreInert: true });
-  const severity = severityOf(report);
+  const severity = severityOf(report, { ownerRepository: isOwner });
+  if (isOwner && severity === 'advisory' && severityOf(report) === 'critical') {
+    report.flags = [...(report.flags || []), 'Owner repository: the blocking findings above are held for the marketplace owner to read and approve; nothing is published automatically.'];
+  }
   const policy = decidePolicy({ severity, isOwner });
   const zip = unpacked.zip;
   return {

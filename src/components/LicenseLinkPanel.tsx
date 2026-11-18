@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { callLink, type LinkState } from '../lib/licenseLinkApi';
-import { PLUGIN_LICENSE_SHOP_URL } from '../lib/pluginLicense.js';
+import { PLUGIN_LICENSE_CONNECT_URL } from '../lib/pluginLicense.js';
 import styles from './LicenseLinkPanel.module.css';
 
 const readable = (value: string): string => {
@@ -141,8 +141,11 @@ export default function LicenseLinkPanel({ onChanged }: { onChanged?: () => void
           Install what I buy automatically
         </label>
         <p className={styles.hint}>
-          Find the code on <a href={PLUGIN_LICENSE_SHOP_URL} target="_blank" rel="noreferrer noopener">react-wp.com</a> under
-          My licenses → Connect a site.
+          <a className={styles.primary} href={PLUGIN_LICENSE_CONNECT_URL} target="_blank" rel="noreferrer noopener">Get a connection code on react-wp.com</a>
+        </p>
+        <p className={styles.hint}>
+          It opens react-wp.com in a new tab. Sign in, press <strong>Get my code</strong>, and paste the code here within ten minutes
+          (the page shows a countdown). Then plugins you buy, and free marketplace plugins, install from the Marketplace tab with one button.
         </p>
       </form>
       {message && <p className={styles.ok} role="status">{message}</p>}

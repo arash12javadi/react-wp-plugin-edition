@@ -51,6 +51,8 @@ export const PLUGIN_LICENSE_PREFIX = 'RWP2';
  * there. A browser-side constant is enough - nothing here is a secret or per-site.
  */
 export const PLUGIN_LICENSE_SHOP_URL = 'https://react-wp.com/plugins';
+/** Where a site's owner gets the ten-minute pairing code (with a countdown) that connects the site to their account. */
+export const PLUGIN_LICENSE_CONNECT_URL = 'https://react-wp.com/plugins/connect';
 
 /**
  * The plugins that are sold, and the addon code each one's key carries.
