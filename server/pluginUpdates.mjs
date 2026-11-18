@@ -306,7 +306,11 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
   }
   const listing = await releasesFromSources({ source, ids: [pluginId], channel, fetchImpl, catalogue });
   const release = (listing.releases.get(pluginId) || []).find((item) => item.version === wanted);
-  if (!release) throw new InstallError(`${listing.repo} has no published release ${pluginId}-v${wanted}.`, 404);
+  if (!release) {
+    // The marketplace is the source people think of; the repository's name is not something to show them.
+    const from = catalogue ? new URL(catalogue.origin).host === 'react-wp.com' ? 'React-WP.com' : new URL(catalogue.origin).host : listing.repo;
+    throw new InstallError(`${from} has no published release ${pluginId}-v${wanted}.`, 404);
+  }
   if (!release.asset) throw new InstallError(`Release ${release.tag} has no ${pluginId}-${wanted}.zip asset to install.`, 409);
   if (firstInstall && release.asset.kind !== 'catalogue') {
     throw new InstallError(`${pluginId} is not offered by the marketplace, so it cannot be installed from here. Upload its ZIP on the Plugins screen instead.`, 404);
