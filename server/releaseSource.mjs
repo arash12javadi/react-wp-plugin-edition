@@ -388,7 +388,7 @@ export const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('h
  * @param {{ expectedSlug?: string, token?: string, fetchImpl?: typeof fetch, isOwner?: boolean }} [options]
  * `expectedSlug`: the plugin this repository is already linked to; the manifest's id has to equal it.
  */
-export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false, trusted = false } = {}) {
+export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false, trusted = false, approvedFindings = null } = {}) {
   const repository = parseRepositoryUrl(repositoryUrl);
   const latest = await fetchLatestRelease(repository, { token, fetchImpl });
   const { release } = latest;
@@ -433,7 +433,15 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   if (isOwner && severity === 'advisory' && severityOf(report) === 'critical') {
     report.flags = [...(report.flags || []), 'Owner repository: the blocking findings above are held for the marketplace owner to read and approve; nothing is published automatically.'];
   }
-  const policy = decidePolicy({ severity, isOwner, trusted });
+  // A release the owner already approved may keep the findings the approved version had (a plugin that legitimately names
+  // `service_role` or calls out): the owner read those once. Any finding that version did not have still waits for the owner.
+  const failedNames = (report.checks || []).filter((check) => !check.ok).map((check) => check.name);
+  const sameFindings = trusted && severity === 'advisory' && Array.isArray(approvedFindings) && failedNames.length > 0
+    && failedNames.every((name) => approvedFindings.includes(name));
+  if (sameFindings) {
+    report.flags = [...(report.flags || []).filter((flag) => !/^Owner repository:/.test(flag)), 'The scan found only what the version you approved already had, so this release was published without a new review.'];
+  }
+  const policy = decidePolicy({ severity: sameFindings ? 'clean' : severity, isOwner, trusted });
   const zip = pack.zip;
   return {
     repository: latest.repository,
