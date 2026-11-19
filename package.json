@@ -16,6 +16,7 @@
     "check:updates": "node scripts/checkUpdateEngine.mjs",
     "check:release": "node scripts/checkRelease.mjs",
     "plugin:release": "node scripts/publishPluginRelease.mjs",
+    "plugin:version": "node scripts/bumpPluginVersion.mjs",
     "check:hooks": "node scripts/wpParity/check.mjs",
     "wp:extract": "node scripts/wpParity/extract.mjs",
     "wp:build": "node scripts/wpParity/build.mjs",

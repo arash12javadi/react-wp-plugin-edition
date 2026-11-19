@@ -18,7 +18,7 @@
  *     can never be claimed through this route.
  */
 import { createHash } from 'node:crypto';
-import { strFromU8, unzipSync, zipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { isCommercialPlugin } from '../src/lib/pluginLicense.js';
 import { isDevEditionPlugin } from '../src/lib/pluginEdition.js';
 import { vetFiles } from './pluginVet.mjs';
@@ -326,6 +326,24 @@ export function normalisePackage(entries) {
   return { zip, manifest, entries: Object.entries(output), prefix };
 }
 
+/**
+ * The same package with `manifest.json`'s `version` set to `version` (the other manifest fields and every other file are
+ * untouched), re-zipped the same way. Used when the release tag and the manifest disagree.
+ */
+export function stampManifestVersion(unpacked, version) {
+  const output = {};
+  for (const [name, content] of unpacked.entries) output[name] = content;
+  const manifest = JSON.parse(strFromU8(output['manifest.json']));
+  output['manifest.json'] = strToU8(`${JSON.stringify({ ...manifest, version }, null, 2)}
+`);
+  return {
+    ...unpacked,
+    manifest: { ...manifest, version },
+    entries: Object.entries(output),
+    zip: zipSync(output, { level: 9, mtime: new Date('2000-01-01T00:00:00Z') }),
+  };
+}
+
 const OWNER_REVIEWABLE = new Set(['disallowed imports / dynamic code', 'server secret usage']);
 
 /**
@@ -398,18 +416,25 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   if (expectedSlug && id !== expectedSlug) {
     throw new ReleaseSourceError(422, `This repository is linked to "${expectedSlug}", but the manifest in release ${release.tag} says "${id}". The id of a published plugin cannot change.`, 'manifest_id_changed');
   }
+  // The tag is what the author published and what clients are offered. A manifest that still names an older
+  // version would make every site that installs this release report that old version and offer the update again,
+  // so the stored copy is stamped with the tag's version instead of refusing the release. The change is listed in the report.
   const manifestVersion = String(manifest.version || '').trim();
+  let pack = unpacked;
+  let stamped = '';
   if (manifestVersion !== tagVersion) {
-    throw new ReleaseSourceError(422, `The release is tagged ${release.tag}, but manifest.json inside it says version ${manifestVersion || '(none)'}. Change the manifest to ${tagVersion}, publish the release again and retry.`, 'version_mismatch');
+    pack = stampManifestVersion(unpacked, tagVersion);
+    stamped = `manifest.json said version ${manifestVersion || '(none)'}; the marketplace set it to ${tagVersion} to match the release tag ${release.tag}. Bump the version in your repository's manifest.json before tagging to avoid this.`;
   }
 
-  const report = vetFiles(unpacked.entries, { docsAreInert: true });
+  const report = vetFiles(pack.entries, { docsAreInert: true });
+  if (stamped) report.flags = [...(report.flags || []), stamped];
   const severity = severityOf(report, { ownerRepository: isOwner });
   if (isOwner && severity === 'advisory' && severityOf(report) === 'critical') {
     report.flags = [...(report.flags || []), 'Owner repository: the blocking findings above are held for the marketplace owner to read and approve; nothing is published automatically.'];
   }
   const policy = decidePolicy({ severity, isOwner, trusted });
-  const zip = unpacked.zip;
+  const zip = pack.zip;
   return {
     repository: latest.repository,
     release,
