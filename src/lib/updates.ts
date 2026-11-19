@@ -46,7 +46,7 @@ export interface UpdateSettings {
   notify: boolean;
 }
 
-export const defaultUpdateSettings: UpdateSettings = { auto_check: 'weekly', notify: true };
+export const defaultUpdateSettings: UpdateSettings = { auto_check: 'daily', notify: true };
 
 /**
  * How often "every time an administrator opens the admin" may actually hit GitHub.

@@ -170,7 +170,7 @@ export const updateConfigFrom = (value) => {
      * reads as empty rather than as a broken URL to fetch.
      */
     repository: repoFrom(repository) ? repository : '',
-    auto_check: AUTO_CHECK_KEYS.includes(autoCheck) ? autoCheck : 'weekly',
+    auto_check: AUTO_CHECK_KEYS.includes(autoCheck) ? autoCheck : 'daily',
     notify: row.notify !== false,
     /**
      * Whether `POST /api/admin/system/update` may run the updater on this server.

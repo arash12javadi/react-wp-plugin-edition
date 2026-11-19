@@ -351,10 +351,13 @@ export function severityOf(report, { ownerRepository = false } = {}) {
  * decision, and only when the scan found nothing; every other author's release waits for the owner, because a free
  * plugin can run server code on a client's site and a text scan is not proof of anything.
  */
-export function decidePolicy({ severity, isOwner }) {
+export function decidePolicy({ severity, isOwner, trusted = false }) {
   if (severity === 'critical') return { verdict: 'rejected', publish: false, reason: 'The automatic scan found a problem that blocks this plugin. The report lists it.' };
   if (severity === 'advisory') return { verdict: 'pending', publish: false, reason: 'The scan found something the marketplace owner has to read before this is published.' };
   if (isOwner) return { verdict: 'approved', publish: true, reason: 'The scan found nothing, and the repository belongs to the marketplace owner.' };
+  // `trusted`: the plugin is already live, the owner approved it once, and this release comes from the same repository.
+  // Like a WordPress.org plugin, later releases go out on a clean scan; anything the scan flags still waits for the owner.
+  if (trusted) return { verdict: 'approved', publish: true, reason: 'The scan found nothing, and the marketplace owner already approved this plugin, so the new version was published.' };
   return { verdict: 'pending', publish: false, reason: 'The scan found nothing. A plugin from another author goes live once the marketplace owner approves it.' };
 }
 
@@ -367,7 +370,7 @@ export const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('h
  * @param {{ expectedSlug?: string, token?: string, fetchImpl?: typeof fetch, isOwner?: boolean }} [options]
  * `expectedSlug`: the plugin this repository is already linked to; the manifest's id has to equal it.
  */
-export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false } = {}) {
+export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false, trusted = false } = {}) {
   const repository = parseRepositoryUrl(repositoryUrl);
   const latest = await fetchLatestRelease(repository, { token, fetchImpl });
   const { release } = latest;
@@ -405,7 +408,7 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   if (isOwner && severity === 'advisory' && severityOf(report) === 'critical') {
     report.flags = [...(report.flags || []), 'Owner repository: the blocking findings above are held for the marketplace owner to read and approve; nothing is published automatically.'];
   }
-  const policy = decidePolicy({ severity, isOwner });
+  const policy = decidePolicy({ severity, isOwner, trusted });
   const zip = unpacked.zip;
   return {
     repository: latest.repository,

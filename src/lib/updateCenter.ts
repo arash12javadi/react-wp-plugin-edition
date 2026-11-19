@@ -586,7 +586,7 @@ export const updateStatusFrom = (answer: UpdateCheckAnswer): UpdateStatus => {
  * The two scheduling settings, read from the server.
  *
  * They live in `system_settings.updates_config` — the same row the screen writes — so there is one copy of
- * "check weekly, notify" rather than a second one in `options`. `defaultUpdateSettings` is the answer when
+ * "check daily, notify" rather than a second one in `options`. `defaultUpdateSettings` is the answer when
  * the row cannot be read, which is the state of a deployment whose server cannot see `system_settings`.
  */
 export const settingsFromConfig = (config?: UpdateConfigView | null): UpdateSettings => ({
