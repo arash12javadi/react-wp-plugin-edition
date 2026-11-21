@@ -11,6 +11,8 @@ import {
   waitForRemotePlugin,
 } from '../lib/remotePlugins';
 import { installMarketplacePlugin } from '../lib/gitDeployment';
+import { compareVersions } from '../lib/updates';
+import { rwp } from '../lib/rwp';
 import { installPurchased, loadPurchases, purchaseFor, type Purchase, type PurchaseOverview } from '../lib/purchasedPlugins';
 import styles from './AdminPluginsMarketplace.module.css';
 
@@ -246,6 +248,9 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
 
   const activated = licence.status === 'active';
   const entitled = useMemo(() => new Set(licence.plugins.map((plugin) => plugin.pluginId)), [licence.plugins]);
+  // Every plugin this build runs, with its version: a plugin installed from the marketplace (a free one has no licence) is in here, which is
+  // what makes its card say Installed instead of offering the install again.
+  const running = new Map(rwp.getPlugins().map((plugin) => [plugin.id, plugin.version]));
   const pages = Math.max(1, Math.ceil(catalog.total / Math.max(catalog.perPage, 1)));
 
   const refreshLicence = useCallback(async () => {
@@ -463,7 +468,9 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
         <ul className={styles.grid}>
           {catalog.items.map((plugin) => {
             const sold = isMarketplaceListing(plugin) ? purchaseFor(purchases, plugin.pluginId) : null;
-            const owned = entitled.has(plugin.pluginId) || Boolean(sold?.installed);
+            const owned = entitled.has(plugin.pluginId) || Boolean(sold?.installed) || running.has(plugin.pluginId);
+            const runningVersion = running.get(plugin.pluginId) || '';
+            const newer = Boolean(runningVersion && plugin.version && compareVersions(plugin.version, runningVersion) > 0);
             const working = busy === plugin.pluginId;
             return (
               <li key={plugin.pluginId} className={plugin.official ? `${styles.card} ${styles.cardOfficial}` : styles.card}>
@@ -493,7 +500,9 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
                 <div className={styles.cardFooter}>
                   <strong className={styles.price}>{money(plugin)}</strong>
                   {owned ? (
-                    <span className={styles.owned} title="Already licensed to this site">✓ Installed</span>
+                    <span className={styles.owned} title={newer ? `Version ${plugin.version} is available. Update it under Plugins → Plugin updates.` : 'Already installed on this site'}>
+                      {newer ? `✓ Installed · v${plugin.version} available` : '✓ Installed'}
+                    </span>
                   ) : sold?.licensed ? (
                     <button
                       type="button"
@@ -588,7 +597,7 @@ export default function AdminPluginsMarketplace({ navigate }: Props) {
       {details ? (
         <PluginDialog
           plugin={details}
-          owned={entitled.has(details.pluginId)}
+          owned={entitled.has(details.pluginId) || running.has(details.pluginId)}
           activated={activated}
           busy={busy}
           onClose={() => setDetails(null)}

@@ -50,6 +50,7 @@ import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/c
 import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
 import { readBranch } from './pluginGitPush.mjs';
 import { applyPluginUpdate, checkPluginUpdates } from './pluginUpdates.mjs';
+import { LICENSE_LINK_CONFIG_KEY, licenseLinkFrom } from './licenseLink.mjs';
 import { catalogueFrom } from './catalogueUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
@@ -244,7 +245,9 @@ export async function handleDeploymentRequest(options) {
     // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
     if (pathname === `${PREFIX}/plugin-updates/check`) {
-      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env) });
+      // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.
+      const licensedIds = Object.keys(licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY).catch(() => null)).latest_versions || {});
+      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env), licensedIds });
       return ok(200, answer);
     }
     // `install` is the first install of a marketplace plugin (signed package only); `apply` updates one already here.

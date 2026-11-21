@@ -150,7 +150,8 @@ export default function PluginUpdatesPanel() {
   };
 
   const available = (rows || []).filter((row) => row.state === 'available' || row.state === 'unavailable');
-  const waiting = available.filter((row) => row.state === 'available').length + sold.length;
+  // A plugin for sale that this site is not connected for cannot be updated from here, but it is still news: it counts as waiting.
+  const waiting = available.filter((row) => row.state === 'available' || (row.state === 'unavailable' && row.release)).length + sold.length;
   const checked = rows !== null || sold.length > 0;
 
   // Nothing yet to say, and nothing to do: stay out of the way instead of showing an empty box.

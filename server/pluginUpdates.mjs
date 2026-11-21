@@ -130,7 +130,7 @@ export async function latestFreePluginReleases({ source, fetchImpl = fetch, now 
     const value = {};
     for (const [id, list] of listing.releases) {
       const latest = list[0];
-      if (!latest || !latest.asset || isCommercialPlugin(id)) continue;
+      if (!latest || (!latest.asset && !latest.paid) || isCommercialPlugin(id)) continue;
       value[id] = {
         version: latest.version, tag: latest.tag, title: latest.title, released: latest.released,
         notes: latest.notes, changelog_url: latest.url, critical: false,
@@ -151,7 +151,7 @@ export const commercialRefusal = (id) => `"${id}" is a licensed plugin. Its pack
  *
  * @param {{ installed: Array<{ id: string, version: string }>, releases: Map<string, any[]> }} input
  */
-export function planPluginUpdates({ installed, releases }) {
+export function planPluginUpdates({ installed, releases, licensedIds = [] }) {
   return installed.map(({ id, version }) => {
     const latest = (releases.get(id) || [])[0] || null;
     const newer = latest && compareVersions(latest.version, version) > 0;
@@ -164,6 +164,15 @@ export function planPluginUpdates({ installed, releases }) {
       if (isCommercialPlugin(id)) {
         state = 'unavailable';
         reason = commercialRefusal(id);
+      } else if (latest.paid) {
+        // A plugin for sale. A connected site that the platform already lists it for has its own Update button (the account link),
+        // so it is not announced twice; any other site is told that a newer version exists and where it comes from.
+        if (licensedIds.includes(id)) {
+          state = 'up-to-date';
+        } else {
+          state = 'unavailable';
+          reason = `"${id}" is a paid plugin and version ${latest.version} is out. Connect this site to your react-wp.com account (Plugins → Connect to react-wp.com) to update it here, or download the new version from My licenses on react-wp.com and upload it under Plugins → Upload.`;
+        }
       } else if (!latest.asset) {
         state = 'unavailable';
         reason = `Release ${latest.tag} has no ${id}-${latest.version}.zip asset to install.`;
@@ -270,14 +279,14 @@ export async function releasesFromSources({ source, ids, channel = 'stable', fet
 }
 
 /** The check: every installed plugin against the release repository and, when given, the marketplace. Writes nothing. */
-export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch, catalogue = null }) {
+export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch, catalogue = null, licensedIds = [] }) {
   const installed = await installedPluginVersions(target);
   const listing = await releasesFromSources({ source, ids: installed.map((row) => row.id), channel, fetchImpl, catalogue });
   const names = new Map(installed.map((row) => [row.id, row.name]));
   return {
     repository: `${target.owner}/${target.repo}`,
     releaseRepository: listing.repo,
-    plugins: planPluginUpdates({ installed, releases: listing.releases }).map((row) => ({ ...row, name: names.get(row.id) || row.id })),
+    plugins: planPluginUpdates({ installed, releases: listing.releases, licensedIds }).map((row) => ({ ...row, name: names.get(row.id) || row.id })),
   };
 }
 
