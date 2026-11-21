@@ -371,11 +371,17 @@ export function severityOf(report, { ownerRepository = false } = {}) {
  */
 export function decidePolicy({ severity, isOwner, trusted = false }) {
   if (severity === 'critical') return { verdict: 'rejected', publish: false, reason: 'The automatic scan found a problem that blocks this plugin. The report lists it.' };
+  // `trusted`: the plugin is already live, the owner approved it once, and this release comes from the same repository. The owner
+  // decides once; after that the system's own check is the only gate. A blocking finding is rejected above and the publisher is
+  // told why; anything that is only "worth a read" is published and kept in the report.
+  if (trusted) {
+    return severity === 'advisory'
+      ? { verdict: 'approved', publish: true, reason: 'The marketplace owner already approved this plugin, so the new version was published. The scan notes are kept in the report.' }
+      : { verdict: 'approved', publish: true, reason: 'The scan found nothing, and the marketplace owner already approved this plugin, so the new version was published.' };
+  }
+  // The owner's own repository never waits for the owner: only a blocking finding (rejected above) stops it.
+  if (isOwner) return { verdict: 'approved', publish: true, reason: severity === 'advisory' ? 'The repository belongs to the marketplace owner, so the release was published. The scan notes are kept in the report.' : 'The scan found nothing, and the repository belongs to the marketplace owner.' };
   if (severity === 'advisory') return { verdict: 'pending', publish: false, reason: 'The scan found something the marketplace owner has to read before this is published.' };
-  if (isOwner) return { verdict: 'approved', publish: true, reason: 'The scan found nothing, and the repository belongs to the marketplace owner.' };
-  // `trusted`: the plugin is already live, the owner approved it once, and this release comes from the same repository.
-  // Like a WordPress.org plugin, later releases go out on a clean scan; anything the scan flags still waits for the owner.
-  if (trusted) return { verdict: 'approved', publish: true, reason: 'The scan found nothing, and the marketplace owner already approved this plugin, so the new version was published.' };
   return { verdict: 'pending', publish: false, reason: 'The scan found nothing. A plugin from another author goes live once the marketplace owner approves it.' };
 }
 
@@ -431,7 +437,7 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   if (stamped) report.flags = [...(report.flags || []), stamped];
   const severity = severityOf(report, { ownerRepository: isOwner });
   if (isOwner && severity === 'advisory' && severityOf(report) === 'critical') {
-    report.flags = [...(report.flags || []), 'Owner repository: the blocking findings above are held for the marketplace owner to read and approve; nothing is published automatically.'];
+    report.flags = [...(report.flags || []), 'Owner repository: the findings above would block another author; they are kept here for the record and the release was published.'];
   }
   // A release the owner already approved may keep the findings the approved version had (a plugin that legitimately names
   // `service_role` or calls out): the owner read those once. Any finding that version did not have still waits for the owner.

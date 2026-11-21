@@ -87,7 +87,7 @@ export function latestVersionsFrom(value) {
   const entries = Array.isArray(value)
     ? value.map((item) => [str(item?.plugin), str(item?.version)])
     : value && typeof value === 'object' ? Object.entries(value).map(([plugin, version]) => [str(plugin), str(version)]) : [];
-  return Object.fromEntries(entries.filter(([plugin, version]) => SAFE_PLUGIN_ID.test(plugin) && isCommercialPlugin(plugin) && VERSION.test(version)));
+  return Object.fromEntries(entries.filter(([plugin, version]) => SAFE_PLUGIN_ID.test(plugin) && VERSION.test(version)));
 }
 
 export const isLicenseLinked = (row) => Boolean(row?.token_sealed && row?.domain);
@@ -240,7 +240,7 @@ export async function updateLicensedPlugin({ plugin, version = '', io, credentia
     throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
   }
   const { updateSoldPlugin } = await import('./pluginAutoInstall.mjs');
-  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl });
+  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}) });
 }
 
 /**

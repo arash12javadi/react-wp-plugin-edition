@@ -217,13 +217,15 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
  *
  * @returns {Promise<object>} what `installPluginFromGit` answers, plus `update: { id, from, to }`
  */
-export async function updateSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {} }) {
+export async function updateSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {}, licensedIds = [] }) {
   const d = {
     installedPluginVersions, installPluginFromGit, downloadZip, githubTargetFrom, assertPackageMatches, ...deps,
   };
   const id = str(plugin);
-  if (!SAFE_PLUGIN_ID.test(id) || !Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) {
-    throw new InstallError('Only the sold plugins are updated from react-wp.com. Free plugins update from their own releases under Plugins → Plugin updates.', 400);
+  // A sold plugin of this platform, or a plugin react-wp.com itself named in the last sync as one this site is licensed for
+  // (another seller's). The package is signed for this host either way, and a plugin that is not already installed is refused below.
+  if (!SAFE_PLUGIN_ID.test(id) || !(Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id) || licensedIds.includes(id))) {
+    throw new InstallError('Only plugins this site holds a licence for are updated from react-wp.com. Free plugins update from their own releases under Plugins → Plugin updates.', 400);
   }
   const publicKey = deps.publicKey ?? packagePublicKey();
   if (!publicKey) {
