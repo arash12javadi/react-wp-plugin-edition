@@ -7,8 +7,9 @@
  * be tested with a fake `fetch`.
  *
  * Security properties, each of which a test pins:
- *   - only `https://github.com/<owner>/<repo>` addresses are accepted, and only PUBLIC repositories (the server
- *     holds no token that could read a private one, and does not ask anyone for theirs);
+ *   - only `https://github.com/<owner>/<repo>` addresses are accepted. A repository is PUBLIC and read with no credential,
+ *     unless the caller says it may be private (`allowPrivate`, a paid plugin's repository) and passes that repository's own
+ *     read token: that token goes only to api.github.com, on the first request, and is never forwarded along a redirect;
  *   - the package is fetched from the release (an attached `.zip` asset, else the source of that exact tag), never
  *     from a branch, and only from GitHub's own download hosts, with every redirect checked against that list;
  *   - the downloaded file is capped in size, and an archive that expands beyond the limits is refused unread;
@@ -143,9 +144,11 @@ async function githubJson(path, { token, fetchImpl }) {
 
 /**
  * Downloads one file from GitHub with the size cap enforced while reading, following at most a few redirects and
- * only to GitHub's own download hosts. No credential is sent: every package here is public.
+ * only to GitHub's own download hosts. No credential is sent for a public package. For a private repository the caller passes that
+ * repository's read token, and it is sent on the first request only, and only to api.github.com (the release asset or zipball
+ * endpoint, which answers with a redirect to a signed download address on a GitHub host that needs no credential).
  */
-export async function downloadLimited(url, { fetchImpl = fetch, maxBytes = MAX_DOWNLOAD_BYTES } = {}) {
+export async function downloadLimited(url, { fetchImpl = fetch, maxBytes = MAX_DOWNLOAD_BYTES, token = '' } = {}) {
   let target = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     let parsed;
@@ -154,12 +157,18 @@ export async function downloadLimited(url, { fetchImpl = fetch, maxBytes = MAX_D
     } catch {
       throw new ReleaseSourceError(502, 'GitHub sent an address the marketplace cannot read.', 'download_url');
     }
-    if (parsed.protocol !== 'https:' || !DOWNLOAD_HOSTS.has(parsed.hostname.toLowerCase())) {
+    const authenticated = Boolean(token) && hop === 0 && parsed.hostname.toLowerCase() === 'api.github.com';
+    if (parsed.protocol !== 'https:' || !(authenticated || DOWNLOAD_HOSTS.has(parsed.hostname.toLowerCase()))) {
       throw new ReleaseSourceError(502, `The release package points at ${parsed.hostname}, which is not a GitHub download host, so it was not fetched.`, 'download_host');
     }
     let response;
     try {
-      response = await fetchImpl(parsed.href, { redirect: 'manual', headers: { 'User-Agent': 'react-wp-plugin-marketplace' } });
+      response = await fetchImpl(parsed.href, {
+        redirect: 'manual',
+        headers: authenticated
+          ? { 'User-Agent': 'react-wp-plugin-marketplace', Accept: 'application/octet-stream', 'X-GitHub-Api-Version': '2022-11-28', Authorization: `Bearer ${token}` }
+          : { 'User-Agent': 'react-wp-plugin-marketplace' },
+      });
     } catch {
       throw new ReleaseSourceError(502, 'The release package could not be downloaded from GitHub. Try again in a few minutes.', 'download_failed');
     }
@@ -203,13 +212,15 @@ export async function downloadLimited(url, { fetchImpl = fetch, maxBytes = MAX_D
 
 const tooLarge = (maxBytes) => new ReleaseSourceError(413, `The release package is larger than ${Math.round(maxBytes / 1024 / 1024)} MB, which is the limit.`, 'too_large');
 
-/** The latest published release of a public repository, in the shape the rest of this module uses. */
-export async function fetchLatestRelease(repository, { token = '', fetchImpl = fetch } = {}) {
+/** The latest published release of a repository (public, or private when `allowPrivate` and a token are given), in the shape the rest of this module uses. */
+export async function fetchLatestRelease(repository, { token = '', fetchImpl = fetch, allowPrivate = false } = {}) {
   const meta = await githubJson(`/repos/${repository.owner}/${repository.repo}`, { token, fetchImpl });
   if (!meta) {
-    throw new ReleaseSourceError(404, `${repository.fullName} was not found. Check the address, and that the repository is public: the marketplace cannot read a private one.`, 'repository_not_found');
+    throw new ReleaseSourceError(404, allowPrivate
+      ? `${repository.fullName} was not found. Check the address. If the repository is private, the access token has to be able to read its contents (a fine-grained token with "Contents: Read-only" on that repository).`
+      : `${repository.fullName} was not found. Check the address, and that the repository is public: the marketplace cannot read a private one.`, 'repository_not_found');
   }
-  if (meta.private) {
+  if (meta.private && !allowPrivate) {
     throw new ReleaseSourceError(422, `${repository.fullName} is private. A plugin offered to everyone has to come from a public repository.`, 'repository_private');
   }
   if (meta.archived || meta.disabled) {
@@ -228,6 +239,7 @@ export async function fetchLatestRelease(repository, { token = '', fetchImpl = f
       fullName: String(meta.full_name || repository.fullName),
       url: String(meta.html_url || repository.url),
       description: String(meta.description || ''),
+      private: Boolean(meta.private),
     },
     release: {
       id: String(release.id),
@@ -238,7 +250,7 @@ export async function fetchLatestRelease(repository, { token = '', fetchImpl = f
       publishedAt: String(release.published_at || ''),
       assets: (Array.isArray(release.assets) ? release.assets : [])
         .filter((asset) => asset && asset.state !== 'uploading')
-        .map((asset) => ({ name: String(asset.name || ''), size: Number(asset.size) || 0, url: String(asset.browser_download_url || '') })),
+        .map((asset) => ({ id: String(asset.id || ''), name: String(asset.name || ''), size: Number(asset.size) || 0, url: String(asset.browser_download_url || '') })),
     },
   };
 }
@@ -256,9 +268,12 @@ export function choosePackage({ repository, release, version }) {
     || zips.find((asset) => asset.name.toLowerCase().includes(version.toLowerCase()))
     || zips.find((asset) => asset.name.toLowerCase().includes(repoName));
   const asset = exact || (zips.length === 1 ? zips[0] : null) || zips[0];
-  if (asset) return { url: asset.url, kind: 'asset', name: asset.name };
+  // A private repository's files are only reachable through the API (with the repository's token); a public one's through the open download hosts.
+  if (asset) return { url: repository.private && asset.id ? `${GITHUB_API}/repos/${repository.fullName}/releases/assets/${encodeURIComponent(asset.id)}` : asset.url, kind: 'asset', name: asset.name };
   return {
-    url: `https://codeload.github.com/${repository.fullName}/zip/refs/tags/${encodeURIComponent(release.tag)}`,
+    url: repository.private
+      ? `${GITHUB_API}/repos/${repository.fullName}/zipball/${encodeURIComponent(release.tag)}`
+      : `https://codeload.github.com/${repository.fullName}/zip/refs/tags/${encodeURIComponent(release.tag)}`,
     kind: 'source',
     name: `${repoName}-${release.tag}.zip`,
   };
@@ -391,12 +406,21 @@ export const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('h
  * Everything from a repository address to a scanned, normalised package.
  *
  * @param {string} repositoryUrl
- * @param {{ expectedSlug?: string, token?: string, fetchImpl?: typeof fetch, isOwner?: boolean }} [options]
+ * @param {{ expectedSlug?: string, token?: string, fetchImpl?: typeof fetch, isOwner?: boolean, allowPrivate?: boolean, privateToken?: string, requirePrivate?: boolean }} [options]
  * `expectedSlug`: the plugin this repository is already linked to; the manifest's id has to equal it.
+ * `allowPrivate` / `privateToken`: a paid plugin's repository is private and is read with its own token. `requirePrivate` refuses a
+ * public repository (the source of something sold must not be downloadable by anyone).
  */
-export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false, trusted = false, approvedFindings = null } = {}) {
+export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = '', token = '', fetchImpl = fetch, isOwner = false, trusted = false, approvedFindings = null, allowCommercial = false, allowPrivate = false, privateToken = '', requirePrivate = false } = {}) {
   const repository = parseRepositoryUrl(repositoryUrl);
-  const latest = await fetchLatestRelease(repository, { token, fetchImpl });
+  const readToken = allowPrivate && privateToken ? privateToken : token;
+  const latest = await fetchLatestRelease(repository, { token: readToken, fetchImpl, allowPrivate });
+  if (requirePrivate && !latest.repository.private) {
+    throw new ReleaseSourceError(422, `${latest.repository.fullName} is a public repository. The repository of a plugin that is sold must be private, so its source is not free for anyone to download. Make it private on GitHub, create a read-only access token for it and try again.`, 'repository_public_paid');
+  }
+  if (latest.repository.private && !privateToken) {
+    throw new ReleaseSourceError(422, `${latest.repository.fullName} is private, so it needs its own read-only access token.`, 'repository_token_missing');
+  }
   const { release } = latest;
 
   const tagVersion = versionFromTag(release.tag);
@@ -405,7 +429,20 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   }
 
   const choice = choosePackage({ repository: latest.repository, release, version: tagVersion });
-  const bytes = await downloadLimited(choice.url, { fetchImpl });
+  const bytes = await downloadLimited(choice.url, { fetchImpl, token: latest.repository.private ? privateToken : '' });
+  const judged = judgePackage(bytes, {
+    expectedSlug, isOwner, trusted, approvedFindings, allowCommercial, version: tagVersion, label: `release ${release.tag}`, stampToVersion: true,
+    source: { repository: latest.repository.fullName, tag: release.tag, package: choice.kind, private: latest.repository.private },
+  });
+  return { repository: latest.repository, release, package: { kind: choice.kind, name: choice.name }, ...judged };
+}
+
+/**
+ * Scans and normalises one package, whichever way it arrived (a GitHub release, or a ZIP the author uploaded), and decides what the
+ * catalogue does with it. `stampToVersion`: a release's manifest that names another version than its tag is stamped with the tag's (the
+ * tag is what was published); an uploaded ZIP is never changed, its manifest version is the version.
+ */
+function judgePackage(bytes, { expectedSlug = '', isOwner = false, trusted = false, approvedFindings = null, allowCommercial = false, version = '', label, stampToVersion, source }) {
   const unpacked = normalisePackage(unpackLimited(bytes));
   const manifest = unpacked.manifest;
 
@@ -413,24 +450,37 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   if (!PLUGIN_ID.test(id)) {
     throw new ReleaseSourceError(422, 'The manifest id has to be lower-case letters, digits and hyphens (for example my-plugin).', 'manifest_id');
   }
-  if (isCommercialPlugin(id) || isDevEditionPlugin(id)) {
+  // The four plugins this platform sells have ids nobody else may claim (`allowCommercial`, the platform owner): anyone else naming one of
+  // these ids would be publishing under a sold plugin's name. They are listed, priced, protected and updated exactly like any other
+  // paid plugin; only the name is reserved. A development-edition id is never allowed.
+  if ((isCommercialPlugin(id) && !allowCommercial) || isDevEditionPlugin(id)) {
     throw new ReleaseSourceError(422, `"${id}" is the id of a plugin that ships with React-WP. Choose another id in manifest.json.`, 'manifest_reserved');
   }
   if (manifest.edition === 'dev') {
     throw new ReleaseSourceError(422, 'manifest.json says "edition": "dev", which is only for plugins that never leave the vendor.', 'manifest_edition');
   }
   if (expectedSlug && id !== expectedSlug) {
-    throw new ReleaseSourceError(422, `This repository is linked to "${expectedSlug}", but the manifest in release ${release.tag} says "${id}". The id of a published plugin cannot change.`, 'manifest_id_changed');
+    throw new ReleaseSourceError(422, `This plugin is "${expectedSlug}", but the manifest in ${label} says "${id}". The id of a published plugin cannot change.`, 'manifest_id_changed');
+  }
+  const manifestVersion = String(manifest.version || '').trim();
+  let finalVersion = version;
+  if (!stampToVersion) {
+    finalVersion = versionFromTag(manifestVersion) || '';
+    if (!finalVersion) {
+      throw new ReleaseSourceError(422, `manifest.json says version "${manifestVersion}", which is not a version. Use three numbers such as 1.0.1.`, 'version_invalid');
+    }
+    if (version && version !== finalVersion) {
+      throw new ReleaseSourceError(422, `The version is ${version}, but manifest.json inside the ZIP says ${manifestVersion}. They must match.`, 'version_mismatch');
+    }
   }
   // The tag is what the author published and what clients are offered. A manifest that still names an older
   // version would make every site that installs this release report that old version and offer the update again,
   // so the stored copy is stamped with the tag's version instead of refusing the release. The change is listed in the report.
-  const manifestVersion = String(manifest.version || '').trim();
   let pack = unpacked;
   let stamped = '';
-  if (manifestVersion !== tagVersion) {
-    pack = stampManifestVersion(unpacked, tagVersion);
-    stamped = `manifest.json said version ${manifestVersion || '(none)'}; the marketplace set it to ${tagVersion} to match the release tag ${release.tag}. Bump the version in your repository's manifest.json before tagging to avoid this.`;
+  if (stampToVersion && manifestVersion !== finalVersion) {
+    pack = stampManifestVersion(unpacked, finalVersion);
+    stamped = `manifest.json said version ${manifestVersion || '(none)'}; the marketplace set it to ${finalVersion} to match ${label}. Bump the version in your repository's manifest.json before tagging to avoid this.`;
   }
 
   const report = vetFiles(pack.entries, { docsAreInert: true });
@@ -450,11 +500,8 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
   const policy = decidePolicy({ severity: sameFindings ? 'clean' : severity, isOwner, trusted });
   const zip = pack.zip;
   return {
-    repository: latest.repository,
-    release,
-    package: { kind: choice.kind, name: choice.name },
     id,
-    version: tagVersion,
+    version: finalVersion,
     manifest: {
       name: String(manifest.name || id),
       description: String(manifest.description || ''),
@@ -464,8 +511,28 @@ export async function resolveReleaseCandidate(repositoryUrl, { expectedSlug = ''
     zip,
     size: zip.length,
     sha256: sha256Hex(zip),
-    report: { ...report, source: { repository: latest.repository.fullName, tag: release.tag, package: choice.kind, sha256: sha256Hex(zip) }, severity },
+    report: { ...report, source: { ...source, sha256: sha256Hex(zip) }, severity },
     severity,
     policy,
+  };
+}
+
+/**
+ * The other way in: a ZIP the author (or the owner) uploads. It goes through exactly the same scan and the same decision as a GitHub
+ * release; the only difference is where the bytes come from. The result has the shape `resolveReleaseCandidate` returns, with no
+ * repository and an empty release (no tag, no GitHub id).
+ */
+export function resolveUploadCandidate(bytes, { fileName = '', version = '', changelog = '', expectedSlug = '', isOwner = false, trusted = false, approvedFindings = null, allowCommercial = false } = {}) {
+  if (!bytes?.length) throw new ReleaseSourceError(400, 'Choose the plugin ZIP to upload.', 'zip_missing');
+  if (bytes.length > MAX_DOWNLOAD_BYTES) throw tooLarge(MAX_DOWNLOAD_BYTES);
+  const judged = judgePackage(bytes, {
+    expectedSlug, isOwner, trusted, approvedFindings, allowCommercial, version: String(version || '').trim(), label: 'the uploaded ZIP', stampToVersion: false,
+    source: { upload: String(fileName || '').slice(0, 120) },
+  });
+  return {
+    repository: null,
+    release: { id: '', tag: '', name: '', body: String(changelog || '').slice(0, 8000), url: '', publishedAt: '' },
+    package: { kind: 'upload', name: String(fileName || '').slice(0, 120) },
+    ...judged,
   };
 }

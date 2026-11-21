@@ -81,23 +81,11 @@ export const COMMERCIAL_PLUGIN_ADDONS = Object.freeze({
 });
 
 /**
- * Catalogue slugs whose plugin id is different, `slug in the marketplace` -> `id on disk`.
- *
- * A marketplace listing is keyed by `rwp_plugins.slug`, which for a first-party plugin is normally the
- * plugin id (`rwp-shop` is listed as `rwp-shop`). `rwp-chat` is the exception: it is listed as
- * `rwp-chat-ai-assistant`, its marketing name, so `pluginLicenseAddon('rwp-chat-ai-assistant')` answers
- * `CHAT-AI-ASSISTANT` - an addon no installed plugin validates, because the gate on a site asks for
- * `COMMERCIAL_PLUGIN_ADDONS['rwp-chat']`, i.e. `CHAT`. Without this alias the marketplace would hand out
- * a key the chat plugin rejects, or (before the opaque-token path worked) fail while minting one.
- *
- * The mapping is read by `marketplaceAddonFor` in `server/pluginLicense.mjs`, which is what signs a
- * licence. The site's own gate is unaffected: it always asks with the installed plugin id, so the alias
- * can never widen what a plugin accepts. `npm run check:plugins` fails if an alias names an id that is
- * not a sold plugin or not a folder in `plugins/`, so a rename cannot leave a stale entry behind.
+ * Catalogue slugs whose plugin id is different: none. A plugin has ONE name, the `id` in its manifest.json (`rwp-shop`, `rwp-chat`), and
+ * the marketplace listing's slug is that same id. The map stays (empty) so `pluginIdForSlug` and `npm run check:plugins` keep one place that
+ * says so; an entry here would bring back a plugin with two names, which the marketplace no longer accepts.
  */
-export const MARKETPLACE_PLUGIN_SLUGS = Object.freeze({
-  'rwp-chat-ai-assistant': 'rwp-chat',
-});
+export const MARKETPLACE_PLUGIN_SLUGS = Object.freeze({});
 
 /**
  * The plugin id a marketplace slug names: the alias above when one exists, the slug itself otherwise.
