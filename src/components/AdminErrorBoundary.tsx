@@ -23,6 +23,14 @@ interface State {
   error: Error | null;
 }
 
+const RELOAD_FLAG = 'rwp-chunk-reload';
+
+/** Browsers word a failed lazy import differently; match the common messages. */
+function isChunkLoadError(error: Error): boolean {
+  return /dynamically imported module|Importing a module script failed|error loading dynamically imported|Loading chunk .* failed/i
+    .test(`${error.name} ${error.message}`);
+}
+
 export default class AdminErrorBoundary extends Component<{ children: ReactNode }, State> {
   state: State = { error: null };
 
@@ -33,10 +41,52 @@ export default class AdminErrorBoundary extends Component<{ children: ReactNode 
   componentDidCatch(error: Error, info: ErrorInfo) {
     // The boundary's own UI shows the message; the stack trace is only useful in the console.
     console.error('Admin screen crashed:', error, info.componentStack);
+    // A screen's chunk is gone after a new deploy (hashed file names change) while this tab still
+    // runs the old build. React.lazy caches the failed import, so "try again" can never succeed:
+    // reload once to pick up the new build. The session flag stops a reload loop if the file is
+    // genuinely missing or the network is down.
+    if (isChunkLoadError(error)) {
+      try {
+        if (sessionStorage.getItem(RELOAD_FLAG) !== '1') {
+          sessionStorage.setItem(RELOAD_FLAG, '1');
+          window.location.reload();
+          return;
+        }
+      } catch { /* storage blocked: fall through to the manual message */ }
+    }
   }
+
+  componentDidMount() {
+    // Re-arm the one-time reload only after the screen has stayed up for a while, so a chunk that
+    // is truly missing cannot loop (mount -> fail -> reload -> mount ...).
+    this.rearm = window.setTimeout(() => {
+      try { sessionStorage.removeItem(RELOAD_FLAG); } catch { /* ignore */ }
+    }, 30000);
+  }
+
+  componentWillUnmount() {
+    window.clearTimeout(this.rearm);
+  }
+
+  private rearm = 0;
 
   render() {
     if (!this.state.error) return this.props.children;
+    if (isChunkLoadError(this.state.error)) {
+      return (
+        <div role="alert" style={{
+          margin: '24px', padding: '20px 24px', borderRadius: '10px',
+          border: '1px solid #f5c2c7', background: '#fdf2f2', color: '#842029',
+        }}>
+          <h2 style={{ margin: '0 0 8px' }}>A new version of the site is available</h2>
+          <p style={{ margin: '0 0 12px' }}>Reload the page to load this screen.</p>
+          <button type="button" onClick={() => window.location.reload()}
+            style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #842029', background: '#fff', cursor: 'pointer' }}>
+            Reload
+          </button>
+        </div>
+      );
+    }
     return (
       <div role="alert" style={{
         margin: '24px', padding: '20px 24px', borderRadius: '10px',

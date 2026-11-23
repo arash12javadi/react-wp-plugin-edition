@@ -20,7 +20,6 @@ import { createHash } from 'node:crypto';
 import { centralFetch } from './centralFetch.mjs';
 import { verifyPackage } from './packageCrypto.mjs';
 import { InstallError, MAX_ZIP_BYTES } from './pluginInstaller.mjs';
-import { isCommercialPlugin } from '../src/lib/pluginLicense.js';
 
 export const DEFAULT_CATALOGUE_ORIGIN = 'https://react-wp.com';
 export const CATALOGUE_DOMAIN = 'catalogue';
@@ -60,9 +59,10 @@ export async function fetchCatalogueReleases({ catalogue, ids, fetchImpl = fetch
       if (!wanted.includes(id) || !row || typeof row !== 'object') continue;
       const version = trimmed(row.version);
       if (row.paid === true) {
-        // A plugin for sale: only the fact that a newer version exists. No package comes with it (asset: null), and the four plugins
-        // this platform sells have their own channel (the account link), so they are not announced twice.
-        if (isCommercialPlugin(id) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) continue;
+        // A plugin for sale: only the fact that a newer version exists. No package comes with it (asset: null). The platform's own four
+        // sold plugins are announced the same way: a site that is connected to the account already has its own Update button (the
+        // account link, `licensedIds` in `planPluginUpdates`), and a site that is not connected is told where the update comes from.
+        if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) continue;
         result.set(id, [{
           id, version, paid: true, tag: trimmed(row.tag) || `v${version}`, title: `${id} ${version}`, released: trimmed(row.released),
           notes: (Array.isArray(row.notes) ? row.notes : []).map((line) => trimmed(String(line)).slice(0, 240)).filter(Boolean).slice(0, 30),

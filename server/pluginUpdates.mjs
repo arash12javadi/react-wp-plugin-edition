@@ -161,18 +161,18 @@ export function planPluginUpdates({ installed, releases, licensedIds = [] }) {
       state = 'no-release';
     } else if (newer) {
       state = 'available';
-      if (isCommercialPlugin(id)) {
-        state = 'unavailable';
-        reason = commercialRefusal(id);
-      } else if (latest.paid) {
-        // A plugin for sale. A connected site that the platform already lists it for has its own Update button (the account link),
-        // so it is not announced twice; any other site is told that a newer version exists and where it comes from.
+      if (latest.paid) {
+        // A plugin for sale (the platform's own four included). A connected site that the platform already lists it for has its own
+        // Update button (the account link), so it is not announced twice; any other site is told that a newer version exists and where it comes from.
         if (licensedIds.includes(id)) {
           state = 'up-to-date';
         } else {
           state = 'unavailable';
           reason = `"${id}" is a paid plugin and version ${latest.version} is out. Connect this site to your react-wp.com account (Plugins → Connect to react-wp.com) to update it here, or download the new version from My licenses on react-wp.com and upload it under Plugins → Upload.`;
         }
+      } else if (isCommercialPlugin(id)) {
+        state = 'unavailable';
+        reason = commercialRefusal(id);
       } else if (!latest.asset) {
         state = 'unavailable';
         reason = `Release ${latest.tag} has no ${id}-${latest.version}.zip asset to install.`;

@@ -69,6 +69,11 @@ export default function ClassicEditor({ value, onChange, placeholder, disabled =
 
   const editor = useEditor({
     editable: !disabled,
+    // Create the editor in an effect, not during render. Building it mid-render makes TipTap flush
+    // React updates from inside React's own commit, which left an orphaned copy of the whole
+    // Presentation section (dead buttons) in the plugin Manage dialog. The empty shell below
+    // covers the one frame before the editor exists.
+    immediatelyRender: false,
     content: value,
     extensions: [
       StarterKit.configure({
