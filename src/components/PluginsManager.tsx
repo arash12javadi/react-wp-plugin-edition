@@ -271,7 +271,11 @@ export default function PluginsManager() {
       const existingById = new Map((existingRows || []).map((row) => [row.plugin_id, row]));
       // The version of a plugin is the one in its folder's manifest.json (what is installed), not the one the running build was made with:
       // after a plugin is updated on disk or from GitHub, the table must say so before the next rebuild.
-      const installedVersion = (plugin: { id: string; version: string }) => diskFiles.plugins.find((item) => item.id === plugin.id)?.version || committed.get(plugin.id) || plugin.version;
+      const installedVersion = (plugin: { id: string; version: string }) => diskFiles.plugins.find((item) => item.id === plugin.id)?.version
+        // The committed version only counts when it is NEWER than the running build (an update that is still deploying). A repository that is
+        // older than the build is not what this site deploys from, and must not hide the version that is running.
+        || (committed.has(plugin.id) && compareVersions(committed.get(plugin.id) as string, plugin.version) > 0 ? committed.get(plugin.id) : '')
+        || plugin.version;
       const metadata = visiblePlugins.map((plugin) => ({
         plugin_id: plugin.id,
         name: plugin.name,
