@@ -29,7 +29,7 @@
 import { readFile } from 'node:fs/promises';
 import { VERCEL_DEPLOY_CONFIG_KEY, deploymentConnectionFrom, isGitDeployConnected, settingsIo } from './gitDeploy/connection.mjs';
 import { GITHUB_CONFIG_KEY } from './integrationConfig.mjs';
-import { githubTargetOrNull } from './deploymentRoutes.mjs';
+import { siteRepositoryTarget } from './deploymentRoutes.mjs';
 import { installedPluginVersions } from './pluginUpdates.mjs';
 import { authorizePluginManager } from './pluginFiles.mjs';
 import { authorizePlatformOwner, currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
@@ -84,8 +84,7 @@ export async function committedVersionsFor(config, headers) {
       accessToken: String(headers?.authorization || '').replace(/^Bearer\s+/i, ''),
     });
     const connection = deploymentConnectionFrom(await io.read(VERCEL_DEPLOY_CONFIG_KEY));
-    if (!isGitDeployConnected(connection)) return new Map();
-    const target = githubTargetOrNull(await io.read(GITHUB_CONFIG_KEY), connection);
+    const target = siteRepositoryTarget({ githubRow: await io.read(GITHUB_CONFIG_KEY), connection: isGitDeployConnected(connection) ? connection : null, env: process.env });
     if (!target) return new Map();
     const rows = await Promise.race([installedPluginVersions(target), new Promise((resolve) => setTimeout(() => resolve([]), 8000))]);
     return new Map(rows.map((row) => [row.id, row.version]));

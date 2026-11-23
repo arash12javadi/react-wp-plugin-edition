@@ -89,6 +89,25 @@ async function committedVersionsCached(target) {
   return rows;
 }
 
+/**
+ * The repository this site is installed from, in order: the Vercel connection's repository, then `RWP_SITE_REPO` (owner/name, optional
+ * `RWP_SITE_BRANCH`), then the repository Vercel itself says built this deployment (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`, set by Vercel),
+ * then the repository saved on the GitHub card. The owner's site is therefore react-wp-dev-edition and a client's is its own, whatever the card says.
+ * The token is the GitHub card's (or `GITHUB_TOKEN`); a public repository is read without one. Null when no repository can be named.
+ */
+export function siteRepositoryTarget({ githubRow, connection, env = {} }) {
+  const token = githubTokenFrom(githubRow) || str(env.GITHUB_TOKEN);
+  const fromVercel = str(env.VERCEL_GIT_REPO_OWNER) && str(env.VERCEL_GIT_REPO_SLUG) ? `${str(env.VERCEL_GIT_REPO_OWNER)}/${str(env.VERCEL_GIT_REPO_SLUG)}` : '';
+  const repository = str(connection?.repository) || str(env.RWP_SITE_REPO) || fromVercel || str(githubRow?.repository);
+  if (!repository) return null;
+  const branch = str(connection?.branch) || str(env.RWP_SITE_BRANCH) || str(env.VERCEL_GIT_COMMIT_REF) || str(githubRow?.branch) || 'main';
+  try {
+    return repositoryTarget(token, repository, branch);
+  } catch {
+    return null;
+  }
+}
+
 /** A repository and branch from the stored GitHub row, for the commit-status fallback. */
 export function githubTargetOrNull(githubRow, connection) {
   const token = githubTokenFrom(githubRow);
@@ -246,6 +265,14 @@ export async function handleDeploymentRequest(options) {
       });
     }
 
+    // The version each plugin has in the repository THIS site is installed from (`siteRepositoryTarget`), read live from GitHub: the Plugins table's
+    // Version column. It does not need the Vercel connection: the owner's site reads react-wp-dev-edition, a client's its own repository.
+    if (pathname === `${PREFIX}/plugin-versions`) {
+      const target = siteRepositoryTarget({ githubRow, connection, env });
+      if (!target) return refuse(409, 'The repository this site is installed from is not known. Connect GitHub under Settings → Integrations, or set RWP_SITE_REPO (owner/name).');
+      return ok(200, { plugins: await committedVersionsCached(target), repository: target.repository, branch: target.branch });
+    }
+
     // The newest version the marketplace has live for these plugin ids (what its GitHub release says), for the Plugins table. It needs no
     // repository connection, so the owner's own site (which publishes from its plugin repositories) sees it too. Never fails the screen.
     if (pathname === `${PREFIX}/plugin-latest`) {
@@ -268,9 +295,6 @@ export async function handleDeploymentRequest(options) {
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
     // What the repository holds, which is what the next deployment runs: the Plugins table shows it on hosts that cannot read their own
     // plugin folders (Vercel), so an update that was committed shows its version before the rebuild finishes. Reads manifests only.
-    if (pathname === `${PREFIX}/plugin-versions`) {
-      return ok(200, { plugins: await committedVersionsCached(target) });
-    }
     if (pathname === `${PREFIX}/plugin-updates/check`) {
       // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.
       const licensedIds = Object.keys(licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY).catch(() => null)).latest_versions || {});
