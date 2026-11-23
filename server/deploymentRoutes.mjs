@@ -49,9 +49,9 @@ import { deploymentStatusForCommit } from './gitDeploy/deploymentStatus.mjs';
 import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/coreUpdate.mjs';
 import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
 import { readBranch } from './pluginGitPush.mjs';
-import { applyPluginUpdate, checkPluginUpdates } from './pluginUpdates.mjs';
+import { applyPluginUpdate, checkPluginUpdates, installedPluginVersions } from './pluginUpdates.mjs';
 import { LICENSE_LINK_CONFIG_KEY, licenseLinkFrom } from './licenseLink.mjs';
-import { catalogueFrom } from './catalogueUpdates.mjs';
+import { catalogueFrom, fetchCatalogueReleases } from './catalogueUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
 const PATHS = new Set([
@@ -78,7 +78,7 @@ const ok = (status, body) => ({ status, body: { success: true, ok: true, ...body
 const refuse = (status, error, extra = {}) => ({ status, body: { success: false, ok: false, error, ...extra } });
 
 /** A repository and branch from the stored GitHub row, for the commit-status fallback. */
-function githubTargetOrNull(githubRow, connection) {
+export function githubTargetOrNull(githubRow, connection) {
   const token = githubTokenFrom(githubRow);
   const repository = connection.repository || str(githubRow?.repository);
   if (!token || !repository) return null;
@@ -234,6 +234,16 @@ export async function handleDeploymentRequest(options) {
       });
     }
 
+    // The newest version the marketplace has live for these plugin ids (what its GitHub release says), for the Plugins table. It needs no
+    // repository connection, so the owner's own site (which publishes from its plugin repositories) sees it too. Never fails the screen.
+    if (pathname === `${PREFIX}/plugin-latest`) {
+      const ids = (Array.isArray(body.ids) ? body.ids : []).map((id) => str(id)).filter(Boolean).slice(0, 50);
+      const offers = await fetchCatalogueReleases({ catalogue: catalogueFrom(env), ids, fetchImpl });
+      const latest = {};
+      for (const [id, list] of offers) if (list[0]?.version) latest[id] = { version: list[0].version, tag: list[0].tag, paid: list[0].paid === true };
+      return ok(200, { latest });
+    }
+
     // Core updates.
     if (!isGitDeployConnected(connection)) {
       return refuse(409, 'Connect this site to its GitHub repository and Vercel project first (Settings → Integrations → GitHub & Vercel).');
@@ -244,6 +254,11 @@ export async function handleDeploymentRequest(options) {
 
     // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
     // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
+    // What the repository holds, which is what the next deployment runs: the Plugins table shows it on hosts that cannot read their own
+    // plugin folders (Vercel), so an update that was committed shows its version before the rebuild finishes. Reads manifests only.
+    if (pathname === `${PREFIX}/plugin-versions`) {
+      return ok(200, { plugins: await installedPluginVersions(target) });
+    }
     if (pathname === `${PREFIX}/plugin-updates/check`) {
       // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.
       const licensedIds = Object.keys(licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY).catch(() => null)).latest_versions || {});

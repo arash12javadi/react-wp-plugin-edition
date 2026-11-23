@@ -28,6 +28,9 @@
  */
 import { readFile } from 'node:fs/promises';
 import { VERCEL_DEPLOY_CONFIG_KEY, deploymentConnectionFrom, isGitDeployConnected, settingsIo } from './gitDeploy/connection.mjs';
+import { GITHUB_CONFIG_KEY } from './integrationConfig.mjs';
+import { githubTargetOrNull } from './deploymentRoutes.mjs';
+import { installedPluginVersions } from './pluginUpdates.mjs';
 import { authorizePluginManager } from './pluginFiles.mjs';
 import { authorizePlatformOwner, currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
 import {
@@ -67,6 +70,33 @@ async function gitDeployConnectedFor(config, headers) {
     return false;
   }
 }
+
+/**
+ * The version each plugin has in the site's own GitHub repository (its committed `manifest.json`): what the next deployment runs. A site that
+ * deploys from a repository updates a plugin by committing it, so this, not the running build, is what is installed. Empty when the site is not
+ * connected, or when GitHub cannot be read in a few seconds: the check then compares the running build's versions, as it always did.
+ */
+export async function committedVersionsFor(config, headers) {
+  try {
+    const io = settingsIo({
+      supabaseUrl: config?.supabaseUrl,
+      supabaseKey: config?.supabasePublishableKey,
+      accessToken: String(headers?.authorization || '').replace(/^Bearer\s+/i, ''),
+    });
+    const connection = deploymentConnectionFrom(await io.read(VERCEL_DEPLOY_CONFIG_KEY));
+    if (!isGitDeployConnected(connection)) return new Map();
+    const target = githubTargetOrNull(await io.read(GITHUB_CONFIG_KEY), connection);
+    if (!target) return new Map();
+    const rows = await Promise.race([installedPluginVersions(target), new Promise((resolve) => setTimeout(() => resolve([]), 8000))]);
+    return new Map(rows.map((row) => [row.id, row.version]));
+  } catch {
+    return new Map();
+  }
+}
+
+/** `plugins` with each version replaced by the committed one where the repository has it. */
+export const withCommittedVersions = (plugins, committed) =>
+  plugins.map((plugin) => (committed.get(plugin.id) ? { ...plugin, version: committed.get(plugin.id) } : plugin));
 
 /** The status code a refusal carries, and always a sentence — never a bare status. */
 const fail = (error) => ({
@@ -168,7 +198,7 @@ async function check(body, config, headers, readOptions, owner) {
   return checkResponse({
     stored,
     installed: await installedFor(stored),
-    plugins: installedPluginsFrom(body.plugins),
+    plugins: withCommittedVersions(installedPluginsFrom(body.plugins), await committedVersionsFor(config, headers)),
     owner,
     latestCommit: await latestCommitFor({ owner: await viewerCommitOwner(config, headers) }),
   });

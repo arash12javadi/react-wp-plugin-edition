@@ -179,6 +179,14 @@ export interface PluginUpdateRow {
 export const checkPluginUpdates = () =>
   call<{ repository: string; releaseRepository: string; plugins: PluginUpdateRow[] }>(`${BASE}/plugin-updates/check`, { method: 'POST', body: {} });
 
+/** The newest version the marketplace has live for each plugin id (its GitHub release); a plugin it does not know is absent. */
+export const latestPluginVersions = (ids: string[]) =>
+  call<{ latest: Record<string, { version: string; tag: string; paid: boolean }> }>(`${BASE}/plugin-latest`, { method: 'POST', body: { ids } });
+
+/** The plugins the repository holds and the version in each manifest: what the next deployment runs. */
+export const committedPluginVersions = () =>
+  call<{ plugins: Array<{ id: string; name: string; version: string }> }>(`${BASE}/plugin-versions`, { method: 'POST', body: {} });
+
 /** First install of a marketplace plugin, from the package the marketplace scanned and signed. */
 export const installMarketplacePlugin = (input: { id: string; version: string }) =>
   call<{ result: { update: { id: string; to: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[] }; deployment: { sha: string; state: 'pending' } | null }>(`${BASE}/plugin-updates/install`, { method: 'POST', body: input });

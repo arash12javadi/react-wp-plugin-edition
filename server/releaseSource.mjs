@@ -166,7 +166,9 @@ export async function downloadLimited(url, { fetchImpl = fetch, maxBytes = MAX_D
       response = await fetchImpl(parsed.href, {
         redirect: 'manual',
         headers: authenticated
-          ? { 'User-Agent': 'react-wp-plugin-marketplace', Accept: 'application/octet-stream', 'X-GitHub-Api-Version': '2022-11-28', Authorization: `Bearer ${token}` }
+          // A release asset is asked for as raw bytes; the zipball of a tag is not an asset, and GitHub answers HTTP 415 when it is asked for as
+          // application/octet-stream, so it is asked for the normal way (it answers with a redirect to the signed download address).
+          ? { 'User-Agent': 'react-wp-plugin-marketplace', Accept: /\/releases\/assets\//.test(parsed.pathname) ? 'application/octet-stream' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: `Bearer ${token}` }
           : { 'User-Agent': 'react-wp-plugin-marketplace' },
       });
     } catch {

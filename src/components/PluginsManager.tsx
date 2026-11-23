@@ -21,6 +21,8 @@ import LicenseLinkPanel from './LicenseLinkPanel';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
 import { installPluginSchema } from '../lib/pluginSchema';
+import { committedPluginVersions, latestPluginVersions } from '../lib/gitDeployment';
+import { compareVersions } from '../lib/updates';
 import { waitForDatabaseApi } from '../lib/boot';
 import styles from './PluginsManager.module.css';
 
@@ -65,6 +67,8 @@ interface PluginLicenseReport {
 
 interface PluginRow extends RwpInstalledPlugin {
   plugin_id: string;
+  /** Set when the folder on disk is at another version than the running build: the build still shows `version` until it is rebuilt. */
+  built_version?: string;
   folder: string | null;
   source: string;
   installed_at: string;
@@ -82,7 +86,7 @@ interface PluginFiles {
   problems: string[];
 }
 
-const fetchPluginFiles = async (accessToken: string | undefined): Promise<Omit<PluginFiles, 'notBuilt'> & { plugins: Array<{ id: string; folder: string; name: string }> }> => {
+const fetchPluginFiles = async (accessToken: string | undefined): Promise<Omit<PluginFiles, 'notBuilt'> & { plugins: Array<{ id: string; folder: string; name: string; version?: string }> }> => {
   const unavailable = (reason: string) => ({ available: false, reason, onDisk: [], plugins: [], problems: [] });
   if (!accessToken) return unavailable('You are not signed in.');
   let response: Response;
@@ -91,7 +95,7 @@ const fetchPluginFiles = async (accessToken: string | undefined): Promise<Omit<P
   } catch {
     return unavailable('The Node server (server.mjs) could not be reached.');
   }
-  const body = await response.json().catch(() => ({})) as { plugins?: Array<{ id: string; folder: string; name: string }>; problems?: string[]; error?: string };
+  const body = await response.json().catch(() => ({})) as { plugins?: Array<{ id: string; folder: string; name: string; version?: string }>; problems?: string[]; error?: string };
   if (!response.ok) {
     return unavailable(response.status === 404
       ? 'This host has no /api/plugin-files endpoint. Plugin files can only be managed when the site runs on server.mjs (npm start); on Vercel, remove the folder from the repository and redeploy.'
@@ -161,6 +165,8 @@ export default function PluginsManager() {
   const [uploadOpen, setUploadOpen] = useState(pendingInstall !== null);
   /** Bumped after an upload so the disk listing (and its "restart to load" notice) is re-read. */
   const [reloadKey, setReloadKey] = useState(0);
+  /** The newest version of each plugin that the marketplace has live (read from the plugin's GitHub release), shown beside the installed one. */
+  const [latestVersions, setLatestVersions] = useState<Record<string, string>>({});
   /** Every stored key, `{ [pluginId]: key }`, as the `rwp_plugin_licenses` option holds them. */
   const [licenseKeys, setLicenseKeys] = useState<Record<string, string>>({});
   /**
@@ -211,6 +217,18 @@ export default function PluginsManager() {
   useEffect(() => rwp.subscribe(() => refresh((value) => value + 1)), []);
 
   useEffect(() => {
+    const ids = plugins.map((plugin) => plugin.plugin_id);
+    if (!ids.length) return undefined;
+    let current = true;
+    latestPluginVersions(ids)
+      .then((answer) => { if (current) setLatestVersions(Object.fromEntries(Object.entries(answer.latest).map(([id, row]) => [id, row.version]))); })
+      .catch(() => undefined); // Not the owner, or the marketplace is unreachable: the table simply shows what is installed.
+    return () => { current = false; };
+    // The ids are what matters; the rows change on every toggle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plugins.map((plugin) => plugin.plugin_id).join(',')]);
+
+  useEffect(() => {
     let mounted = true;
     const loadPlugins = async () => {
       const supabase = client;
@@ -223,6 +241,16 @@ export default function PluginsManager() {
       if (existingError) throw existingError;
       if (activeError) throw activeError;
       const diskFiles = await fetchPluginFiles(sessionData.session?.access_token);
+      // A host with no readable plugin folders (Vercel) installs a plugin by committing it to the repository, so the committed manifests are what is
+      // installed: they say so before the rebuild. Quietly skipped when the site is not connected to its repository.
+      const committed = new Map<string, string>();
+      if (!diskFiles.available) {
+        try {
+          for (const row of (await committedPluginVersions()).plugins) committed.set(row.id, row.version);
+        } catch {
+          // Not connected, or GitHub could not be reached: the table keeps the version the running build knows.
+        }
+      }
       // Like WordPress, a plugin is installed while its folder exists. The running build can still
       // contain a folder deleted since it was built (npm start), so the disk listing decides.
       const visiblePlugins = diskFiles.available
@@ -241,10 +269,13 @@ export default function PluginsManager() {
       // new plugins start inactive.
       const storedActiveIds = activeRow ? readOptionIds(activeRow.option_value) : null;
       const existingById = new Map((existingRows || []).map((row) => [row.plugin_id, row]));
+      // The version of a plugin is the one in its folder's manifest.json (what is installed), not the one the running build was made with:
+      // after a plugin is updated on disk or from GitHub, the table must say so before the next rebuild.
+      const installedVersion = (plugin: { id: string; version: string }) => diskFiles.plugins.find((item) => item.id === plugin.id)?.version || committed.get(plugin.id) || plugin.version;
       const metadata = visiblePlugins.map((plugin) => ({
         plugin_id: plugin.id,
         name: plugin.name,
-        version: plugin.version,
+        version: installedVersion(plugin),
         author: plugin.author || null,
         description: plugin.description || '',
         folder: `plugins/${diskFiles.plugins.find((item) => item.id === plugin.id)?.folder || plugin.id}`,
@@ -298,6 +329,8 @@ export default function PluginsManager() {
       const mergedRows = dbRows.map((row) => ({
         ...row,
         ...(registeredById.get(row.plugin_id) || {}),
+        version: installedVersion({ id: row.plugin_id, version: registeredById.get(row.plugin_id)?.version || row.version }),
+        built_version: registeredById.get(row.plugin_id) && registeredById.get(row.plugin_id)!.version !== installedVersion({ id: row.plugin_id, version: registeredById.get(row.plugin_id)!.version }) ? registeredById.get(row.plugin_id)!.version : undefined,
         id: row.plugin_id,
         active: row.active,
       }));
@@ -787,7 +820,7 @@ export default function PluginsManager() {
                         <td className={styles.checkCell}><RowCheckbox selection={selection} id={plugin.plugin_id} label={plugin.name} /></td>
                         <td><strong>{plugin.name}</strong><small>{plugin.plugin_id}</small></td>
                         <td>{plugin.description || 'No description provided.'}</td>
-                        <td>{plugin.version}</td>
+                        <td>{plugin.version}{latestVersions[plugin.plugin_id] && compareVersions(latestVersions[plugin.plugin_id], plugin.version) > 0 && <><br /><small title="The marketplace has a newer version, read from the plugin's GitHub release. Check for updates to install it.">GitHub: {latestVersions[plugin.plugin_id]} available</small></>}{plugin.built_version && <><br /><small title="The running build was made with an older version. Rebuild (npm start) or redeploy to run the installed one.">running {plugin.built_version}: rebuild needed</small></>}</td>
                         <td>{plugin.author || '—'}</td>
                         <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
                         <td>
