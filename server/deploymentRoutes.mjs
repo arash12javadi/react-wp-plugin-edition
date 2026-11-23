@@ -77,6 +77,18 @@ const bearerToken = (headers = {}) => String(headers.authorization || headers.Au
 const ok = (status, body) => ({ status, body: { success: true, ok: true, ...body } });
 const refuse = (status, error, extra = {}) => ({ status, body: { success: false, ok: false, error, ...extra } });
 
+/** One read of the repository's manifests serves every admin opening the Plugins screen for a minute: it costs one GitHub call per plugin. */
+const COMMITTED_TTL_MS = 60_000;
+const committedCache = new Map();
+async function committedVersionsCached(target) {
+  const key = `${target.owner}/${target.repo}@${target.branch}`.toLowerCase();
+  const hit = committedCache.get(key);
+  if (hit && Date.now() - hit.at < COMMITTED_TTL_MS) return hit.rows;
+  const rows = await installedPluginVersions(target);
+  committedCache.set(key, { at: Date.now(), rows });
+  return rows;
+}
+
 /** A repository and branch from the stored GitHub row, for the commit-status fallback. */
 export function githubTargetOrNull(githubRow, connection) {
   const token = githubTokenFrom(githubRow);
@@ -257,7 +269,7 @@ export async function handleDeploymentRequest(options) {
     // What the repository holds, which is what the next deployment runs: the Plugins table shows it on hosts that cannot read their own
     // plugin folders (Vercel), so an update that was committed shows its version before the rebuild finishes. Reads manifests only.
     if (pathname === `${PREFIX}/plugin-versions`) {
-      return ok(200, { plugins: await installedPluginVersions(target) });
+      return ok(200, { plugins: await committedVersionsCached(target) });
     }
     if (pathname === `${PREFIX}/plugin-updates/check`) {
       // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.

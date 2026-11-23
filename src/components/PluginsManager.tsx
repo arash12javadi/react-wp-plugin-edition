@@ -241,15 +241,14 @@ export default function PluginsManager() {
       if (existingError) throw existingError;
       if (activeError) throw activeError;
       const diskFiles = await fetchPluginFiles(sessionData.session?.access_token);
-      // A host with no readable plugin folders (Vercel) installs a plugin by committing it to the repository, so the committed manifests are what is
-      // installed: they say so before the rebuild. Quietly skipped when the site is not connected to its repository.
+      // The version a plugin has is the one in `plugins/<id>/manifest.json` of the repository this site deploys from, read live from GitHub (the
+      // owner's site: react-wp-dev-edition; a client's: its own repository). It says what is installed before the rebuild finishes, and a note
+      // under it says when the running build differs. When the site is not connected or GitHub cannot be read, the folder on disk, then the build, answer.
       const committed = new Map<string, string>();
-      if (!diskFiles.available) {
-        try {
-          for (const row of (await committedPluginVersions()).plugins) committed.set(row.id, row.version);
-        } catch {
-          // Not connected, or GitHub could not be reached: the table keeps the version the running build knows.
-        }
+      try {
+        for (const row of (await committedPluginVersions()).plugins) committed.set(row.id, row.version);
+      } catch {
+        // Not connected, or GitHub could not be reached.
       }
       // Like WordPress, a plugin is installed while its folder exists. The running build can still
       // contain a folder deleted since it was built (npm start), so the disk listing decides.
@@ -271,10 +270,8 @@ export default function PluginsManager() {
       const existingById = new Map((existingRows || []).map((row) => [row.plugin_id, row]));
       // The version of a plugin is the one in its folder's manifest.json (what is installed), not the one the running build was made with:
       // after a plugin is updated on disk or from GitHub, the table must say so before the next rebuild.
-      const installedVersion = (plugin: { id: string; version: string }) => diskFiles.plugins.find((item) => item.id === plugin.id)?.version
-        // The committed version only counts when it is NEWER than the running build (an update that is still deploying). A repository that is
-        // older than the build is not what this site deploys from, and must not hide the version that is running.
-        || (committed.has(plugin.id) && compareVersions(committed.get(plugin.id) as string, plugin.version) > 0 ? committed.get(plugin.id) : '')
+      const installedVersion = (plugin: { id: string; version: string }) => committed.get(plugin.id)
+        || diskFiles.plugins.find((item) => item.id === plugin.id)?.version
         || plugin.version;
       const metadata = visiblePlugins.map((plugin) => ({
         plugin_id: plugin.id,
@@ -824,7 +821,7 @@ export default function PluginsManager() {
                         <td className={styles.checkCell}><RowCheckbox selection={selection} id={plugin.plugin_id} label={plugin.name} /></td>
                         <td><strong>{plugin.name}</strong><small>{plugin.plugin_id}</small></td>
                         <td>{plugin.description || 'No description provided.'}</td>
-                        <td>{plugin.version}{latestVersions[plugin.plugin_id] && compareVersions(latestVersions[plugin.plugin_id], plugin.version) > 0 && <><br /><small title="The marketplace has a newer version, read from the plugin's GitHub release. Check for updates to install it.">GitHub: {latestVersions[plugin.plugin_id]} available</small></>}{plugin.built_version && <><br /><small title="The running build was made with an older version. Rebuild (npm start) or redeploy to run the installed one.">running {plugin.built_version}: rebuild needed</small></>}</td>
+                        <td>{plugin.version}{latestVersions[plugin.plugin_id] && compareVersions(latestVersions[plugin.plugin_id], plugin.version) > 0 && <><br /><small title="The marketplace has a newer version, read from the plugin's GitHub release. Check for updates to install it.">GitHub: {latestVersions[plugin.plugin_id]} available</small></>}{plugin.built_version && <><br /><small title="The running build was made with another version than the one in the repository. Rebuild (npm start) or redeploy to run the version shown.">running {plugin.built_version}: rebuild needed</small></>}</td>
                         <td>{plugin.author || '—'}</td>
                         <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
                         <td>

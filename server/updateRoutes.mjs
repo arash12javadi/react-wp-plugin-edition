@@ -31,7 +31,6 @@ import { VERCEL_DEPLOY_CONFIG_KEY, deploymentConnectionFrom, isGitDeployConnecte
 import { GITHUB_CONFIG_KEY } from './integrationConfig.mjs';
 import { githubTargetOrNull } from './deploymentRoutes.mjs';
 import { installedPluginVersions } from './pluginUpdates.mjs';
-import { compareVersions } from './versions.mjs';
 import { authorizePluginManager } from './pluginFiles.mjs';
 import { authorizePlatformOwner, currentUserRole, isUpdateOwnerRole } from './integrationSettings.mjs';
 import {
@@ -95,9 +94,9 @@ export async function committedVersionsFor(config, headers) {
   }
 }
 
-/** `plugins` with each version replaced by the committed one where the repository has a NEWER one (an update that is still deploying). */
+/** `plugins` with each version replaced by the one committed in the site's repository, where it has the plugin. */
 export const withCommittedVersions = (plugins, committed) =>
-  plugins.map((plugin) => (committed.get(plugin.id) && compareVersions(committed.get(plugin.id), plugin.version) > 0 ? { ...plugin, version: committed.get(plugin.id) } : plugin));
+  plugins.map((plugin) => (committed.get(plugin.id) ? { ...plugin, version: committed.get(plugin.id) } : plugin));
 
 /** The status code a refusal carries, and always a sentence — never a bare status. */
 const fail = (error) => ({
