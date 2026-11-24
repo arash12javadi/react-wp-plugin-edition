@@ -81,6 +81,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
           'Tax rates by country, state, postcode and city, with classes, priorities and compound rates; prices can be entered with or without tax.',
           'Shipping zones with flat rate (per item and per class), free shipping and local pickup.',
           'Stripe Checkout, PayPal, bank transfer, cheque and cash on delivery, with refunds by hand or through Stripe and PayPal.',
+          'Customers can ask for a refund from their order page; you refund it, or decline with a reason they read.',
           'Guest checkout or an account, with orders, downloads and addresses under /my-account.',
         ],
       },
@@ -95,7 +96,7 @@ export const pluginDocs: Record<string, PluginDoc> = {
       },
     ],
     admin: [
-      { where: 'Shop → Orders', what: 'Every order with its status, payment, notes and refunds.' },
+      { where: 'Shop → Orders', what: 'Every order with its status, payment, notes, refunds and customers’ refund requests.' },
       { where: 'Shop → Products', what: 'The catalogue, including variations, stock, downloads and a Copy shortcode action per product.' },
       { where: 'Shop → Reports', what: 'Sales, top sellers, order status, coupons and low stock.' },
       { where: 'Shop → Customers', what: 'Everyone who has ordered, and what they spent.' },
@@ -430,9 +431,18 @@ export const pluginDocs: Record<string, PluginDoc> = {
         ],
       },
       {
+        title: 'Refunds',
+        items: [
+          'A buyer asks the seller of a plugin for a refund from Dashboard → Purchases & refunds; the seller agrees or declines with a reason.',
+          'A buyer the seller declined can ask the marketplace owner to decide, under Marketplace → Refunds; the owner’s answer is final. The owner can also refund any sale.',
+          'A card payment is refunded through Stripe as soon as a refund is approved; a crypto payment is sent back by hand and then recorded with its transaction hash.',
+          'A full refund revokes the licence; a partial one keeps it unless the person approving chooses to end it.',
+        ],
+      },
+      {
         title: 'Submissions and vetting',
         items: [
-          'Developers submit at /plugins/submit with a .zip or a repository URL, signed in as themselves rather than as an administrator.',
+          'Plugins are added by the owner from Marketplace → Inventory, from a GitHub release or a .zip. There is no public submission page.',
           'server/vet.mjs reads the archive without executing it and looks for outbound network calls, Node internals, dynamic eval/new Function, cookie or localStorage exfiltration, obfuscation markers, server-secret references, a valid manifest.json and the approved React-WP hook API.',
           'A clean package is auto-approved; anything else is rejected, or left pending when a repository could not be read, with the report stored on the row so the decision is auditable.',
         ],
@@ -448,13 +458,14 @@ export const pluginDocs: Record<string, PluginDoc> = {
     ],
     admin: [
       { where: 'Marketplace → Inventory', what: 'Every submission with its status, approve/reject, and the audit trail of what the vetting scan found.' },
-      { where: 'Marketplace → Sales & analytics', what: 'Revenue, sales, keys issued, active installs and the transaction log.' },
+      { where: 'Marketplace → Refunds', what: 'Refund requests buyers escalated, crypto refunds to send by hand, and a refund button on every sale.' },
+      { where: 'Marketplace → Sales & analytics', what: 'Revenue after refunds, refunded total, sales, keys issued, active installs and the transaction log.' },
       { where: 'Marketplace → Featured', what: 'Which approved plugins are pinned to the top of the storefront.' },
     ],
     publicRoutes: [
       { where: '/plugins', what: 'The storefront: search, categories, sorting, cards and pagination.' },
       { where: '/plugins/:slug', what: 'One plugin: description, rating and reviews, Pay in USDT, and the license activation form.' },
-      { where: '/plugins/submit', what: 'The developer submission form, for a signed-in member.' },
+      { where: '/dashboard → Purchases & refunds', what: 'A buyer’s purchases and refund requests, and a seller’s requests to answer.' },
     ],
     shortcodes: [
       {
