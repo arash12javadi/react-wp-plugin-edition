@@ -1,0 +1,168 @@
+/* The question before plugin updates are applied. Logical properties, so dir="rtl" mirrors it. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(15 23 42 / 45%);
+}
+
+.dialog {
+  display: grid;
+  gap: 14px;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  border-radius: 12px;
+  padding: 20px;
+  background: #fff;
+  box-shadow: 0 20px 50px rgb(15 23 42 / 25%);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.header h3 {
+  margin: 0;
+  color: #1e293b;
+  font-size: 1.1rem;
+}
+
+.close {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 4px;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: #f1f5f9;
+}
+
+.list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.86rem;
+}
+
+.name {
+  color: #1e293b;
+  font-weight: 700;
+}
+
+.versions {
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.ownTag {
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: #92400e;
+  background: #fef3c7;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.note {
+  margin: 0;
+  color: #475569;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.warning {
+  display: flex;
+  gap: 10px;
+  border: 1px solid #fcd34d;
+  border-radius: 9px;
+  padding: 12px;
+  color: #92400e;
+  background: #fffbeb;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.warning svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.warning p {
+  margin: 4px 0 8px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #78350f;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.check input {
+  margin-top: 3px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.primary,
+.secondary {
+  border-radius: 7px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.primary {
+  border: 1px solid #2563eb;
+  color: #fff;
+  background: #2563eb;
+}
+
+.primary:hover {
+  background: #1d4ed8;
+}
+
+.secondary {
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  background: #fff;
+}
+
+.secondary:hover {
+  background: #f8fafc;
+}

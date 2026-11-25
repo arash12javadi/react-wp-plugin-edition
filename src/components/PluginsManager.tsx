@@ -1,4 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CalendarClock, CircleArrowUp, Gift, Info, KeyRound, LoaderCircle, Lock, Power, PowerOff, Puzzle,
+  RefreshCw, RotateCw, ShieldCheck, ShoppingCart, Trash2, TriangleAlert, Upload,
+} from 'lucide-react';
 import { describeDbError, client, getOption, updateOption } from '../lib/db';
 import { rwp, type RwpInstalledPlugin } from '../lib/rwp';
 import {
@@ -16,7 +20,8 @@ import {
 } from '../lib/pluginLicense';
 import { BulkBar, RowCheckbox, SelectAllCheckbox, useBulkSelection } from './BulkActions';
 import PluginUploadModal, { readPendingInstallResult } from './PluginUploadModal';
-import PluginUpdatesPanel from './PluginUpdatesPanel';
+import PluginUpdatesPanel, { usePluginUpdates } from './PluginUpdatesPanel';
+import PluginUpdateDialog from './PluginUpdateDialog';
 import LicenseLinkPanel from './LicenseLinkPanel';
 import PluginUninstallModal from './PluginUninstallModal';
 import PluginDetailsModal from './PluginDetailsModal';
@@ -179,6 +184,8 @@ export default function PluginsManager() {
   /** The plugin whose key field is open, or `''` when the table is compact. */
   const [licenseOpenId, setLicenseOpenId] = useState('');
   const [licenseSavingId, setLicenseSavingId] = useState('');
+  /** The update check (platform owner only): the header's Check for updates, and each row's Update button. */
+  const updates = usePluginUpdates();
 
   /**
    * The table's truth: a sold plugin whose key does not verify is **inactive**, whatever its row says.
@@ -692,7 +699,7 @@ export default function PluginsManager() {
     window.location.reload();
   };
 
-  if (loading) return <div className={styles.status} role="status">Loading pluginsâ€¦</div>;
+  if (loading) return <div className={styles.status} role="status">Loading plugins…</div>;
 
   return (
     <section className={styles.wrapper} aria-labelledby="plugins-heading">
@@ -701,8 +708,25 @@ export default function PluginsManager() {
           <h2 id="plugins-heading">Plugins</h2>
           <p>Add features to your site.</p>
           <div className={styles.headingActions}>
-            <button type="button" className={styles.upload} onClick={() => setUploadOpen(true)}>Upload plugin</button>
-            <button type="button" className={styles.refresh} onClick={reloadPlugins}>Refresh</button>
+            {updates.owner && (
+              <button
+                type="button"
+                className={styles.checkUpdates}
+                onClick={() => void updates.check()}
+                disabled={updates.busy !== ''}
+                aria-busy={updates.checking}
+                title="Ask for the newest version of every plugin on this site. Nothing is installed until you press Update."
+              >
+                <RefreshCw size={15} aria-hidden="true" className={updates.checking ? styles.spin : undefined} />
+                {updates.checking ? 'Checking…' : 'Check for updates'}
+              </button>
+            )}
+            <button type="button" className={styles.upload} onClick={() => setUploadOpen(true)}>
+              <Upload size={15} aria-hidden="true" />Upload plugin
+            </button>
+            <button type="button" className={styles.refresh} onClick={reloadPlugins} title="Reload this page">
+              <RotateCw size={15} aria-hidden="true" />Refresh
+            </button>
           </div>
         </div>
       </div>
@@ -717,7 +741,8 @@ export default function PluginsManager() {
         ) : null;
       })()}
       <LicenseLinkPanel onChanged={() => setReloadKey((key) => key + 1)} />
-      <PluginUpdatesPanel />
+      <PluginUpdatesPanel updates={updates} inTable={visibleIds} />
+      {updates.confirming && <PluginUpdateDialog updates={updates} />}
       {uploadOpen && (
         <PluginUploadModal
           initialResult={pendingInstall}
@@ -786,7 +811,7 @@ export default function PluginsManager() {
               ))}
             </div>
             <input type="search" className={styles.search} value={search} onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search pluginsâ€¦" aria-label="Search plugins" />
+              placeholder="Search plugins…" aria-label="Search plugins" />
           </div>
           <BulkBar selection={selection} total={visible.length} noun="plugins"
             busy={savingId === 'bulk' || deletingId === 'bulk' ? 'working' : ''}
@@ -802,7 +827,7 @@ export default function PluginsManager() {
           {visible.length > 0 && <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
-                <tr><th className={styles.checkCell}><SelectAllCheckbox selection={selection} total={visible.length} /></th><th>Plugin</th><th>Description</th><th>Version</th><th>Author</th><th>Status</th><th>License</th><th>Actions</th></tr>
+                <tr><th className={styles.checkCell}><SelectAllCheckbox selection={selection} total={visible.length} /></th><th>Plugin</th><th>Version</th><th>Status</th><th>License</th><th className={styles.actionsHead}>Actions</th></tr>
               </thead>
               <tbody>
                 {visible.map((plugin) => {
@@ -815,48 +840,91 @@ export default function PluginsManager() {
                   const needsKey = isCommercialPlugin(plugin.plugin_id) || Boolean(report?.required);
                   const unlocked = Boolean(report?.licensed);
                   const locked = needsKey && !unlocked;
+                  const grace = report?.status === 'grace';
+                  const expiresSoon = unlocked && !grace && (report?.daysLeft ?? 999) <= 30;
+                  // The check's answer when it has one; until then the marketplace's quick answer (`latestVersions`) already says
+                  // that a newer version exists, so the row shows it at once and the Update button follows when the check is in.
+                  const pending = updates.pendingFor(plugin.plugin_id);
+                  const hinted = latestVersions[plugin.plugin_id] && compareVersions(latestVersions[plugin.plugin_id], plugin.version) > 0
+                    ? latestVersions[plugin.plugin_id]
+                    : '';
+                  const newer = pending?.latest || hinted;
+                  const rowBusy = savingId === plugin.plugin_id || deletingId === plugin.plugin_id || updates.busy === plugin.plugin_id;
+                  const rowClass = [
+                    plugin.active ? styles.rowActive : '',
+                    selection.isSelected(plugin.plugin_id) ? styles.rowSelected : '',
+                  ].filter(Boolean).join(' ');
                   return (
                     <Fragment key={plugin.plugin_id}>
-                      <tr className={selection.isSelected(plugin.plugin_id) ? styles.rowSelected : undefined}>
+                      <tr className={rowClass || undefined}>
                         <td className={styles.checkCell}><RowCheckbox selection={selection} id={plugin.plugin_id} label={plugin.name} /></td>
-                        <td><strong>{plugin.name}</strong><small>{plugin.plugin_id}</small></td>
-                        <td>{plugin.description || 'No description provided.'}</td>
-                        <td>{plugin.version}{latestVersions[plugin.plugin_id] && compareVersions(latestVersions[plugin.plugin_id], plugin.version) > 0 && <><br /><small title="The marketplace has a newer version, read from the plugin's GitHub release. Check for updates to install it.">GitHub: {latestVersions[plugin.plugin_id]} available</small></>}{plugin.built_version && <><br /><small title="The running build was made with another version than the one in the repository. Rebuild (npm start) or redeploy to run the version shown.">running {plugin.built_version}: rebuild needed</small></>}</td>
-                        <td>{plugin.author || '—'}</td>
-                        <td><span className={plugin.active ? styles.active : styles.inactive}>{plugin.active ? 'Active' : 'Inactive'}</span></td>
+                        <td>
+                          <div className={styles.pluginInfo}>
+                            <span className={plugin.active ? styles.icon : `${styles.icon} ${styles.iconMuted}`} aria-hidden="true"><Puzzle size={18} /></span>
+                            <div className={styles.pluginText}>
+                              <strong className={styles.pluginName}>{plugin.name}</strong>
+                              <p className={styles.description}>{plugin.description || 'No description provided.'}</p>
+                              <small className={styles.meta}>{plugin.author ? <>By {plugin.author}<span aria-hidden="true"> · </span></> : null}<code>{plugin.plugin_id}</code></small>
+                            </div>
+                          </div>
+                        </td>
+                        <td className={styles.versionCell}>
+                          <span className={styles.version}>{plugin.version}</span>
+                          {newer && (
+                            <span
+                              className={pending && !pending.ready ? `${styles.updatePill} ${styles.updatePillBlocked}` : styles.updatePill}
+                              title={pending
+                                ? (pending.ready ? `Version ${newer} is ready. Press Update to install it.` : pending.reason)
+                                : `Version ${newer} is out. Check for updates to see whether it can be installed here.`}
+                            >
+                              <CircleArrowUp size={13} aria-hidden="true" />{newer} available
+                            </span>
+                          )}
+                          {plugin.built_version && (
+                            <small className={styles.versionNote} title="The running build was made with another version than the one in the repository. Rebuild (npm start) or redeploy to run the version shown.">
+                              running {plugin.built_version}: rebuild needed
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          <span className={plugin.active ? styles.active : styles.inactive}>
+                            <span className={styles.dot} aria-hidden="true" />{plugin.active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
                         <td>
                           {!needsKey ? (
                             <span
                               className={styles.licenseFree}
                               title={report?.message || 'This plugin has no server routes, so there is nothing to gate.'}
                             >
-                              Free
+                              <Gift size={13} aria-hidden="true" />Free
                             </span>
                           ) : (
                             <div className={styles.licenseCell}>
-                              <button
-                                type="button"
-                                className={unlocked ? styles.licenseUnlocked : styles.licenseLocked}
-                                onClick={() => setLicenseOpenId(open ? '' : plugin.plugin_id)}
-                                aria-expanded={open}
-                                title={report?.message || 'Sold separately: paste the key this plugin was issued.'}
-                              >
-                                {report?.status === 'grace' ? 'Expired' : unlocked ? 'Unlocked' : 'Locked'}
-                              </button>
-                              {report?.status === 'grace' ? (
-                                <small className={styles.licenseWarn} role="status">
-                                  Locks in {report.graceDaysLeft} day{report.graceDaysLeft === 1 ? '' : 's'}
-                                </small>
-                              ) : unlocked && report?.expiresOn ? (
-                                <small className={(report.daysLeft ?? 999) <= 30 ? styles.licenseWarn : styles.licenseExpiry}>
-                                  to {report.expiresOn}
-                                  {(report.daysLeft ?? 999) <= 30 ? ` · ${report.daysLeft} day${report.daysLeft === 1 ? '' : 's'} left` : ''}
-                                </small>
-                              ) : null}
+                              <div className={styles.licenseState}>
+                                <span
+                                  className={grace ? styles.licenseGrace : unlocked ? styles.licenseUnlocked : styles.licenseLocked}
+                                  title={report?.message || 'Sold separately: paste the key this plugin was issued.'}
+                                >
+                                  {grace ? <TriangleAlert size={13} aria-hidden="true" /> : unlocked ? <ShieldCheck size={13} aria-hidden="true" /> : <Lock size={13} aria-hidden="true" />}
+                                  {grace ? 'Expired' : unlocked ? 'Unlocked' : 'Locked'}
+                                </span>
+                                {grace ? (
+                                  <small className={styles.licenseWarn} role="status">
+                                    Locks in {report?.graceDaysLeft} day{report?.graceDaysLeft === 1 ? '' : 's'}
+                                  </small>
+                                ) : unlocked && report?.expiresOn ? (
+                                  <small className={expiresSoon ? styles.licenseWarn : styles.licenseExpiry}>
+                                    <CalendarClock size={12} aria-hidden="true" />
+                                    Valid to {report.expiresOn}
+                                    {expiresSoon ? ` · ${report.daysLeft} day${report.daysLeft === 1 ? '' : 's'} left` : ''}
+                                  </small>
+                                ) : null}
+                              </div>
                               {/*
-                                The named way into the key field. The badge above toggles it too, but a badge
-                                says what the state is; a customer looking for where to paste a key needs a
-                                control that says what it does.
+                                The badge says what the state is; this is the named control that opens the key
+                                field, because a customer looking for where to paste a key needs a button that
+                                says what it does.
                               */}
                               <div className={styles.licenseActions}>
                                 <button
@@ -866,15 +934,17 @@ export default function PluginsManager() {
                                   aria-expanded={open}
                                   aria-controls={`license-${plugin.plugin_id}`}
                                 >
-                                  {open ? 'Hide key field' : 'Enter license key'}
+                                  <KeyRound size={13} aria-hidden="true" />
+                                  {open ? 'Hide key field' : unlocked ? 'Change key' : 'Enter license key'}
                                 </button>
-                                {!unlocked || report?.status === 'grace' || (report?.daysLeft ?? 999) <= 30 ? (
+                                {!unlocked || grace || expiresSoon ? (
                                   <a
                                     className={styles.shopLink}
                                     href={SHOP_URL}
                                     target="_blank"
                                     rel="noreferrer noopener"
                                   >
+                                    <ShoppingCart size={13} aria-hidden="true" />
                                     {unlocked ? 'Renew' : 'Buy a key'}
                                   </a>
                                 ) : null}
@@ -883,38 +953,59 @@ export default function PluginsManager() {
                           )}
                         </td>
                         <td>
-                          <button
-                            type="button"
-                            className={plugin.active ? styles.deactivate : `${styles.activate}${locked ? ` ${styles.activateLocked}` : ''}`}
-                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id || (!plugin.active && locked)}
-                            onClick={() => void setActive([plugin], !plugin.active)}
-                            title={!plugin.active && locked
-                              ? `Sold separately: save a key in the License column, then activate. Keys are sold at ${SHOP_URL}.`
-                              : undefined}
-                          >
-                            {savingId === plugin.plugin_id ? 'Saving…' : plugin.active ? 'Deactivate' : 'Activate'}
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.delete}
-                            disabled={savingId === plugin.plugin_id || deletingId === plugin.plugin_id}
-                            onClick={() => { setError(''); setFeedback(''); setUninstalling(plugin); }}
-                          >
-                            Uninstall
-                          </button>
-                          <button
-                            type="button"
-                            className={styles.details}
-                            onClick={() => setDetails(plugin)}
-                            title={`What ${plugin.name} does, and what it needs before it works`}
-                          >
-                            Details
-                          </button>
+                          <div className={styles.actions}>
+                            <div className={styles.actionGroup}>
+                              {pending?.ready && (
+                                <button
+                                  type="button"
+                                  className={styles.update}
+                                  disabled={rowBusy || updates.busy !== ''}
+                                  onClick={() => updates.updatePlugin(pending)}
+                                  title={`Install ${plugin.name} ${pending.latest} (you have ${pending.installed})`}
+                                >
+                                  {updates.busy === plugin.plugin_id
+                                    ? <LoaderCircle size={14} aria-hidden="true" className={styles.spin} />
+                                    : <CircleArrowUp size={14} aria-hidden="true" />}
+                                  {updates.busy === plugin.plugin_id ? 'Updating…' : 'Update'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className={plugin.active ? styles.deactivate : `${styles.activate}${locked ? ` ${styles.activateLocked}` : ''}`}
+                                disabled={rowBusy || (!plugin.active && locked)}
+                                onClick={() => void setActive([plugin], !plugin.active)}
+                                title={!plugin.active && locked
+                                  ? `Sold separately: save a key in the License column, then activate. Keys are sold at ${SHOP_URL}.`
+                                  : undefined}
+                              >
+                                {plugin.active ? <PowerOff size={14} aria-hidden="true" /> : <Power size={14} aria-hidden="true" />}
+                                {savingId === plugin.plugin_id ? 'Saving…' : plugin.active ? 'Deactivate' : 'Activate'}
+                              </button>
+                            </div>
+                            <div className={styles.actionGroup}>
+                              <button
+                                type="button"
+                                className={styles.details}
+                                onClick={() => setDetails(plugin)}
+                                title={`What ${plugin.name} does, and what it needs before it works`}
+                              >
+                                <Info size={14} aria-hidden="true" />Details
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.delete}
+                                disabled={rowBusy}
+                                onClick={() => { setError(''); setFeedback(''); setUninstalling(plugin); }}
+                              >
+                                <Trash2 size={14} aria-hidden="true" />Uninstall
+                              </button>
+                            </div>
+                          </div>
                         </td>
                       </tr>
                       {open ? (
                         <tr className={styles.licenseRow}>
-                          <td colSpan={8}>
+                          <td colSpan={6}>
                             <form
                               className={styles.licenseForm}
                               onSubmit={(event) => { event.preventDefault(); void saveLicense(plugin); }}

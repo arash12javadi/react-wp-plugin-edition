@@ -49,8 +49,9 @@ import { deploymentStatusForCommit } from './gitDeploy/deploymentStatus.mjs';
 import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/coreUpdate.mjs';
 import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
 import { readBranch } from './pluginGitPush.mjs';
-import { applyPluginUpdate, checkPluginUpdates, installedPluginVersions } from './pluginUpdates.mjs';
-import { LICENSE_LINK_CONFIG_KEY, licenseLinkFrom } from './licenseLink.mjs';
+import { applyPluginUpdate, checkPluginUpdates, installedPluginVersions, runningPluginsFrom } from './pluginUpdates.mjs';
+import { finishCommitChain, startCommitChain } from './pluginGitInstaller.mjs';
+import { LICENSE_LINK_CONFIG_KEY, licenseLinkFrom, updateLicensedPlugin } from './licenseLink.mjs';
 import { catalogueFrom, fetchCatalogueReleases } from './catalogueUpdates.mjs';
 
 const PREFIX = '/api/admin/deployment';
@@ -66,7 +67,11 @@ const PATHS = new Set([
   `${PREFIX}/core-update/redeploy`,
   `${PREFIX}/plugin-updates/check`,
   `${PREFIX}/plugin-updates/apply`,
+  `${PREFIX}/plugin-updates/apply-all`,
   `${PREFIX}/plugin-updates/install`,
+  // The Plugins table's two reads. They are answered below but were missing here, so every request for them was a 404.
+  `${PREFIX}/plugin-versions`,
+  `${PREFIX}/plugin-latest`,
 ]);
 
 /** The paths this module answers — the single list both engines route by. */
@@ -74,19 +79,61 @@ export const ownsDeploymentPath = (pathname) => PATHS.has(pathname);
 
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 const bearerToken = (headers = {}) => String(headers.authorization || headers.Authorization || '').replace(/^Bearer\s+/i, '').trim();
+/** What a check says on a site that is not connected: the update exists, and where it can be applied. */
+const NOT_CONNECTED_FOR_UPDATE = 'A newer version is out. To install it from here, connect this site to its GitHub repository and Vercel project (Settings → Integrations → GitHub & Vercel).';
+
+/** The Update all list: unique plugin ids, each with the version the screen showed, at most 30. */
+const MAX_BATCH = 30;
+function batchItems(value) {
+  const seen = new Set();
+  const items = [];
+  for (const raw of Array.isArray(value) ? value : []) {
+    const id = str(raw?.id);
+    const version = str(raw?.version);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id) || !version || seen.has(id)) continue;
+    seen.add(id);
+    items.push({ id, version, kind: raw?.kind === 'licensed' ? 'licensed' : 'release', backup: raw?.backup === true });
+    if (items.length >= MAX_BATCH) break;
+  }
+  return items;
+}
+
 const ok = (status, body) => ({ status, body: { success: true, ok: true, ...body } });
 const refuse = (status, error, extra = {}) => ({ status, body: { success: false, ok: false, error, ...extra } });
 
-/** One read of the repository's manifests serves every admin opening the Plugins screen for a minute: it costs one GitHub call per plugin. */
+/**
+ * One read of the repository's manifests serves every admin opening the Plugins screen for a minute: it costs one GitHub call per plugin.
+ * The promise is what is kept, so the table's version read and the update check that the screen starts at the same moment share one read
+ * instead of making two. A failed read is dropped at once, and a commit made from here (`forgetCommittedVersions`) drops the entry too.
+ */
 const COMMITTED_TTL_MS = 60_000;
 const committedCache = new Map();
-async function committedVersionsCached(target) {
-  const key = `${target.owner}/${target.repo}@${target.branch}`.toLowerCase();
+const committedKey = (target) => `${target.owner}/${target.repo}@${target.branch}`.toLowerCase();
+function committedVersionsCached(target) {
+  const key = committedKey(target);
   const hit = committedCache.get(key);
   if (hit && Date.now() - hit.at < COMMITTED_TTL_MS) return hit.rows;
-  const rows = await installedPluginVersions(target);
+  const rows = installedPluginVersions(target);
   committedCache.set(key, { at: Date.now(), rows });
+  rows.catch(() => { if (committedCache.get(key)?.rows === rows) committedCache.delete(key); });
   return rows;
+}
+// Every entry, not only this target's: the table reads through `siteRepositoryTarget`, whose branch may be named differently.
+const forgetCommittedVersions = () => committedCache.clear();
+
+/**
+ * The production branch Vercel reported, kept for a minute for the read-only update check only: asking Vercel costs a round trip on every
+ * click. Applying an update always asks Vercel again (`productionTarget`), so a commit never relies on this.
+ */
+const BRANCH_TTL_MS = 60_000;
+const branchCache = new Map();
+async function productionTargetForCheck({ githubRow, connection, env }) {
+  const key = `${connection.project_id}|${connection.repository}`.toLowerCase();
+  const hit = branchCache.get(key);
+  if (hit && Date.now() - hit.at < BRANCH_TTL_MS) return repositoryTarget(githubTokenFrom(githubRow), connection.repository, hit.branch);
+  const target = await productionTarget({ githubRow, connection, env });
+  branchCache.set(key, { at: Date.now(), branch: target.branch });
+  return target;
 }
 
 /**
@@ -283,24 +330,64 @@ export async function handleDeploymentRequest(options) {
       return ok(200, { latest });
     }
 
+    // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
+    // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
+    // The check only reads, so it does not need the Vercel connection: a site that is not connected (the platform's
+    // own site, for one) still learns what is new, from the repository it is installed from (`siteRepositoryTarget`).
+    // Update needs the connection, so without it each row says why it cannot be applied here (`canApply: false`).
+    // A connected site uses the cached production branch and the cached manifest read; the reads run side by side.
+    // The repository is compared when it can be read: it is what the next deployment runs. When it cannot (the platform's own site built from a
+    // private repository its GitHub token cannot see, a local checkout that names none), the plugins this site is running, which the screen
+    // sends as `running`, are compared instead: the check still says what is new, and Update stays off until the repository can be read.
+    if (pathname === `${PREFIX}/plugin-updates/check`) {
+      const connected = isGitDeployConnected(connection);
+      const running = runningPluginsFrom(body.running);
+      // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.
+      const [target, linkRow, updatesRow] = await Promise.all([
+        connected ? productionTargetForCheck({ githubRow, connection, env }) : Promise.resolve(siteRepositoryTarget({ githubRow, connection, env })),
+        io.read(LICENSE_LINK_CONFIG_KEY).catch(() => null),
+        io.read(UPDATE_CONFIG_KEY),
+      ]);
+      if (!target && !running.length) {
+        return refuse(409, 'This site does not know which repository it is installed from, so its plugins cannot be compared with their releases. Connect GitHub under Settings → Integrations.');
+      }
+      let repositoryProblem = target ? '' : 'This site does not know which repository it is installed from.';
+      const readInstalled = async (repository) => {
+        if (!repository) return running;
+        try {
+          return await committedVersionsCached(repository);
+        } catch (error) {
+          if (!running.length) throw error;
+          repositoryProblem = error instanceof Error ? error.message : 'The repository could not be read.';
+          return running;
+        }
+      };
+      const licensedIds = Object.keys(licenseLinkFrom(linkRow).latest_versions || {});
+      const answer = await checkPluginUpdates({
+        target, source: releaseSourceFor(updatesRow, githubRow, env), channel: 'stable', fetchImpl, catalogue: catalogueFrom(env), licensedIds, readInstalled,
+      });
+      const canApply = connected && !repositoryProblem;
+      // Connected but unreadable: the commit would fail the same way, so the row says why now instead of after a click.
+      const reason = connected ? `${repositoryProblem} Update needs to read the repository, so it is off until that is fixed.` : NOT_CONNECTED_FOR_UPDATE;
+      const plugins = canApply ? answer.plugins : answer.plugins.map((row) => (row.state === 'available' ? { ...row, state: 'unavailable', reason } : row));
+      return ok(200, {
+        ...answer,
+        plugins,
+        canApply,
+        installedFrom: repositoryProblem ? 'running' : 'repository',
+        // Shown under the panel: the versions compared are this site's own, and why. The full GitHub sentence stays in the row reasons.
+        notice: repositoryProblem && target ? `Compared with the versions this site is running, because ${target.repository} could not be read on branch "${target.branch}". If it is private, the token on Settings → Integrations → GitHub needs access to it.` : '',
+      });
+    }
+
     // Core updates.
     if (!isGitDeployConnected(connection)) {
       return refuse(409, 'Connect this site to its GitHub repository and Vercel project first (Settings → Integrations → GitHub & Vercel).');
     }
     const updatesRow = await io.read(UPDATE_CONFIG_KEY);
     const source = releaseSourceFor(updatesRow, githubRow, env);
-    const target = await productionTarget({ githubRow, connection, env });
 
-    // Plugin updates are released and installed apart from core: their own tags (`<id>-v<version>`), their
-    // own check, one commit under `plugins/<id>/`. See server/pluginUpdates.mjs.
-    // What the repository holds, which is what the next deployment runs: the Plugins table shows it on hosts that cannot read their own
-    // plugin folders (Vercel), so an update that was committed shows its version before the rebuild finishes. Reads manifests only.
-    if (pathname === `${PREFIX}/plugin-updates/check`) {
-      // Plugins the account link already lists for this site have their own Update button; the check must not announce them twice.
-      const licensedIds = Object.keys(licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY).catch(() => null)).latest_versions || {});
-      const answer = await checkPluginUpdates({ target, source, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env), licensedIds });
-      return ok(200, answer);
-    }
+    const target = await productionTarget({ githubRow, connection, env });
     // `install` is the first install of a marketplace plugin (signed package only); `apply` updates one already here.
     if (pathname === `${PREFIX}/plugin-updates/apply` || pathname === `${PREFIX}/plugin-updates/install`) {
       const result = await applyPluginUpdate({
@@ -313,8 +400,50 @@ export async function handleDeploymentRequest(options) {
         channel: 'stable',
         fetchImpl,
         catalogue: catalogueFrom(env),
+        // The site publishes this plugin itself (the screen asked and the owner agreed): keep a copy of its current code.
+        backup: body.backup === true ? 'always' : 'auto',
       });
+      // The repository changed: the next version read or check must see the new manifest, not the cached one.
+      forgetCommittedVersions();
       return ok(200, { result, deployment: result.deployment });
+    }
+
+    // Update all: every listed plugin is committed on one chain of commits and the production branch moves once,
+    // so Vercel builds one deployment instead of one per plugin. Each plugin keeps the checks of its own Update
+    // button (a newer, published version; a signed package for a sold plugin). One that fails is reported and
+    // left out; the others still go out together. Nothing is published until the end, so a failure of the final
+    // move leaves the branch exactly as it was.
+    if (pathname === `${PREFIX}/plugin-updates/apply-all`) {
+      const items = batchItems(body.items);
+      if (!items.length) return refuse(400, 'Choose at least one plugin to update.');
+      const credentials = { supabaseUrl: config.supabaseUrl, apiKey: config.supabasePublishableKey, accessToken };
+      const chain = await startCommitChain(target);
+      // The repository's plugin versions, read once for the whole list.
+      const installedOnce = installedPluginVersions(target);
+      installedOnce.catch(() => undefined);
+      const readInstalled = () => installedOnce;
+      const coreVersion = await installedVersion();
+      const results = [];
+      for (const item of items) {
+        const backup = item.backup ? 'always' : 'auto';
+        try {
+          const result = item.kind === 'licensed'
+            // A sold plugin, by the same path as its own Update button, on this chain. A button's route, never a sync.
+            ? await updateLicensedPlugin({ plugin: item.id, version: item.version, io, credentials, env, fetchImpl, chain, backup, readInstalled })
+            : await applyPluginUpdate({
+              target, source, id: item.id, version: item.version, coreVersion, channel: 'stable', fetchImpl, catalogue: catalogueFrom(env), chain, backup, readInstalled,
+            });
+          results.push({
+            id: item.id, ok: true, from: result.update.from, to: result.update.to,
+            warnings: result.warnings || [], sql: Array.isArray(result.sql) && result.sql.length > 0, backup: result.backup || null,
+          });
+        } catch (error) {
+          results.push({ id: item.id, ok: false, error: error instanceof Error ? error.message : 'This plugin could not be updated.' });
+        }
+      }
+      const deployment = await finishCommitChain(chain);
+      forgetCommittedVersions();
+      return ok(200, { results, deployment, commits: chain.commits.length });
     }
 
     // The release to move to is one of the five most recent stable releases, re-read here. Only a tag from

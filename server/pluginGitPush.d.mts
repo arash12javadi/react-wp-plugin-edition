@@ -41,6 +41,8 @@ export interface GithubBranchBase {
 /** The commit that was made, and what it contained. */
 export interface GithubCommitResult {
   sha: string;
+  /** The tree the commit points at, so a chain of commits can build on it. */
+  treeSha: string;
   /** GitHub's web page for the commit, so the administrator can look at what was committed. */
   url: string;
   /** `owner/repo@branch`. */
@@ -86,14 +88,17 @@ export function commitFiles(
   target: GithubCommitTarget,
   options: {
     message: string;
-    files: Array<{ path: string; content: Uint8Array }>;
+    /** A file with `sha` (and no content) is a copy of a blob the repository already holds, such as a backup. */
+    files: Array<{ path: string; content: Uint8Array } | { path: string; sha: string; mode?: string }>;
     base: GithubBranchBase;
     deletions?: string[];
     allowPaths?: string[];
+    /** Folders the caller may also write, such as `plugin-backups/`. */
+    allowPrefixes?: string[];
     /** Replaces the plugin-folder rule with the caller's own; must throw for a path it refuses. */
     pathPolicy?: (path: string) => void;
     /** `{ create: 'branch' }` commits onto a new branch instead of moving `target.branch`. */
-    ref?: { create: string } | null;
+    ref?: { create: string } | { none: true } | null;
   },
 ): Promise<GithubCommitResult>;
 

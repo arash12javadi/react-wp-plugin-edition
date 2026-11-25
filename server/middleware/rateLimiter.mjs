@@ -5,7 +5,7 @@
  * guess is worth retrying — sign-in verification, the CAPTCHA endpoint, the admin endpoints that
  * run DDL or delete folders — and is deliberately tight. The `api` tier covers ordinary plugin and
  * media traffic and is loose enough that a busy page full of widgets is never throttled. Both
- * ceilings and the shared window come from the options table (Settings → Security → Rate limiting &
+ * ceilings and the shared window come from the options table (Settings → Rate limiting &
  * Speed) through securitySettings.mjs, so changing them needs no restart. The same snapshot carries
  * `rate_limit_enabled`, so the whole limiter can be switched off from the admin without one either.
  *
@@ -145,6 +145,20 @@ export function rateLimitHeaders(decision) {
   return headers;
 }
 
+/** Owner-only admin routes that only read. Those answered by POST read a body of ids and still write nothing. */
+const ADMIN_READ_POSTS = new Set([
+  '/api/admin/deployment/plugin-versions',
+  '/api/admin/deployment/plugin-latest',
+  '/api/admin/deployment/plugin-updates/check',
+]);
+const ADMIN_READS = new Set([
+  ...ADMIN_READ_POSTS,
+  '/api/admin/deployment',
+  '/api/admin/deployment/status',
+  '/api/admin/license-link',
+  '/api/admin/updates',
+]);
+
 /**
  * Which tier a path belongs to. Anything that authenticates, authorises, verifies a human or
  * changes the server's own state is `auth`; everything else is `api`.
@@ -156,6 +170,11 @@ export function rateLimitTier(pathname, method) {
   // authorised by the per-site token it carries, not by a session. On a site that is not the platform the
   // line does nothing, and `/api/admin/updates/check` keeps its strict tier with the rest of the admin.
   if (CENTRAL_CHECK_PATHS.includes(pathname) && centralConfigFrom().enabled) return 'api';
+  // The Plugins screen's reads: what is installed, what is newer, the account link and a deployment's state.
+  // Every one of them answers only the platform owner and changes nothing, and opening the screen once makes
+  // several of them (the deployment watcher polls one). In the strict tier, five per window, an administrator
+  // was locked out of the screen after opening it twice. Writes - apply, Update all, connect - stay strict.
+  if (ADMIN_READS.has(pathname) && (method === 'GET' || ADMIN_READ_POSTS.has(pathname))) return 'api';
   if (pathname.startsWith('/api/admin/') || pathname === '/api/install-schema') return 'auth';
   // Reading the anti-bot config or how much of a session is left happens on ordinary page loads,
   // so those belong in the loose tier — putting them in the strict one would throttle a visitor
@@ -192,7 +211,7 @@ export function rateLimitMessage(decision) {
   const who = decision.scope === 'account' ? 'account' : 'address';
   const budget = `The limit is ${decision.limit} per window`;
   return decision.tier === 'auth'
-    ? `Too many attempts from this ${who}. ${budget}; try again in ${wait}. An administrator can change it under Settings → Security → Rate limiting & Speed.`
+    ? `Too many attempts from this ${who}. ${budget}; try again in ${wait}. An administrator can change it under Settings → Rate limiting & Speed.`
     : `Too many requests from this ${who}. ${budget}; try again in ${wait}.`;
 }
 

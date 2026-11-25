@@ -87,7 +87,8 @@ export async function handleLicenseLinkRequest(options) {
     }
     if (pathname === `${PREFIX}/update`) {
       // The owner pressed Update on a sold plugin. Never reached from a sync or a timer.
-      const result = await updateLicensedPlugin({ plugin: body?.plugin, version: body?.version, io, credentials, env, fetchImpl });
+      // `backup: true`: the site publishes this plugin itself, so a copy of its current code is kept in the same commit.
+      const result = await updateLicensedPlugin({ plugin: body?.plugin, version: body?.version, io, credentials, env, fetchImpl, backup: body?.backup === true ? 'always' : 'auto' });
       return ok(200, { result, deployment: result.deployment ?? null });
     }
     if (pathname === `${PREFIX}/settings`) {

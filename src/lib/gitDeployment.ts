@@ -99,6 +99,10 @@ async function call<T>(path: string, init: { method?: string; body?: unknown } =
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
   } catch {
+    // On this computer the connection itself cannot fail: the API server (server.mjs) stopped answering, usually because it stopped.
+    if (/^(localhost|127.0.0.1|[::1])$/.test(window.location.hostname)) {
+      throw new Error('The local API server (server.mjs) stopped answering, so nothing was changed. Look at the terminal running "npm run dev" for the error, restart it, and try again.');
+    }
     throw new Error('This site’s server could not be reached, so nothing was changed. Check your internet connection and try again.');
   }
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -176,8 +180,20 @@ export interface PluginUpdateRow {
 }
 
 /** Plugins are released on their own tags, apart from core: see `server/pluginUpdates.mjs`. */
-export const checkPluginUpdates = () =>
-  call<{ repository: string; releaseRepository: string; plugins: PluginUpdateRow[] }>(`${BASE}/plugin-updates/check`, { method: 'POST', body: {} });
+/**
+ * `running` is the plugins this site is running: the server compares them when it cannot read the repository (a private one its token cannot
+ * see, or none named), so the check still answers. `notice` then says so.
+ */
+export const checkPluginUpdates = (running: Array<{ id: string; name: string; version: string }> = []) =>
+  call<{
+    repository: string;
+    releaseRepository: string;
+    plugins: PluginUpdateRow[];
+    /** False when Update cannot commit here: the site is not connected to GitHub and Vercel, or its repository cannot be read. */
+    canApply?: boolean;
+    installedFrom?: 'repository' | 'running';
+    notice?: string;
+  }>(`${BASE}/plugin-updates/check`, { method: 'POST', body: { running } });
 
 /** The newest version the marketplace has live for each plugin id (its GitHub release); a plugin it does not know is absent. */
 export const latestPluginVersions = (ids: string[]) =>
@@ -191,8 +207,27 @@ export const committedPluginVersions = () =>
 export const installMarketplacePlugin = (input: { id: string; version: string }) =>
   call<{ result: { update: { id: string; to: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[] }; deployment: { sha: string; state: 'pending' } | null }>(`${BASE}/plugin-updates/install`, { method: 'POST', body: input });
 
-export const applyPluginUpdate = (input: { id: string; version: string }) =>
+/** `backup: true` keeps a copy of the plugin's current code in `plugin-backups/<id>/` (the site publishes this plugin itself). */
+export const applyPluginUpdate = (input: { id: string; version: string; backup?: boolean }) =>
   call<{
     result: { update: { id: string; from: string; to: string; tag: string }; commit: { sha: string; url: string; unchanged: boolean }; warnings: string[]; sql: Array<{ path: string }> };
     deployment: { sha: string; state: 'pending' } | null;
   }>(`${BASE}/plugin-updates/apply`, { method: 'POST', body: input });
+
+/** One plugin in an Update all request: `release` updates from its release, `licensed` through the react-wp.com account link. */
+export interface PluginBatchItem { id: string; version: string; kind: 'release' | 'licensed'; backup?: boolean }
+
+export interface PluginBatchResult {
+  id: string;
+  ok: boolean;
+  from?: string;
+  to?: string;
+  error?: string;
+  warnings?: string[];
+  sql?: boolean;
+  backup?: { folder: string; reason: string } | null;
+}
+
+/** Update all: every plugin committed together and the production branch moved once, so Vercel deploys once. */
+export const applyPluginUpdates = (items: PluginBatchItem[]) =>
+  call<{ results: PluginBatchResult[]; deployment: { sha: string; state: 'pending' } | null; commits: number }>(`${BASE}/plugin-updates/apply-all`, { method: 'POST', body: { items } });

@@ -5,7 +5,8 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // plugin-backups/ holds copies of plugin code an update replaced: kept for the owner, never built or linted.
+  globalIgnores(['dist', 'plugin-backups']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

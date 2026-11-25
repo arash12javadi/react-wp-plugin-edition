@@ -217,7 +217,7 @@ export async function autoInstallAssigned({ installs, token, domain, baseUrl, io
  *
  * @returns {Promise<object>} what `installPluginFromGit` answers, plus `update: { id, from, to }`
  */
-export async function updateSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {}, licensedIds = [] }) {
+export async function updateSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {}, licensedIds = [], chain = null, backup = 'auto', readInstalled = null }) {
   const d = {
     installedPluginVersions, installPluginFromGit, downloadZip, githubTargetFrom, assertPackageMatches, ...deps,
   };
@@ -237,7 +237,12 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
   } catch {
     throw new InstallError('Connect GitHub and Vercel under Settings → Integrations first, then try again.', 501);
   }
-  const present = (await d.installedPluginVersions(target)).find((row) => row.id === id);
+  // Update all commits every plugin onto one chain, so this one must go to the same repository and branch.
+  if (chain && `${target.owner}/${target.repo}@${target.branch}`.toLowerCase() !== `${chain.target.owner}/${chain.target.repo}@${chain.target.branch}`.toLowerCase()) {
+    throw new InstallError(`${id} is installed from ${target.owner}/${target.repo}@${target.branch}, not the branch the other updates go to, so it cannot join Update all. Update it on its own.`, 409);
+  }
+  if (chain) target = chain.target;
+  const present = (await (readInstalled || d.installedPluginVersions)(target)).find((row) => row.id === id);
   if (!present) {
     throw new InstallError(`"${id}" is not in ${target.owner}/${target.repo}, so there is nothing to update. Install it first.`, 404);
   }
@@ -255,7 +260,7 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
   }
   const optionStore = credentials?.supabaseUrl ? optionStoreFrom({ ...credentials, fetchImpl }) : null;
   const result = await d.installPluginFromGit({
-    source: { zip: verified.zip }, target, optionStore, deployHook: '', expectedId: id, gitDeploys: true,
+    source: { zip: verified.zip }, target, optionStore, deployHook: '', expectedId: id, gitDeploys: true, chain, backup,
   });
   return { ...result, update: { id, from: present.version, to: verified.version } };
 }

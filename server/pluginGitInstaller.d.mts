@@ -78,4 +78,25 @@ export function installPluginFromGit(options: {
   expectedId?: string;
   /** True when the Vercel project deploys this repository by itself, so no deploy hook is called. */
   gitDeploys?: boolean;
+  /** Part of Update all: commit on top of the chain without moving the branch (see `startCommitChain`). */
+  chain?: PluginCommitChain | null;
+  /**
+   * `auto` keeps a copy of the replaced files in `plugin-backups/<id>/` when readable source is replaced by protected code;
+   * `always` also when the new package is readable (the site publishes this plugin itself); `never` keeps none.
+   */
+  backup?: 'auto' | 'always' | 'never';
 }): Promise<PluginGitInstallResult>;
+
+/** Commits made one after another without moving the branch, then published with one fast-forward. */
+export interface PluginCommitChain {
+  target: GithubCommitTarget;
+  start: string;
+  base: { commitSha: string; treeSha: string; paths: Map<string, { sha: string; mode: string }> };
+  texts: Map<string, string>;
+  commits: string[];
+}
+
+export const BACKUP_ROOT: string;
+export function startCommitChain(target: GithubCommitTarget): Promise<PluginCommitChain>;
+/** Moves the branch once to the chain's last commit; `null` when nothing changed. */
+export function finishCommitChain(chain: PluginCommitChain): Promise<{ sha: string; state: 'pending' } | null>;

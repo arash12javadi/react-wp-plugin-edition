@@ -12,9 +12,7 @@
   font-size: 1.45rem;
 }
 
-.heading p,
-.pluginInfo p,
-.pluginInfo small {
+.heading p {
   color: #64748b;
   font-size: 0.88rem;
 }
@@ -26,26 +24,37 @@
 .headingActions {
   position: absolute;
   top: 0;
-  right: 0;
+  inset-inline-end: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
 }
 
-.upload {
-  border: 0;
-  border-radius: 6px;
-  padding: 9px 12px;
-  color: #fff;
-  background: #4f46e5;
+/* Header buttons: one height, an icon and a label each. */
+.upload,
+.refresh,
+.checkUpdates {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  padding: 8px 12px;
   cursor: pointer;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 700;
+  line-height: 1.2;
+}
+
+.upload {
+  border: 1px solid #4f46e5;
+  color: #fff;
+  background: #4f46e5;
 }
 
 .upload:hover {
+  border-color: #4338ca;
   background: #4338ca;
 }
 
@@ -59,18 +68,43 @@
 
 .refresh {
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 8px 11px;
   color: #334155;
   background: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
 }
 
 .refresh:hover {
   background: #f8fafc;
+}
+
+.checkUpdates {
+  border: 1px solid #c7d2fe;
+  color: #4338ca;
+  background: #eef2ff;
+}
+
+.checkUpdates:hover:not(:disabled) {
+  border-color: #a5b4fc;
+  background: #e0e7ff;
+}
+
+.checkUpdates:disabled {
+  cursor: progress;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation-duration: 2.4s;
+  }
 }
 
 .notice,
@@ -103,135 +137,264 @@
 .tableWrap {
   overflow-x: auto;
   border: 1px solid #e5e7eb;
-  border-radius: 9px;
+  border-radius: 10px;
   background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
 .table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 760px;
+  min-width: 860px;
   color: #475569;
   font-size: 0.84rem;
 }
 
 .table th {
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-bottom: 1px solid #e5e7eb;
   color: #64748b;
   background: #f8fafc;
-  font-size: 0.73rem;
+  font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.04em;
-  text-align: left;
+  text-align: start;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .table td {
-  padding: 15px 14px;
+  padding: 14px;
   border-bottom: 1px solid #f1f5f9;
-  vertical-align: middle;
+  vertical-align: top;
 }
 
-.table tr:last-child td {
+.table tbody tr:last-child td {
   border-bottom: 0;
 }
 
-/* Column 2 is the plugin name; column 1 holds the selection checkbox. */
-.table td:nth-child(2) {
-  color: #1e293b;
+.table tbody tr:not(.licenseRow):hover td {
+  background: #fafbff;
 }
 
-.table td:nth-child(2) small {
-  display: block;
-  margin-top: 4px;
+/* An active plugin carries a thin accent on its leading edge, as in WordPress. */
+.rowActive td:first-child {
+  box-shadow: inset 3px 0 0 #4f46e5;
+}
+
+[dir='rtl'] .rowActive td:first-child {
+  box-shadow: inset -3px 0 0 #4f46e5;
+}
+
+/* Plugin column: icon, name, a two-line description and the author and id beneath it. */
+.pluginInfo {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 260px;
+  max-width: 460px;
+}
+
+.pluginText {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pluginName {
+  color: #1e293b;
+  font-size: 0.92rem;
+}
+
+.description {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #475569;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.meta {
   color: #94a3b8;
-  font-size: 0.73rem;
+  font-size: 0.72rem;
+}
+
+.meta code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
 }
 
 .icon {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
   color: #4f46e5;
   background: #eef2ff;
-  font-size: 1.2rem;
+}
+
+.iconMuted {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
+/* Version column: the installed version, then what is newer, then a rebuild note when the build lags. */
+.versionCell {
+  white-space: nowrap;
+}
+
+.version {
+  display: block;
+  color: #1e293b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.updatePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #1d4ed8;
+  background: #dbeafe;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: help;
+}
+
+/* Newer, but not installable from this site (a sold plugin on an unconnected site): amber, with the reason as its title. */
+.updatePillBlocked {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.versionNote {
+  display: block;
+  margin-top: 6px;
+  color: #b45309;
+  font-size: 0.7rem;
+}
+
+/* Actions column: one row of buttons that wraps on narrow screens. */
+.actionsHead {
+  width: 1%;
+}
+
+/* Two groups: what changes the plugin (Update, Activate) and what looks at or removes it. A narrow column wraps a whole group. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 210px;
+}
+
+.actionGroup {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .activate,
-.deactivate {
-  border: 0;
-  border-radius: 6px;
-  padding: 9px 13px;
-  color: #fff;
+.deactivate,
+.update,
+.delete,
+.details {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 6px 10px;
   cursor: pointer;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.activate {
+  border-color: #4f46e5;
+  color: #fff;
+  background: #4f46e5;
+}
+
+.activate:hover:not(:disabled) {
+  border-color: #4338ca;
+  background: #4338ca;
+}
+
+.deactivate {
+  border-color: #e2e8f0;
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.deactivate:hover:not(:disabled) {
+  background: #e2e8f0;
+}
+
+.update {
+  border-color: #2563eb;
+  color: #fff;
+  background: #2563eb;
+}
+
+.update:hover:not(:disabled) {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+}
+
+/* Informational, so it reads quieter than the actions that change something. */
+.details {
+  border-color: #e2e8f0;
+  color: #4338ca;
+  background: #fff;
+}
+
+.details:hover {
+  border-color: #c7d2fe;
+  background: #eef2ff;
 }
 
 .delete {
-  margin-left: 6px;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-color: #fecaca;
   color: #b91c1c;
   background: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
 }
 
 .delete:hover:not(:disabled) {
   background: #fef2f2;
 }
 
-/* Informational, so it reads quieter than the two actions that change something. */
-.details {
-  margin-left: 6px;
-  border: 1px solid #c7d2fe;
-  border-radius: 6px;
-  padding: 8px 10px;
-  color: #4338ca;
-  background: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.details:hover {
-  background: #eef2ff;
-}
-
-.activate {
-  background: #4f46e5;
-}
-
-.deactivate {
-  color: #334155;
-  background: #e2e8f0;
-}
-
-.activate:hover:not(:disabled) {
-  background: #4338ca;
-}
-
-.deactivate:hover:not(:disabled) {
-  background: #cbd5e1;
-}
-
+/* Status column. */
 .active,
 .inactive {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 999px;
-  padding: 4px 8px;
+  padding: 3px 9px;
   font-size: 0.72rem;
   font-weight: 700;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
 }
 
 .active {
@@ -327,25 +490,28 @@ button:disabled {
   width: 1%;
 }
 
-.rowSelected td {
+.rowSelected td,
+.table tbody tr.rowSelected:hover td {
   background: #eef2ff;
 }
 
 /*
  * License column. A free plugin says so and says nothing more - that is the common case, and the one
- * that must never look like a problem. A commercial plugin's badge is a button, because the only thing
- * an administrator can do about a locked key is enter a better one.
+ * that must never look like a problem. A commercial plugin shows its state as a badge, when the key runs
+ * out beneath it, and one named control that opens the key field.
  */
 .licenseFree,
 .licenseUnlocked,
-.licenseLocked {
-  display: inline-block;
-  border: 0;
+.licenseLocked,
+.licenseGrace {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border-radius: 999px;
-  padding: 4px 8px;
-  font: inherit;
+  padding: 3px 9px;
   font-size: 0.72rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .licenseFree {
@@ -356,21 +522,35 @@ button:disabled {
 .licenseUnlocked {
   color: #166534;
   background: #dcfce7;
-  cursor: pointer;
 }
 
 .licenseLocked {
   color: #9a3412;
   background: #ffedd5;
-  cursor: pointer;
+}
+
+.licenseGrace {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.licenseExpiry,
+.licenseWarn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  white-space: nowrap;
 }
 
 .licenseExpiry {
-  display: block;
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 0.73rem;
-  white-space: nowrap;
+  color: #64748b;
+}
+
+/* Within 30 days of expiry, or past it and in grace: amber, not red, because the plugin still works. */
+.licenseWarn {
+  color: #b45309;
+  font-weight: 700;
 }
 
 .offlineNotice {
@@ -383,39 +563,45 @@ button:disabled {
   font-size: 0.88rem;
 }
 
-/* Within 30 days of expiry, or past it and in grace: amber, not red, because the plugin still works. */
-.licenseWarn {
-  display: block;
-  margin-top: 4px;
-  color: #b45309;
-  font-size: 0.73rem;
-  font-weight: 700;
-  white-space: nowrap;
+/* The state (badge and expiry) above, the controls below. */
+.licenseCell {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
 }
 
-/* The badge and the named control share a line; "Enter license key" is what a locked row invites. */
+.licenseState {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
 .licenseActions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
+  gap: 6px 10px;
 }
 
 .enterKey {
-  border: 1px solid #cbd5e1;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #e2e8f0;
   border-radius: 6px;
+  padding: 4px 8px;
+  color: #334155;
   background: #fff;
-  color: #1e293b;
-  font: inherit;
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 3px 8px;
   cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .enterKey:hover,
 .enterKey:focus-visible {
-  border-color: #2563eb;
+  border-color: #93c5fd;
   color: #1d4ed8;
 }
 
@@ -426,19 +612,15 @@ button:disabled {
 }
 
 /*
- * Badge plus the way out of the badge. A locked plugin is the one place a price is mentioned, so it
- * carries the shop link itself rather than sending an administrator to hunt for one.
+ * The way out of a locked badge. A locked plugin is the one place a price is mentioned, so it carries
+ * the shop link itself rather than sending an administrator to hunt for one.
  */
-.licenseCell {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-}
-
 .shopLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: #2563eb;
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   font-weight: 700;
   white-space: nowrap;
   text-decoration: none;

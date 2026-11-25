@@ -15,7 +15,7 @@
  *   POST /api/security/rate-limits/reset      forget every live rate-limit counter
  *   POST /api/security/anti-bot/flags/clear    forget every flagged address
  *
- * The last two are the maintenance buttons on Settings → Security → Rate limiting & Speed. Both
+ * The last two are the maintenance buttons on Settings → Rate limiting & Speed. Both
  * reset this process's memory only — behind several Node processes each one limits its own share,
  * and the process that answered the request is the one that is reset.
  *
@@ -383,7 +383,7 @@ export async function handleSecurityRequest({ method, pathname, headers, body, c
       if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };
       return await purgeCache(config, headers, body);
     }
-    // Settings → Security → Rate limiting & Speed, "Live counters". The body says how many were
+    // Settings → Rate limiting & Speed, "Live counters". The body says how many were
     // forgotten so the panel can report it without a second read.
     if (pathname === '/api/security/rate-limits/reset') {
       if (method !== 'POST') return { status: 405, body: { error: 'Method not allowed' } };

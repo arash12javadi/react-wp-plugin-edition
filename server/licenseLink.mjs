@@ -229,7 +229,7 @@ export async function connectSite({ code, siteUrl, io, autoInstall = true, env =
  * button's route and by nothing else (`tests/updateRelease.test.mjs` pins that): an update is a deliberate act,
  * unlike the opt-in install of a plugin that is missing.
  */
-export async function updateLicensedPlugin({ plugin, version = '', io, credentials = null, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date() }) {
+export async function updateLicensedPlugin({ plugin, version = '', io, credentials = null, env = globalThis.process?.env || {}, fetchImpl = fetch, now = new Date(), chain = null, backup = 'auto', readInstalled = null }) {
   const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
   if (!isLicenseLinked(row)) throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account.', 'not_connected');
   requireSecretBox(env);
@@ -240,7 +240,7 @@ export async function updateLicensedPlugin({ plugin, version = '', io, credentia
     throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
   }
   const { updateSoldPlugin } = await import('./pluginAutoInstall.mjs');
-  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}) });
+  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}), chain, backup, readInstalled });
 }
 
 /**

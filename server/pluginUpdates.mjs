@@ -25,7 +25,7 @@
  *     release asset is not. `commercialRefusal` says so instead of pretending.
  */
 import { githubList, repoFrom } from './githubReleases.mjs';
-import { compareVersions } from './versions.mjs';
+import { compareVersions, isVersion } from './versions.mjs';
 import { InstallError, MAX_ZIP_BYTES, readManifest, unpack } from './pluginInstaller.mjs';
 import { isCommercialPlugin } from '../src/lib/pluginLicense.js';
 import { installPluginFromGit } from './pluginGitInstaller.mjs';
@@ -257,15 +257,34 @@ export async function installedPluginVersions(target) {
 }
 
 /**
+ * The plugins the running site reports (`{ id, name, version }` from its own plugin registry), cleaned: what the check
+ * compares when the repository cannot be read. At most 100 rows; an id or version in any other shape is dropped. Only ever
+ * used to read (which releases are newer), never to decide what to commit.
+ */
+export function runningPluginsFrom(value) {
+  const seen = new Set();
+  const rows = [];
+  for (const raw of Array.isArray(value) ? value.slice(0, 100) : []) {
+    const id = trimmed(raw?.id);
+    const version = trimmed(raw?.version);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id) || !isVersion(version) || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ id, name: trimmed(raw?.name).slice(0, 200) || id, version });
+  }
+  return rows.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
  * The release lists a check or an update works from: the release repository's, and, when a `catalogue` is given, the
  * marketplace's offer for these plugin ids. For a plugin both know, the higher version wins and the catalogue wins a tie
  * (it is the source whose packages were scanned and signed). A source that fails costs only its own part; when the release
  * repository fails and the catalogue offers nothing either, the repository's error is the answer, as it always was.
  */
 export async function releasesFromSources({ source, ids, channel = 'stable', fetchImpl = fetch, catalogue = null }) {
+  // `ids` may be a promise: the GitHub listing does not need them, so it starts before the installed plugins are known.
   const [github, offered] = await Promise.all([
     fetchPluginReleases({ repo: source?.repo, token: source?.token, channel, fetchImpl }).then((value) => ({ value }), (error) => ({ error })),
-    catalogue ? fetchCatalogueReleases({ catalogue, ids, fetchImpl }) : Promise.resolve(new Map()),
+    catalogue ? Promise.resolve(ids).then((list) => fetchCatalogueReleases({ catalogue, ids: list, fetchImpl })) : Promise.resolve(new Map()),
   ]);
   if (github.error && !offered.size) throw github.error;
   const releases = new Map(github.value ? github.value.releases : []);
@@ -278,13 +297,23 @@ export async function releasesFromSources({ source, ids, channel = 'stable', fet
   return { repo: github.value && offered.size ? `${github.value.repo} + ${new URL(catalogue.origin).host}` : from, releases };
 }
 
-/** The check: every installed plugin against the release repository and, when given, the marketplace. Writes nothing. */
-export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch, catalogue = null, licensedIds = [] }) {
-  const installed = await installedPluginVersions(target);
-  const listing = await releasesFromSources({ source, ids: installed.map((row) => row.id), channel, fetchImpl, catalogue });
+/**
+ * The check: every installed plugin against the release repository and, when given, the marketplace. Writes nothing.
+ * The manifest read and the release listing run side by side; `readInstalled` lets the route answer from its short cache.
+ */
+export async function checkPluginUpdates({ target, source, channel = 'stable', fetchImpl = fetch, catalogue = null, licensedIds = [], readInstalled = installedPluginVersions }) {
+  const installedRead = Promise.resolve(readInstalled(target));
+  const ids = installedRead.then((rows) => rows.map((row) => row.id));
+  // Awaited only when a catalogue is asked. Without this, a failed manifest read with the catalogue switched off is an unhandled
+  // rejection, and Node stops the whole server (the browser then sees the connection drop, not the error).
+  ids.catch(() => undefined);
+  const [installed, listing] = await Promise.all([
+    installedRead,
+    releasesFromSources({ source, ids, channel, fetchImpl, catalogue }),
+  ]);
   const names = new Map(installed.map((row) => [row.id, row.name]));
   return {
-    repository: `${target.owner}/${target.repo}`,
+    repository: target ? `${target.owner}/${target.repo}` : '',
     releaseRepository: listing.repo,
     plugins: planPluginUpdates({ installed, releases: listing.releases, licensedIds }).map((row) => ({ ...row, name: names.get(row.id) || row.id })),
   };
@@ -293,15 +322,19 @@ export async function checkPluginUpdates({ target, source, channel = 'stable', f
 /**
  * Updates one installed plugin to one named release: a single commit under `plugins/<id>/`.
  * The caller has already required the platform owner and a connected Git deployment.
+ *
+ * `chain` makes it one link of Update all (`startCommitChain`): the commit is made but the branch is not moved.
+ * `backup` is passed to the installer (`always` when the site publishes this plugin itself). `readInstalled` lets a
+ * chain read the repository's plugin versions once for every update in it.
  */
-export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch, catalogue = null, publicKey, firstInstall = false }) {
+export async function applyPluginUpdate({ target, source, id, version, coreVersion = '', channel = 'stable', fetchImpl = fetch, catalogue = null, publicKey, firstInstall = false, chain = null, backup = 'auto', readInstalled = installedPluginVersions }) {
   const pluginId = trimmed(id);
   const wanted = trimmed(version).replace(/^v/i, '');
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(pluginId)) throw new InstallError('A plugin id is required.', 400);
   if (!wanted) throw new InstallError('Name the version to install.', 400);
   if (isCommercialPlugin(pluginId)) throw new InstallError(commercialRefusal(pluginId), 403);
 
-  const installed = (await installedPluginVersions(target)).find((row) => row.id === pluginId);
+  const installed = (await readInstalled(target)).find((row) => row.id === pluginId);
   // A first install (Plugins → Marketplace → Install) takes only a package the marketplace scanned and signed; a plugin
   // that is already here is updated, never installed over.
   if (firstInstall && installed) {
@@ -337,6 +370,8 @@ export async function applyPluginUpdate({ target, source, id, version, coreVersi
     deployHook: '',
     expectedId: pluginId,
     gitDeploys: true,
+    chain,
+    backup,
   });
   return { ...result, update: { id: pluginId, from: installed?.version || '', to: wanted, tag: release.tag, source: release.asset.kind === 'catalogue' ? 'marketplace' : 'github' } };
 }

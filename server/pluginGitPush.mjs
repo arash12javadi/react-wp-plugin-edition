@@ -310,9 +310,9 @@ export async function readTextFile(target, path) {
  * touch, named explicitly by the caller. Anything else — an absolute path, a `..` segment, a stray
  * file at the repository root — is refused before a byte reaches GitHub.
  */
-function assertWritable(path, allowPaths) {
+function assertWritable(path, allowPaths, allowPrefixes = []) {
   if (typeof path !== 'string' || !path) throw new InstallError('A plugin file had no path.', 502);
-  if (!allowPaths.includes(path) && !/^plugins\/[^/]+\/.+$/.test(path)) {
+  if (!allowPaths.includes(path) && !/^plugins\/[^/]+\/.+$/.test(path) && !allowPrefixes.some((prefix) => path.startsWith(prefix))) {
     throw new InstallError(`Refusing to commit "${path}": a plugin upload may only write inside plugins/<folder>/${allowPaths.length ? `, plus ${allowPaths.join(' and ')}` : ''}.`, 500);
   }
   if (path.startsWith('/') || path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
@@ -335,15 +335,23 @@ function assertWritable(path, allowPaths) {
  * intermediate trees itself, which is what lets a first install be a single commit.
  */
 export async function commitFiles(target, options) {
-  const { message, files, base, deletions = [], allowPaths = [], pathPolicy = null, ref = null } = options;
+  const { message, files: allFiles, base, deletions = [], allowPaths = [], allowPrefixes = [], pathPolicy = null, ref = null } = options;
   // `pathPolicy` replaces the plugin-folder rule for a caller that has its own, narrower list of what it
   // may write (the core updater, `server/gitDeploy/coreUpdate.mjs`). The segment checks still apply.
+  // `allowPrefixes` adds folders a caller may also write, such as `plugin-backups/` for the copy an update keeps.
   const check = typeof pathPolicy === 'function'
     ? (path) => { assertSafeSegments(path); pathPolicy(path); }
-    : (path) => assertWritable(path, allowPaths);
-  for (const file of files) check(file.path);
+    : (path) => assertWritable(path, allowPaths, allowPrefixes);
+  for (const file of allFiles) check(file.path);
   for (const path of deletions) check(path);
   const where = `${target.owner}/${target.repo}@${target.branch}`;
+
+  // A file given by `sha` is a copy of a blob the repository already holds (a backup of the files an update
+  // replaces): it goes into the tree as it is, with nothing downloaded or uploaded.
+  const copies = allFiles
+    .filter((file) => typeof file.sha === 'string' && /^[0-9a-f]{40}$/.test(file.sha))
+    .map((file) => ({ path: file.path, mode: file.mode || '100644', type: 'blob', sha: file.sha }));
+  const files = allFiles.filter((file) => !(typeof file.sha === 'string' && file.sha));
 
   const writes = files.map((file) => ({
     path: file.path,
@@ -381,7 +389,7 @@ export async function commitFiles(target, options) {
   let droppedDeletions = false;
   for (;;) {
     try {
-      treeSha = await createTree(target, base.treeSha, [...inlined, ...staged, ...removals]);
+      treeSha = await createTree(target, base.treeSha, [...inlined, ...staged, ...copies, ...removals]);
       break;
     } catch (error) {
       // Two refusals a tree can be answered with, and each leaves a set of entries that still installs
@@ -411,6 +419,7 @@ export async function commitFiles(target, options) {
   if (treeSha === base.treeSha) {
     return {
       sha: base.commitSha,
+      treeSha,
       url: `https://github.com/${target.owner}/${target.repo}/commit/${base.commitSha}`,
       repository: where,
       files: writes.length,
@@ -443,6 +452,8 @@ export async function commitFiles(target, options) {
   return {
     unchanged: false,
     sha,
+    // The new tree, so a caller that chains several commits (Update all) can build the next one on this one.
+    treeSha,
     url: asString(commit?.html_url) || `https://github.com/${target.owner}/${target.repo}/commit/${sha}`,
     repository: where,
     files: writes.length,
