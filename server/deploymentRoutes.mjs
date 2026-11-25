@@ -48,7 +48,7 @@ import { connectDeployment, deploymentEnvironment, inspectGithub, inspectReposit
 import { deploymentStatusForCommit } from './gitDeploy/deploymentStatus.mjs';
 import { applyCoreUpdate, describeCorePlan, planCoreUpdate } from './gitDeploy/coreUpdate.mjs';
 import { deployCommit, describeProject, projectRepository, readProject } from './gitDeploy/vercelGit.mjs';
-import { readBranch } from './pluginGitPush.mjs';
+import { readBranch, readBranchHead } from './pluginGitPush.mjs';
 import { applyPluginUpdate, checkPluginUpdates, installedPluginVersions, runningPluginsFrom } from './pluginUpdates.mjs';
 import { finishCommitChain, startCommitChain } from './pluginGitInstaller.mjs';
 import { LICENSE_LINK_CONFIG_KEY, licenseLinkFrom, updateLicensedPlugin } from './licenseLink.mjs';
@@ -102,19 +102,24 @@ const ok = (status, body) => ({ status, body: { success: true, ok: true, ...body
 const refuse = (status, error, extra = {}) => ({ status, body: { success: false, ok: false, error, ...extra } });
 
 /**
- * One read of the repository's manifests serves every admin opening the Plugins screen for a minute: it costs one GitHub call per plugin.
+ * One read of the repository's manifests serves every admin opening the Plugins screen while the branch stays on the same commit: it costs one GitHub call per plugin.
  * The promise is what is kept, so the table's version read and the update check that the screen starts at the same moment share one read
  * instead of making two. A failed read is dropped at once, and a commit made from here (`forgetCommittedVersions`) drops the entry too.
  */
-const COMMITTED_TTL_MS = 60_000;
+// The key includes the branch's head commit (one small read per call). On a host with several instances (Vercel), the instance that
+// committed an update is not the one that answers the next request; a cache keyed by time alone kept showing the versions from
+// before the update there for up to a minute, which looked like the update had not happened.
+const COMMITTED_TTL_MS = 10 * 60_000;
+const COMMITTED_MAX = 20;
 const committedCache = new Map();
-const committedKey = (target) => `${target.owner}/${target.repo}@${target.branch}`.toLowerCase();
-function committedVersionsCached(target) {
-  const key = committedKey(target);
+const committedKey = (target, head) => `${target.owner}/${target.repo}@${target.branch}#${head}`.toLowerCase();
+async function committedVersionsCached(target) {
+  const key = committedKey(target, await readBranchHead(target));
   const hit = committedCache.get(key);
   if (hit && Date.now() - hit.at < COMMITTED_TTL_MS) return hit.rows;
   const rows = installedPluginVersions(target);
   committedCache.set(key, { at: Date.now(), rows });
+  if (committedCache.size > COMMITTED_MAX) committedCache.delete(committedCache.keys().next().value);
   rows.catch(() => { if (committedCache.get(key)?.rows === rows) committedCache.delete(key); });
   return rows;
 }

@@ -288,6 +288,25 @@ export async function readBranch(target) {
   return { commitSha, treeSha, paths };
 }
 
+/** The commit the branch points at now: one small read, for a cache that must notice a new commit. */
+export async function readBranchHead(target) {
+  const ref = await request(target, 'GET', `/repos/${target.owner}/${target.repo}/git/ref/heads/${encodeURIComponent(target.branch)}`);
+  const sha = asString(ref?.object?.sha);
+  if (!sha) throw new InstallError(`GitHub returned no commit for branch "${target.branch}" of ${target.owner}/${target.repo}.`, 502);
+  return sha;
+}
+
+/**
+ * A commit of an existing tree on one parent, moving no branch: what Update all publishes when it updated several plugins, so the
+ * branch (and the deployment Vercel names after its head commit) gets one commit whose message names every plugin.
+ */
+export async function commitTree(target, { tree, parent, message }) {
+  const commit = await request(target, 'POST', `/repos/${target.owner}/${target.repo}/git/commits`, { message, tree, parents: [parent] });
+  const sha = asString(commit?.sha);
+  if (!sha) throw new InstallError('GitHub created the commit but returned no id for it. The branch was not moved; try again.', 502);
+  return sha;
+}
+
 /** The current text of one file on the branch, or `null` when the branch has no such file. */
 export async function readTextFile(target, path) {
   const encoded = path.split('/').map(encodeURIComponent).join('/');

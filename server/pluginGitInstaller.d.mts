@@ -94,9 +94,16 @@ export interface PluginCommitChain {
   base: { commitSha: string; treeSha: string; paths: Map<string, { sha: string; mode: string }> };
   texts: Map<string, string>;
   commits: string[];
+  /** One row per plugin the chain changed, for the published commit's message. */
+  steps: PluginChainStep[];
 }
+
+export interface PluginChainStep { id: string; name: string; version: string; from: string; install: boolean; backup: string }
+
+/** The message of the one commit Update all publishes: every plugin in the first line, one line each below it. */
+export function chainMessage(steps: PluginChainStep[]): string;
 
 export const BACKUP_ROOT: string;
 export function startCommitChain(target: GithubCommitTarget): Promise<PluginCommitChain>;
-/** Moves the branch once to the chain's last commit; `null` when nothing changed. */
+/** Moves the branch once: to the one update's commit, or to one summary commit of several; `null` when nothing changed. */
 export function finishCommitChain(chain: PluginCommitChain): Promise<{ sha: string; state: 'pending' } | null>;

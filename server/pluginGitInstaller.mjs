@@ -28,7 +28,7 @@ import {
   triggerDeployHook,
   unpack,
 } from './pluginInstaller.mjs';
-import { commitFiles, fastForwardBranch, readBranch, readTextFile } from './pluginGitPush.mjs';
+import { commitFiles, commitTree, fastForwardBranch, readBranch, readTextFile } from './pluginGitPush.mjs';
 import { PROTECTED_MARK } from './pluginProtect.mjs';
 import { addServerPluginImportToSource, removeServerPluginImportFromSource } from './serverPluginImports.mjs';
 import { PUBLIC_EDITION, currentEdition, isDevEditionPlugin } from '../src/lib/pluginEdition.js';
@@ -70,14 +70,34 @@ const decoder = new TextDecoder();
  */
 export async function startCommitChain(target) {
   const base = await readBranch(target);
-  return { target, start: base.commitSha, base, texts: new Map(), commits: [] };
+  return { target, start: base.commitSha, base, texts: new Map(), commits: [], steps: [] };
 }
 
-/** Publishes a chain: one fast-forward of the branch. `null` when no update in it changed anything. */
+/**
+ * The message of the one commit Update all publishes: every plugin and its version in the first line (what GitHub and Vercel show), one
+ * line per plugin below it with its name and where its previous code was kept. A long list is cut in the first line, never in the body.
+ */
+export function chainMessage(steps) {
+  const shown = steps.slice(0, 4).map((step) => `${step.id} ${step.version}`);
+  const more = steps.length > 4 ? ` and ${steps.length - 4} more` : '';
+  const verb = steps.every((step) => step.install) ? 'Install' : 'Update';
+  const subject = `${verb} plugins ${shown.join(' & ')}${more} (from the admin)`;
+  const body = steps.map((step) => `- ${step.name || step.id} ${step.from ? `${step.from} -> ` : ''}${step.version}${step.backup ? ` (previous files kept in ${step.backup}/)` : ''}`);
+  return [subject, '', ...body, ''].join('\n');
+}
+
+/**
+ * Publishes a chain with one move of the branch. `null` when no update in it changed anything. One update is published as its own
+ * commit. Several become ONE commit of the final tree on the branch's starting commit, with `chainMessage`: the per-plugin commits stay
+ * unreferenced, so the history and Vercel's deployment show "Update plugins a 1.0.1 & b 2.0.1" instead of only the last plugin's name.
+ */
 export async function finishCommitChain(chain) {
   if (!chain || chain.base.commitSha === chain.start) return null;
-  await fastForwardBranch(chain.target, chain.target.branch, chain.base.commitSha);
-  return { sha: chain.base.commitSha, state: 'pending' };
+  const sha = chain.commits.length > 1
+    ? await commitTree(chain.target, { tree: chain.base.treeSha, parent: chain.start, message: chainMessage(chain.steps) })
+    : chain.base.commitSha;
+  await fastForwardBranch(chain.target, chain.target.branch, sha);
+  return { sha, state: 'pending' };
 }
 
 const chainText = (chain, target, path) => (chain?.texts.has(path) ? Promise.resolve(chain.texts.get(path)) : readTextFile(target, path));
@@ -231,6 +251,15 @@ export async function installPluginFromGit({ source, target, optionStore, deploy
       ref: chain ? { none: true } : null,
     });
     advanceChain(chain, commit, kept ? [...files, ...kept.files] : files, deletions);
+    if (chain && !commit.unchanged) {
+      let from = '';
+      try {
+        from = previous.length ? String(JSON.parse(await chainText(null, target, `${folder}/manifest.json`) || '{}').version || '') : '';
+      } catch {
+        // Only the "from" in the commit message is lost.
+      }
+      chain.steps.push({ id: manifest.id, name: manifest.name, version: manifest.version, from, install: !previous.length, backup: kept?.folder || '' });
+    }
     if (chain && !commit.unchanged) {
       const registry = files.find((file) => file.path === REGISTRY_PATH);
       if (registry) chain.texts.set(REGISTRY_PATH, decoder.decode(registry.content));

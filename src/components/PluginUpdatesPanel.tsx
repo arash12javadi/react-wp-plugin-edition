@@ -30,6 +30,7 @@ import { callLink } from '../lib/licenseLinkApi';
 import { compareVersions } from '../lib/updates';
 import { rwp } from '../lib/rwp';
 import { DeploymentWatcher } from './settings/DeploymentCard';
+import { isDeploymentReady } from './update/DeploymentWatcher';
 import styles from './PluginUpdatesPanel.module.css';
 
 /** A sold plugin with a newer version than the one running, from react-wp.com (not GitHub). */
@@ -293,6 +294,8 @@ const timeOf = (date: Date) => date.toLocaleTimeString([], { hour: '2-digit', mi
  */
 export default function PluginUpdatesPanel({ updates, inTable }: { updates: PluginUpdates; inTable: string[] }) {
   const { owner, busy, error, applied, checkedAt, pending, ready, notice } = updates;
+  // The page keeps running the build it was opened with until it is loaded again: once Vercel says the new one is live, say so.
+  const [liveSha, setLiveSha] = useState('');
   if (!owner) return null;
 
   const waiting = pending.length;
@@ -333,7 +336,19 @@ export default function PluginUpdatesPanel({ updates, inTable }: { updates: Plug
       {applied && (
         <div role="status" className={styles.applied}>
           <p className={styles.ok}>{applied.text}</p>
-          {applied.sha && <DeploymentWatcher sha={applied.sha} since={applied.since} />}
+          {applied.sha && (
+            <DeploymentWatcher
+              sha={applied.sha}
+              since={applied.since}
+              onState={(state) => { if (isDeploymentReady(state)) setLiveSha(applied.sha); }}
+            />
+          )}
+          {applied.sha && liveSha === applied.sha && (
+            <p className={styles.ok}>
+              The new version is live. This page still runs the one it was opened with.{' '}
+              <button type="button" className={`${styles.button} ${styles.primary}`} onClick={() => window.location.reload()}>Reload to use it</button>
+            </p>
+          )}
           {applied.warnings.map((warning) => <p key={warning} className={styles.small}>{warning}</p>)}
         </div>
       )}

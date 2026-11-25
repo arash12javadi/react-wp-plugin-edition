@@ -186,6 +186,11 @@ export default function PluginsManager() {
   const [licenseSavingId, setLicenseSavingId] = useState('');
   /** The update check (platform owner only): the header's Check for updates, and each row's Update button. */
   const updates = usePluginUpdates();
+  // An update was just committed: read the versions in the repository again, so the table shows the new ones at once.
+  const appliedSha = updates.applied?.sha || '';
+  useEffect(() => {
+    if (appliedSha) setReloadKey((value) => value + 1);
+  }, [appliedSha]);
 
   /**
    * The table's truth: a sold plugin whose key does not verify is **inactive**, whatever its row says.

@@ -68,6 +68,10 @@ export function githubTargetFrom(value: unknown): GithubCommitTarget;
 
 /** The branch's current commit, tree and blob paths. */
 export function readBranch(target: GithubCommitTarget): Promise<GithubBranchBase>;
+/** The sha of the commit the branch points at now. */
+export function readBranchHead(target: GithubCommitTarget): Promise<string>;
+/** A commit of `tree` on `parent`; moves no branch. */
+export function commitTree(target: GithubCommitTarget, input: { tree: string; parent: string; message: string }): Promise<string>;
 
 /** The current text of one file on the branch, or `null` when the branch has no such file. */
 export function readTextFile(target: GithubCommitTarget, path: string): Promise<string | null>;
