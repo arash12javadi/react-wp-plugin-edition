@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import styles from './AdminLayout.module.css';
 import { type UserRole, roleLabels } from '../lib/roles';
 import type { AdminNavItem } from '../lib/adminNavigation';
@@ -50,6 +50,19 @@ export default function AdminLayout({
 
   const mark = branding.site_icon || branding.site_logo;
 
+  // Sidebar entries are real links (same URL scheme as App's navigate), so right-click →
+  // "Open link in new tab", Ctrl/Cmd-click and middle-click work. A plain left click stays in-app.
+  const hrefFor = (section: string, subsection?: string) => {
+    const query = new URLSearchParams({ section });
+    if (subsection) query.set('tab', subsection);
+    return `/admin?${query.toString()}`;
+  };
+  const followInApp = (event: MouseEvent<HTMLAnchorElement>, section: string, subsection?: string) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(section, subsection);
+  };
+
   return (
     <div className={styles.shell}>
       <AdminToolbar
@@ -86,32 +99,32 @@ export default function AdminLayout({
                 const submenu = item.submenu || [];
                 return (
                   <li key={item.id}>
-                    <button
-                      type="button"
+                    <a
+                      href={hrefFor(item.id)}
                       className={`${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
                       aria-current={isActive && !submenu.length ? 'page' : undefined}
                       aria-expanded={submenu.length ? isActive : undefined}
-                      onClick={() => navigate(item.id)}
+                      onClick={(event) => followInApp(event, item.id)}
                     >
                       <span className={styles.navIcon} aria-hidden="true">{item.icon}</span>
                       <span className={styles.navText}>{item.label}</span>
                       {item.id === 'dashboard' && dashboardBadge > 0 && (
                         <span className={styles.badge} title={`${dashboardBadge} setup item(s) need attention`}>{dashboardBadge}</span>
                       )}
-                    </button>
+                    </a>
                     {isActive && submenu.length > 0 && (
                       <ul className={styles.submenu}>
                         {submenu.map((sub) => (
                           <li key={sub.id}>
-                            <button
-                              type="button"
+                            <a
+                              href={hrefFor(item.id, sub.id)}
                               className={`${styles.subItem} ${sub.id === activeSubsection ? styles.subItemActive : ''}`}
                               aria-current={sub.id === activeSubsection ? 'page' : undefined}
-                              onClick={() => navigate(item.id, sub.id)}
+                              onClick={(event) => followInApp(event, item.id, sub.id)}
                             >
                               {sub.icon && <span className={styles.subIcon} aria-hidden="true">{sub.icon}</span>}
                               {sub.label}
-                            </button>
+                            </a>
                           </li>
                         ))}
                       </ul>
@@ -148,7 +161,7 @@ export default function AdminLayout({
               </h1>
             </div>
             <div className={styles.account}>
-              <button type="button" className={styles.viewSiteButton} onClick={onViewSite}>View site</button>
+              <a className={styles.viewSiteButton} href="/" {...(viewSiteTarget === 'new-tab' ? { target: '_blank', rel: 'noreferrer' } : {})}>View site</a>
               <span className={styles.avatar} aria-hidden="true">{(userEmail || 'A').charAt(0).toUpperCase()}</span>
               <span className={styles.email}>{userEmail || 'Administrator'} · {roleLabels[role]}</span>
             </div>

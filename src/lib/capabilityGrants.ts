@@ -62,25 +62,31 @@ export const fetchUserGrants = async (userId?: string): Promise<UserGrant[]> => 
  */
 export const loadCapabilityGrants = async (): Promise<void> => {
   const supabase = client;
-  const [roleResult, { data: sessionData }] = await Promise.all([
-    fetchRoleGrants().catch((error: unknown) => {
-      console.warn(`Role capability grants were not loaded: ${describeDbError(error)}`);
-      return {};
-    }),
-    supabase.auth.getSession(),
-  ]);
-  setRoleGrants(roleResult);
-  const user = sessionData.session?.user;
-  if (!user) {
+  // The signed-in person's own grants and role need only the session, which the client reads locally,
+  // so they go out beside the role grants rather than after them: one round trip at boot, not two.
+  const viewer = supabase.auth.getSession().then(async ({ data: sessionData }) => {
+    const user = sessionData.session?.user;
+    if (!user) return null;
+    const [grants, { data: profile }] = await Promise.all([
+      fetchUserGrants(user.id).catch(() => [] as UserGrant[]),
+      supabase.from('profiles').select('role').eq('id', user.id).maybeSingle(),
+    ]);
+    const role = roles.includes(profile?.role as UserRole) ? profile!.role as UserRole : null;
+    return { role, capabilities: grants.map((grant) => grant.capability) };
+  });
+  // Handled here so a failure that lands before the role grants is not reported as unhandled; it is
+  // still thrown by the `await viewer` below, after the role grants are applied, as it always was.
+  viewer.catch(() => undefined);
+  setRoleGrants(await fetchRoleGrants().catch((error: unknown) => {
+    console.warn(`Role capability grants were not loaded: ${describeDbError(error)}`);
+    return {};
+  }));
+  const viewerResult = await viewer;
+  if (!viewerResult) {
     setViewerGrants(null, []);
     return;
   }
-  const [grants, { data: profile }] = await Promise.all([
-    fetchUserGrants(user.id).catch(() => [] as UserGrant[]),
-    supabase.from('profiles').select('role').eq('id', user.id).maybeSingle(),
-  ]);
-  const role = roles.includes(profile?.role as UserRole) ? profile!.role as UserRole : null;
-  setViewerGrants(role, grants.map((grant) => grant.capability));
+  setViewerGrants(viewerResult.role, viewerResult.capabilities);
 };
 
 const checkWritten = (rows: unknown[] | null, what: string) => {

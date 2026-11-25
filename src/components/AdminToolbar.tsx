@@ -50,11 +50,11 @@ export default function AdminToolbar({
         <a href="/" className={styles.siteLink} {...siteLinkProps}>React-WP</a>
         {view === 'admin' ? (
           <>
-            {onViewSite && (viewSiteTarget === 'new-tab'
-              // A plain link instead of the handler, so the browser opens the tab itself: a popup
-              // blocker never sees it, and the signed-in view of the admin stays where it is.
-              ? <a className={styles.viewSiteLink} href="/" target="_blank" rel="noreferrer">View site</a>
-              : <button type="button" onClick={onViewSite}>View site</button>)}
+            {/* Always a real link, never a button: the browser then offers "Open link in new tab" on
+                right-click and honours Ctrl/Cmd-click and middle-click. A same-tab click is a normal
+                navigation to the site. With "In a new tab" the browser opens the tab itself, so a
+                popup blocker never sees it and the signed-in view of the admin stays where it is. */}
+            {onViewSite && <a className={styles.viewSiteLink} href="/" {...siteLinkProps}>View site</a>}
             {viewPage && <a className={styles.editLink} href={viewPage.href} target="_blank" rel="noreferrer">👁 {viewPage.label}</a>}
           </>
         ) : (

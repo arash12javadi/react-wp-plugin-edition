@@ -40,6 +40,14 @@ const devApiEntry = (config) => (config.dbType && config.dbType !== 'supabase'
  */
 const siteConfig = await resolveSiteConfig()
 
+/**
+ * Database, auth and storage drivers that only ever run on a Node/edge server. The adapters under
+ * src/lib/db, src/lib/auth and src/lib/storage import them lazily, so they are left out of the browser
+ * build (`external` below) and out of the dev server's dependency scan (`optimizeDeps.exclude`). Some are
+ * optional dependencies that a given install does not have at all.
+ */
+const serverOnlyModules = ['pg', 'mysql2', 'better-sqlite3', '@libsql/client', 'bcryptjs', 'jose', '@aws-sdk/client-s3']
+
 export default defineConfig({
   /**
    * CSS Modules render readable, stable class names instead of Vite's hashed ones.
@@ -78,18 +86,19 @@ export default defineConfig({
     // matches on Windows too.
     //
     // With the vendors split out, every library chunk is under 500 kB; the
-    // remaining entry chunk is this app's own code (App.tsx eagerly imports the
-    // admin screens, including the TipTap-based editor). The limit is raised so
-    // the warning again means "a library chunk got unusually big". Lazy-loading
-    // the admin screens in src/App.tsx would shrink the entry chunk further.
+    // remaining entry chunk is this app's own code — mostly the Page Builder's
+    // widget renderers, which every builder-designed page draws. The admin
+    // screens, editors and plugin admin pages are lazy (src/App.tsx and each
+    // plugin's index.tsx). The limit is raised so the warning again means "a
+    // library chunk got unusually big"; `npm run check:bundle` is the real
+    // budget for what a first visit downloads.
     chunkSizeWarningLimit: 600,
     rolldownOptions: {
       // Server-only drivers are loaded lazily (src/lib/db/adapters, src/lib/auth, src/lib/storage)
       // and must never be bundled into the browser build. Mark them external so Rolldown leaves the
       // dynamic import() calls untouched; they only resolve at runtime on a Node/edge server.
       external: (id) => {
-        const serverOnly = ['pg', 'mysql2', 'better-sqlite3', '@libsql/client', 'bcryptjs', 'jose', '@aws-sdk/client-s3'];
-        return serverOnly.some((module) => id === module || id.startsWith(`${module}/`));
+        return serverOnlyModules.some((module) => id === module || id.startsWith(`${module}/`));
       },
       output: {
         codeSplitting: {
@@ -114,9 +123,22 @@ export default defineConfig({
             // administrator checks a ZIP. In the catch-all below it would be shared with the entry chunk
             // and every visitor would download it. Its own group keeps it behind that import.
             { name: 'typescript', test: /node_modules[\\/]typescript[\\/]/, priority: 20 },
+            // The same trap, smaller: libraries reached only through a dynamic import() must not fall into the
+            // catch-all, or they ride along in `vendor`, which index.html preloads for every visitor.
+            // lottie-web (about 165 kB) belongs to the builder's Lottie widget alone
+            // (plugins/rwp-page-builder/render/widgets/pro-content.tsx); fflate to the ZIP backup, import and
+            // Plugin Check screens. Both are behind lazy imports, and their own groups keep them there.
+            { name: 'lottie', test: /node_modules[\\/]lottie-web[\\/]/, priority: 20 },
+            { name: 'fflate', test: /node_modules[\\/]fflate[\\/]/, priority: 20 },
             // Catch-all for the rest of the third-party code, lowest priority so
             // the named groups above win. Keeps app code in the entry chunk.
-            { name: 'vendor', test: /node_modules[\\/]/, priority: 1 },
+            //
+            // lucide-react is left out on purpose. It ships one module per icon, and without a group Rolldown
+            // places each icon with the code that imports it: the ones the public widgets draw stay in the
+            // entry, while the builder's wide icon catalogue (plugins/rwp-page-builder/lib/iconCatalog.tsx,
+            // loaded lazily) takes its own icons into its own chunk. Inside `vendor` every one of them was
+            // preloaded on every page.
+            { name: 'vendor', test: /node_modules[\\/](?!lucide-react[\\/])/, priority: 1 },
           ],
         },
       },
@@ -142,7 +164,39 @@ export default defineConfig({
     // see `devApiEntry` above.
     devApiServer({ entry: devApiEntry(siteConfig) }),
   ],
+  /**
+   * `npm run dev` only: what Vite pre-bundles when the server starts.
+   *
+   * `exclude` is what makes the start-up scan work at all. The SQLite adapter imports `better-sqlite3`,
+   * an optional dependency most installs do not have, and one unresolvable import made Vite print
+   * "Failed to run dependency scan. Skipping dependency pre-bundling." From there every library was
+   * discovered while pages loaded, and each discovery answered `504 Outdated Optimize Dep` and reloaded
+   * the whole page mid-boot — on the first visit to the site, again to the admin, again to the builder.
+   * Excluded modules are left external by the scan instead of failing it.
+   *
+   * `include` lists the libraries only the lazy screens use (the Page Builder, the Classic Editor, the
+   * code fields), so they are bundled up front too rather than on their first visit. Only
+   * `dependencies` belong there: an optional one missing from an install would stop the server.
+   */
+  optimizeDeps: {
+    exclude: serverOnlyModules,
+    include: [
+      '@codemirror/autocomplete', '@codemirror/lang-css', '@codemirror/lang-html', '@codemirror/lang-javascript',
+      '@codemirror/state', '@codemirror/view', '@uiw/react-codemirror',
+      '@dnd-kit/core',
+      '@tiptap/react', '@tiptap/starter-kit', '@tiptap/extension-image', '@tiptap/extension-table',
+      '@tiptap/extension-text-align', '@tiptap/extension-text-style',
+      'fflate', 'lottie-web/build/player/lottie_light',
+    ],
+  },
   server: {
+    /**
+     * Transform the app's entry and everything it imports as soon as the dev server starts, instead
+     * of one request at a time while the first page load waits on each.
+     */
+    warmup: {
+      clientFiles: ['./src/main.jsx', './src/App.tsx'],
+    },
     proxy: {
       '/api': {
         target: apiOrigin,

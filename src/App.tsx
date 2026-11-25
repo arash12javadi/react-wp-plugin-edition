@@ -91,7 +91,40 @@ const readPluginIds = (value: string | null | undefined): string[] => {
   }
 };
 
+/**
+ * The sold plugins this browser saw active on its last visit. Only a head start: their license
+ * reports are requested beside the read of `rwp_active_plugins` instead of after it, which takes one
+ * round trip off every boot. What runs is still decided by the fresh option and fresh reports — a
+ * hint that went stale only costs a request whose answer is ignored.
+ */
+const ACTIVE_LICENSED_HINT_KEY = 'rwp_licensed_plugins_hint';
+
+const readLicensedHint = (): string[] => {
+  try {
+    return readPluginIds(window.localStorage.getItem(ACTIVE_LICENSED_HINT_KEY)).filter(isCommercialPlugin);
+  } catch {
+    return [];
+  }
+};
+
+const writeLicensedHint = (ids: string[]) => {
+  try {
+    window.localStorage.setItem(ACTIVE_LICENSED_HINT_KEY, JSON.stringify(ids));
+  } catch {
+    // Full or blocked storage only costs the head start.
+  }
+};
+
+type LicenseReport = { required?: boolean; licensed?: boolean; status?: string } | null;
+
 const initializePlugins = async (supabase: Client) => {
+  const reports = new Map<string, Promise<LicenseReport>>();
+  const reportFor = (pluginId: string) => {
+    if (!reports.has(pluginId)) reports.set(pluginId, fetchPluginLicenseReport(pluginId) as Promise<LicenseReport>);
+    return reports.get(pluginId)!;
+  };
+  readLicensedHint().forEach((pluginId) => { void reportFor(pluginId); });
+
   const { data: activeRow } = await supabase
     .from('options').select('option_value').eq('option_name', 'rwp_active_plugins').maybeSingle();
   const registered = rwp.getPlugins();
@@ -109,14 +142,14 @@ const initializePlugins = async (supabase: Client) => {
   // The stored state itself is corrected by the Plugins screen, which writes with the administrator's
   // own token; this boot only decides what to run.
   const refused = new Set<string>();
-  await Promise.all(registered
+  const activeCommercial = registered
     .filter((plugin) => activeIds.includes(plugin.id) && isCommercialPlugin(plugin.id))
-    .map(async (plugin) => {
-      const report = await fetchPluginLicenseReport(plugin.id) as {
-        required?: boolean; licensed?: boolean; status?: string;
-      } | null;
-      if (report?.required && !report.licensed && report.status !== 'unknown') refused.add(plugin.id);
-    }));
+    .map((plugin) => plugin.id);
+  writeLicensedHint(activeCommercial);
+  await Promise.all(activeCommercial.map(async (pluginId) => {
+    const report = await reportFor(pluginId);
+    if (report?.required && !report.licensed && report.status !== 'unknown') refused.add(pluginId);
+  }));
 
   registered.forEach((plugin) => {
     if (activeIds.includes(plugin.id) && !refused.has(plugin.id)) rwp.activatePlugin(plugin.id);
@@ -157,6 +190,19 @@ const loadPublicRouting = async (supabase: Client): Promise<PublicRouting> => {
 };
 
 const emptyRouting: PublicRouting ={ settings: defaultSettings, homePageId: '', postsPageSlug: '', postsPageHasLayout: false };
+
+/**
+ * The boot's stages as the boot screen names them. Each one is a real wait (see `boot()` and
+ * `prepare()` below), so the status line says what the site is doing instead of one "Loading…" for the
+ * whole of it, and the bar moves when a stage completes.
+ */
+type BootStage = 'connect' | 'prepare' | 'layout';
+
+const bootStageScreen = (stage: BootStage, admin: boolean): { label: string; progress: number } => {
+  if (stage === 'connect') return { label: 'Connecting to the site…', progress: 0.4 };
+  if (stage === 'prepare') return { label: 'Loading plugins and settings…', progress: 0.62 };
+  return { label: admin ? 'Opening the dashboard…' : 'Preparing the page…', progress: 0.84 };
+};
 
 function SimpleSection({ title, description }: { title: string; description: string }) {
   return (
@@ -385,7 +431,7 @@ function InstalledDashboard({ supabase, onReconfigure }: { supabase: Client; onR
   if (authLoading || roleLoading) {
     // The same screen the page booted on: the dashboard has not painted yet, so this continues it
     // rather than replacing a full-page indicator with a line of text.
-    return <BootSplash label="Loading the dashboard…" />;
+    return <BootSplash label="Loading the dashboard…" progress={0.92} />;
   }
 
   if (!session) {
@@ -491,6 +537,8 @@ export default function App() {
   const [supabase, setSupabase] = useState<Client | null>(null);
   const [routing, setRouting] = useState<PublicRouting>(emptyRouting);
   const [checkingDatabase, setCheckingDatabase] = useState(true);
+  // A browser that remembers a good boot skips the connection check before painting (see boot()).
+  const [bootStage, setBootStage] = useState<BootStage>(() => (readBootCache() ? 'prepare' : 'connect'));
   /** Set when the site is configured but its database cannot be read — never the wizard (see boot.ts). */
   const [bootFailure, setBootFailure] = useState<{ failure: BootFailure; configured: boolean; dbType: string } | null>(null);
   /** True only when the recovery screen's "open the wizard anyway" was used. */
@@ -583,10 +631,12 @@ export default function App() {
         booted.current = true;
         fireBootHooks();
       }
+      if (mounted) setBootStage('layout');
       // After the plugins, so their dictionaries and i18n filters are in place, and after the locale,
       // because these are the Settings → Translations strings for it. Text must not change from the
-      // bundled wording to the edited one after the first paint.
-      await initDatabaseTranslations().catch(() => undefined);
+      // bundled wording to the edited one after the first paint — so it is awaited below, before the
+      // first render, but no longer in front of the theme and routing reads, which do not need it.
+      const translations = initDatabaseTranslations().catch(() => undefined);
 
       const settings = await appSettings;
       const path = window.location.pathname;
@@ -615,6 +665,7 @@ export default function App() {
           preloadSiteTemplates(),
         ]);
       }
+      await translations;
       if (!mounted) return;
       setRouting(publicRouting);
       setSupabase(client);
@@ -653,6 +704,7 @@ export default function App() {
       const remembered = readBootCache() ? tryGetClient() : null;
 
       if (!remembered) {
+        setBootStage('connect');
         const result = await bootDatabase();
         if (!mounted) return;
         if (!result.client) {
@@ -664,6 +716,7 @@ export default function App() {
           console.warn(`React-WP: recovered by clearing this browser's stored session (${result.clearedSession.join(', ')}).`);
         }
         writeBootCache();
+        setBootStage('prepare');
         try {
           await prepare(result.client);
         } catch (error: unknown) {
@@ -675,6 +728,7 @@ export default function App() {
       }
 
       // The re-check runs beside the work rather than in front of it.
+      setBootStage('prepare');
       const verification = bootDatabase();
       try {
         await prepare(remembered);
@@ -733,7 +787,8 @@ export default function App() {
 
   // index.html paints the same screen before the bundle runs, so this is a handover, not a flash.
   if (checkingDatabase) {
-    return <BootSplash />;
+    const screen = bootStageScreen(bootStage, isAdminRoute);
+    return <BootSplash label={screen.label} progress={screen.progress} />;
   }
 
   if (!supabase) {

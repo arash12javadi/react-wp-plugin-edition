@@ -332,3 +332,11 @@
     display: none;
   }
 }
+
+/* Sidebar entries and "View site" are links (right-click → open in new tab), styled like the buttons they replaced. */
+.navItem,
+.subItem,
+.viewSiteButton {
+  box-sizing: border-box;
+  text-decoration: none;
+}

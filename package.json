@@ -11,6 +11,7 @@
     "build:api": "vite build --config vite.api.config.mjs",
     "lint": "eslint .",
     "check:css": "node vite.cssModules.check.mjs",
+    "check:bundle": "node scripts/checkBundleBudget.mjs",
     "check:plugins": "node scripts/checkPluginRules.mjs",
     "check:schema": "node scripts/checkPluginSchemaSql.mjs",
     "check:updates": "node scripts/checkUpdateEngine.mjs",
