@@ -46,6 +46,8 @@ import {
 import { ensureRevocations } from './licenseRevocations.mjs';
 import { backgroundLicenseSync } from './licenseLink.mjs';
 import { readJsonState, writeJsonState } from './licenseStore.mjs';
+import { applyFilters, doAction, firingApi, hooksFor, setActivePluginSource } from './hooks.mjs';
+import { registerPaymentGateway } from './payments/registry.mjs';
 
 const loaded = await Promise.allSettled([
   // rwp:server-plugin-imports:start
@@ -83,6 +85,26 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
   console.warn(`[plugin-edition] ${plugin.id} is a development-edition plugin and is not served by a ${edition} deployment.`);
   return false;
 });
+
+/**
+ * Server hooks (server/hooks.mjs) and payment gateways (server/payments/registry.mjs). A plugin's `server.mjs` may export
+ * `register(api)`; it is called once here with the API bound to that plugin's id, so every hook and gateway it adds belongs to it
+ * and only runs, or is offered, while the plugin is active. A `register` that throws is logged and the plugin's routes still load.
+ */
+let currentActiveIds = null;
+setActivePluginSource(() => currentActiveIds);
+for (const plugin of serverPlugins) {
+  if (typeof plugin.register !== 'function') continue;
+  try {
+    await plugin.register({
+      ...hooksFor(plugin.id),
+      registerPaymentGateway: (definition) => registerPaymentGateway(definition, { pluginId: plugin.id }),
+    });
+  } catch (error) {
+    console.error(`[hooks] ${plugin.id} could not register its hooks: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+let pluginsLoadedFired = false;
 
 /**
  * The options a plugin request depends on, read together and cached for half a minute.
@@ -415,6 +437,13 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
     return { status: 404, body: { error: `The plugin "${plugin.id}" is not active. Activate it under Plugins.` } };
   }
 
+  // Hooks of inactive plugins do not run; the first request that knows the active set also fires rwp_plugins_loaded, once.
+  currentActiveIds = new Set(activeIds);
+  if (!pluginsLoadedFired) {
+    pluginsLoadedFired = true;
+    await doAction('rwp_plugins_loaded');
+  }
+
   const route = matchRoute(plugin.routes, request.method, routePath);
   if (!route) return { status: 404, body: { error: `${plugin.id} has no route ${request.method} ${routePath}.` } };
 
@@ -434,7 +463,11 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
   };
 
   try {
-    return await route.handler({
+    // Observers see which route ran (never the body or the credentials); the response filter runs after the handler, so the
+    // handler's own login and capability checks have already decided.
+    const described = { method: request.method, plugin: plugin.id, route: routePath };
+    await doAction('rwp_rest_request', described);
+    const result = await route.handler({
       ...request,
       params: route.params,
       json,
@@ -447,7 +480,11 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
         supabaseKey: request.supabase.publishableKey,
         env: process.env,
       }),
+      // The firing half of the server hooks (doAction, applyFilters), for a plugin that offers hook points of its own.
+      hooks: firingApi,
     });
+    const filtered = await applyFilters('rwp_rest_post_dispatch', result, described);
+    return filtered && typeof filtered === 'object' && Number.isInteger(filtered.status) ? filtered : result;
   } catch (error) {
     const status = Number(error?.status) || 500;
     return { status, body: { error: error instanceof Error ? error.message : 'Unknown plugin error.' } };

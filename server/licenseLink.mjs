@@ -403,6 +403,61 @@ export async function syncLicenses({ io, licenseIo, credentials = null, env = gl
 }
 
 // ---------------------------------------------------------------------------------------------------
+// Developer requests: a plugin acting for this site's owner on react-wp.com
+
+/** The only platform paths `platformRequest` may call: the developer listing routes, nothing that delivers keys or packages. */
+const DEVELOPER_PATH = /^developer\/[a-z-]{1,40}$/;
+
+/**
+ * One request from this site to react-wp.com in the connected account's name (RWP Developers sending a plugin to the
+ * marketplace). The sealed site token is opened here and sent only to `licenseLinkBase(env)`; it is never returned.
+ * `path` must be a `developer/...` route. `body` may be a FormData (the package) or a plain object (sent as JSON).
+ * A 4xx answer's own sentence is passed on, because these routes tell the developer what to fix in their own plugin
+ * (a scan finding, an id that is taken); a 5xx or an unreachable platform is one neutral sentence.
+ *
+ * @returns {Promise<{ status: number, body: any, domain: string }>}
+ */
+export async function platformRequest({ io, path, method = 'GET', body, env = globalThis.process?.env || {}, fetchImpl = fetch, timeoutMs = 60_000 }) {
+  if (!DEVELOPER_PATH.test(String(path || ''))) throw new LicenseLinkError(400, 'That react-wp.com address is not one a plugin may call.', 'bad_platform_path');
+  const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+  if (!isLicenseLinked(row)) {
+    throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account. Connect it under Plugins → Connect to react-wp.com, then try again.', 'not_connected');
+  }
+  requireSecretBox(env);
+  let token;
+  try {
+    token = openSecret(row.token_sealed, { env });
+  } catch (error) {
+    throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
+  }
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
+  let response;
+  try {
+    response = await centralFetch(`${licenseLinkBase(env)}/${path}`, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-RWP-Site': row.domain,
+        ...(body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: isForm ? body : JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    }, { fetchImpl });
+  } catch (error) {
+    throw new LicenseLinkError(502, `react-wp.com could not be reached: ${error instanceof Error ? error.message : 'network error'}.`, 'unreachable');
+  }
+  if (response.status === 401) {
+    throw new LicenseLinkError(401, `react-wp.com no longer accepts this connection (${await platformMessage(response)}) Connect the site again with a new code.`, 'disconnected');
+  }
+  if (response.status >= 400 && response.status < 500) {
+    throw new LicenseLinkError(response.status, await platformMessage(response), 'refused');
+  }
+  if (!response.ok) throw new LicenseLinkError(502, 'react-wp.com could not complete the request just now. Try again later.', 'refused');
+  return { status: response.status, body: await response.json().catch(() => ({})), domain: row.domain };
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The licence option, with whichever credential the caller has
 
 const restBase = (supabaseUrl) => String(supabaseUrl || '').replace(/\/+$/, '');

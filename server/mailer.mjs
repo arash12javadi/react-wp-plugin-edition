@@ -10,6 +10,7 @@
  * Plain ESM with no browser imports, like `integrationConfig.mjs`, because `plugins/<id>/server.mjs` runs
  * as it is under `npm start`. nodemailer is imported lazily for the reason `sendTestEmail` gives.
  */
+import { applyFilters } from './hooks.mjs';
 import { EMAIL_CONFIG_KEY, emailConfigFrom, isEmailConfigured } from './integrationConfig.mjs';
 import { readPluginIntegrationRows } from './pluginIntegrationAccess.mjs';
 import { openRow } from './sealedRows.mjs';
@@ -97,7 +98,12 @@ export async function resolveMailConfig(pluginId, ownKey, ctx, options = {}) {
  * @param {object} config   an `emailConfigFrom` result that `isEmailConfigured`
  * @param {{to: string[], subject: string, html?: string, text?: string, fromName?: string, replyTo?: string}} message
  */
-export async function sendMailWith(config, message) {
+export async function sendMailWith(config, original) {
+  // `rwp_mail` (WordPress's wp_mail filter): a plugin may change the recipients, subject and body; never the sending credentials.
+  const shaped = await applyFilters('rwp_mail', {
+    to: original.to, subject: original.subject, html: original.html, text: original.text, replyTo: original.replyTo, fromName: original.fromName,
+  });
+  const message = shaped && typeof shaped === 'object' ? { ...original, ...shaped } : original;
   const to = (Array.isArray(message.to) ? message.to : [message.to]).map(str).filter(Boolean);
   if (to.length === 0) throw new Error('There is no recipient.');
   if (!isEmailConfigured(config)) throw new Error('This email configuration is incomplete.');

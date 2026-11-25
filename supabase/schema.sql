@@ -3135,7 +3135,7 @@ begin
     when 'email_config' then array['api_key', 'smtp.password']
     when 'shop_email_config' then array['api_key', 'smtp.password']
     when 'page_builder_email_config' then array['api_key', 'smtp.password']
-    when 'shop_payments_config' then array['stripe_secret_key', 'stripe_webhook_secret', 'paypal_client_secret']
+    when 'shop_payments_config' then array['stripe_secret_key', 'stripe_webhook_secret', 'paypal_client_secret', 'gateways.*.*']
     else null
   end;
   if secret_paths is null then
@@ -3147,6 +3147,21 @@ begin
     raise exception 'The "%" setting must be a JSON object.', new.setting_key using errcode = '22023';
   end;
   foreach path in array secret_paths loop
+    if path like '%*%' then
+      -- `name.*.*`: every string two levels under `name` (each field of each payment gateway a plugin added, 20261125).
+      for secret in
+        select f.value #>> '{}'
+        from jsonb_each(case when jsonb_typeof(doc -> split_part(path, '.', 1)) = 'object' then doc -> split_part(path, '.', 1) else '{}'::jsonb end) g,
+             jsonb_each(case when jsonb_typeof(g.value) = 'object' then g.value else '{}'::jsonb end) f
+        where jsonb_typeof(f.value) = 'string'
+      loop
+        if btrim(secret) <> '' and secret not like 'rwp-sealed:%' then
+          raise exception 'The "%" setting holds credentials, which are stored sealed: save it from Settings -> Integrations (field %).', new.setting_key, path
+            using errcode = '42501';
+        end if;
+      end loop;
+      continue;
+    end if;
     secret := doc #>> string_to_array(path, '.');
     if secret is not null and btrim(secret) <> '' and secret not like 'rwp-sealed:%' then
       raise exception 'The "%" setting holds credentials, which are stored sealed: save it from Settings -> Integrations (field %).', new.setting_key, path

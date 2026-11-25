@@ -27,7 +27,8 @@ export const SEALED_ROW_SECRETS = Object.freeze({
   email_config: Object.freeze(['api_key', 'smtp.password']),
   shop_email_config: Object.freeze(['api_key', 'smtp.password']),
   page_builder_email_config: Object.freeze(['api_key', 'smtp.password']),
-  shop_payments_config: Object.freeze(['stripe_secret_key', 'stripe_webhook_secret', 'paypal_client_secret']),
+  // `gateways.*.*`: every field of every payment gateway a plugin added (server/payments/registry.mjs), sealed whatever it is.
+  shop_payments_config: Object.freeze(['stripe_secret_key', 'stripe_webhook_secret', 'paypal_client_secret', 'gateways.*.*']),
 });
 
 export const isSealedRowKey = (key) => Object.prototype.hasOwnProperty.call(SEALED_ROW_SECRETS, String(key));
@@ -46,6 +47,32 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 
 const getPath = (object, dotted) => dotted.split('.').reduce((node, part) => (node && typeof node === 'object' ? node[part] : undefined), object);
 
+/**
+ * The concrete paths a declared path names in one row: a `*` part stands for every key of the object at that level
+ * (`gateways.*.*` -> `gateways.zarinpal.merchant`, …). A path without `*` is itself.
+ */
+const expandPath = (object, dotted) => {
+  const parts = dotted.split('.');
+  let paths = [''];
+  for (const part of parts) {
+    const next = [];
+    for (const prefix of paths) {
+      if (part !== '*') {
+        next.push(prefix ? `${prefix}.${part}` : part);
+        continue;
+      }
+      const node = prefix ? getPath(object, prefix) : object;
+      if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
+      for (const key of Object.keys(node)) {
+        if (/^[A-Za-z0-9_-]{1,64}$/.test(key)) next.push(prefix ? `${prefix}.${key}` : key);
+      }
+    }
+    paths = next;
+  }
+  return paths;
+};
+const secretPaths = (key, object) => SEALED_ROW_SECRETS[key].flatMap((path) => (path.includes('*') ? expandPath(object, path) : [path]));
+
 const setPath = (object, dotted, value) => {
   const parts = dotted.split('.');
   let node = object;
@@ -59,7 +86,7 @@ const setPath = (object, dotted, value) => {
 /** The secret paths of `key` whose value is a non-empty string that is not sealed. */
 export function plaintextSecrets(key, value) {
   if (!isSealedRowKey(key) || !value || typeof value !== 'object') return [];
-  return SEALED_ROW_SECRETS[key].filter((path) => {
+  return secretPaths(key, value).filter((path) => {
     const secret = getPath(value, path);
     return typeof secret === 'string' && secret.trim() !== '' && !isSealedValue(secret);
   });
@@ -74,7 +101,7 @@ export function sealRow(key, value, env = globalThis.process?.env || {}) {
   if (!isSealedRowKey(key)) throw new SealedRowError(400, `"${String(key)}" is not a setting this route stores.`);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new SealedRowError(400, 'The setting must be an object.');
   const row = clone(value);
-  for (const path of SEALED_ROW_SECRETS[key]) {
+  for (const path of secretPaths(key, row)) {
     const secret = getPath(row, path);
     if (typeof secret !== 'string' || secret.trim() === '') {
       if (secret !== undefined) setPath(row, path, '');
@@ -104,7 +131,7 @@ export function sealRow(key, value, env = globalThis.process?.env || {}) {
 export function openRow(key, value, env = globalThis.process?.env || {}) {
   if (!isSealedRowKey(key) || !value || typeof value !== 'object') return value;
   const row = clone(value);
-  for (const path of SEALED_ROW_SECRETS[key]) {
+  for (const path of secretPaths(key, row)) {
     const secret = getPath(row, path);
     if (!isSealedValue(secret)) continue;
     try {
