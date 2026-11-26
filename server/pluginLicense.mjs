@@ -450,7 +450,8 @@ function usage(exitCode = 0) {
 }
 
 // Run as a script, but never when imported by server/plugins.mjs.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Inside RWP Tools.exe this module is bundled with its caller and shares its import.meta.url: the bundle flag keeps this CLI quiet.
+if (!globalThis.RWP_TOOLS_BUNDLE && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     process.exitCode = cli(process.argv.slice(2));
   } catch (error) {

@@ -80,7 +80,8 @@ export const pluginDocs: Record<string, PluginDoc> = {
           'Coupons: percent, fixed cart and fixed product, limited by spend, product, category, email or number of uses.',
           'Tax rates by country, state, postcode and city, with classes, priorities and compound rates; prices can be entered with or without tax.',
           'Shipping zones with flat rate (per item and per class), free shipping and local pickup.',
-          'Stripe Checkout, PayPal, bank transfer, cheque and cash on delivery, with refunds by hand or through Stripe and PayPal.',
+          'Stripe Checkout (Apple Pay, Google Pay, Link, iDEAL, Bancontact and more, as switched on in Stripe), bank transfer, cheque and cash on delivery, with refunds by hand or through Stripe.',
+          'PayPal, Mollie and GoCardless Instant Bank Pay with the free RWP Payments Plus plugin; PayPal and Mollie refund from the order too.',
           'Customers can ask for a refund from their order page; you refund it, or decline with a reason they read.',
           'Guest checkout or an account, with orders, downloads and addresses under /my-account.',
         ],
@@ -160,8 +161,8 @@ export const pluginDocs: Record<string, PluginDoc> = {
     steps: [
       'Activate it here. Activation is what creates the shop tables; a site that never activates the shop never gets them.',
       'Open Shop → Settings → General and fill in the store address: tax "based on shop base address", local pickup and the order emails all read it.',
-      'Turn on at least one payment method under Shop → Settings → Payments. Cash on delivery, bank transfer and cheque need nothing else; Stripe and PayPal need the keys in the next step.',
-      'For Stripe or PayPal, enter the keys in Settings → Integrations → Shop payments. They are stored in your database and never shown again. The site also needs SUPABASE_SECRET_KEY on the server: without it a paid order can never be marked as paid.',
+      'Turn on at least one payment method under Shop → Settings → Payments. Cash on delivery, bank transfer and cheque need nothing else; Stripe needs the key in the next step. For PayPal, Mollie or GoCardless, activate RWP Payments Plus and choose them on its Payment methods screen first.',
+      'For Stripe (and any method a plugin adds), enter the keys in Settings → Integrations → Shop payments. They are stored in your database and never shown again. The site also needs SUPABASE_SECRET_KEY on the server: without it a paid order can never be marked as paid.',
       'For order emails, either fill in Settings → Integrations → Shop email (a sender of its own) or leave it empty to use Settings → Integrations → Email, then send a test email from either card.',
       "Publish products under Shop → Products, then place [rwp_products] on a page or use the shop's widgets in the Page Builder. /shop, /cart, /checkout and /my-account are routes, so they need no page of their own.",
     ],
@@ -588,6 +589,58 @@ export const pluginDocs: Record<string, PluginDoc> = {
       'Uninstalling with a data wipe drops the installations tracker, and the list of sites this installation handed out goes with it. The sites themselves keep running on their own Vercel and Supabase accounts.',
       'An empty template branch means the repository’s default branch, which is what Check template access resolves and reports.',
       'Provisioning runs on the server, so the Node server or the Vercel function has to be up; when a stage fails, its message names the step that stopped.',
+    ],
+  },
+  'rwp-payments-plus': {
+    icon: '💳',
+    summary:
+      'More ways to pay in every shop on this site: PayPal, Mollie (iDEAL, Bancontact, cards, Klarna and more) and GoCardless Instant Bank Pay (Open Banking). You choose which ones the site offers.',
+    featureGroups: [
+      {
+        title: 'What it adds',
+        items: [
+          'PayPal: PayPal balance, Pay Later and cards through PayPal, worldwide. Confirmed when the buyer comes back; refunds from the shop.',
+          'Mollie: one Mollie page with every method you switch on in Mollie (iDEAL, Bancontact, cards, Apple Pay, SEPA transfer, Klarna, EPS, Przelewy24, TWINT…). Refunds from the shop.',
+          'GoCardless Instant Bank Pay: the buyer approves the payment in their bank app (UK and EU, GBP and EUR). Refunds are made in GoCardless.',
+          'Every shop on the site can use them: Shop, Developers, and the Marketplace on react-wp.com (lifetime licences only there).',
+        ],
+      },
+      {
+        title: 'Already included through Stripe',
+        items: [
+          'Apple Pay, Google Pay, Link, iDEAL, Bancontact, Pay by Bank, Klarna and SEPA Direct Debit need no plugin: switch them on in Stripe → Settings → Payment methods.',
+          'Methods that settle later (SEPA, bank debits) need the Stripe webhook events checkout.session.async_payment_succeeded and checkout.session.async_payment_failed as well as checkout.session.completed.',
+        ],
+      },
+      {
+        title: 'How payments stay safe',
+        items: [
+          'Buyers pay on the provider’s own page; no card or bank detail reaches this site.',
+          'The amount is the order total the shop stored. The shop checks what the provider reports and completes the order once.',
+          'Every confirmation is checked with the provider: PayPal and Mollie payments are read back with your key, GoCardless webhooks are signed and checked.',
+          'Credentials are sealed in each shop’s settings and never shown again. Your choice of methods is a public list of names, nothing more.',
+        ],
+      },
+    ],
+    admin: [
+      { where: 'Payment methods', what: 'Tick the methods this site offers, read what each one needs, and see what Stripe already covers.' },
+      { where: 'Settings → Integrations → Shop payments', what: 'Each chosen method’s credentials for the Shop.' },
+      { where: 'Shop → Settings → Payments', what: 'Switch a chosen method on for the Shop’s checkout, with the title buyers read.' },
+      { where: 'Developers → Payments & key', what: 'Switch a chosen method on for your plugin shop and save its credentials.' },
+    ],
+    steps: [
+      'Activate it here.',
+      'Open Payment methods, tick the methods you want, and save. Until you save, only PayPal is offered (it used to be part of the Shop).',
+      'In each shop, switch the method on and paste its credentials. Use the provider’s test mode first: PayPal sandbox, a Mollie test_ key, the GoCardless sandbox.',
+      'For GoCardless, create a webhook endpoint with the callback address the shop shows and paste its secret. Mollie and PayPal need nothing set up on their side.',
+      'Place a test order and pay it in test mode before switching to live credentials.',
+    ],
+    notes: [
+      'Free: no licence key.',
+      'Not yet tried against live PayPal, Mollie or GoCardless accounts: run a test payment end to end before going live.',
+      'Mollie and GoCardless webhooks need a public address. On localhost, a Mollie payment is confirmed when the buyer comes back.',
+      'Uninstalling with a data wipe removes your choice of methods. Credentials stay in each shop’s settings until you remove them there.',
+      'If you deactivate it, PayPal, Mollie and GoCardless disappear from checkout; orders already paid with them keep their payment method.',
     ],
   },
   // entry

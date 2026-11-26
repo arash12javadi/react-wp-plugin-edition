@@ -2,7 +2,8 @@
  * The payment-gateway registry: one list of the ways a site can take money, shared by every shop on it (the plugin shop, the
  * developer shop, the marketplace).
  *
- * Built in: Stripe, NOWPayments, PayPal (`./gateways/`). A plugin adds one from its `server.mjs`:
+ * Built in: Stripe and NOWPayments (`./gateways/`), because licence sales (subscriptions, crypto) depend on them. Every other
+ * gateway is a plugin's: PayPal, Mollie and GoCardless ship in `plugins/rwp-payments-plus`. A plugin adds one from its `server.mjs`:
  *
  *     export function register({ registerPaymentGateway }) {
  *       registerPaymentGateway({ id: 'zarinpal', label: 'Zarinpal', credentialFields: [...], createCheckout, parseWebhook | confirmReturn });
@@ -26,7 +27,6 @@ import { applyFilters, activePluginIds, doAction } from '../hooks.mjs';
 import { GatewayError } from './money.mjs';
 import { stripeGateway } from './gateways/stripe.mjs';
 import { nowpaymentsGateway } from './gateways/nowpayments.mjs';
-import { paypalGateway } from './gateways/paypal.mjs';
 
 export { GatewayError };
 
@@ -34,7 +34,12 @@ const ID = /^[a-z][a-z0-9_-]{1,30}$/;
 const FIELD = /^[a-z][a-z0-9_]{1,40}$/;
 const FIELD_TYPES = ['secret', 'text', 'boolean'];
 /** Ids a plugin may never take: the built-ins, and the shop's own offline methods. */
-export const RESERVED_GATEWAY_IDS = Object.freeze(['stripe', 'nowpayments', 'paypal', 'bacs', 'cheque', 'cod', 'free', 'manual', 'coingate', 'lemonsqueezy']);
+export const RESERVED_GATEWAY_IDS = Object.freeze(['stripe', 'nowpayments', 'bacs', 'cheque', 'cod', 'free', 'manual', 'coingate', 'lemonsqueezy']);
+/**
+ * Ids that only one plugin may register. PayPal was built in until 20261126: shops hold orders, saved settings and refunds under
+ * `paypal`, so another plugin taking that id would receive them. Only rwp-payments-plus, which took PayPal over, may use it.
+ */
+export const PLUGIN_OWNED_GATEWAY_IDS = Object.freeze({ paypal: 'rwp-payments-plus' });
 
 const text = (value, max) => String(value ?? '').trim().slice(0, max);
 
@@ -79,7 +84,7 @@ export function normaliseGateway(def, { pluginId = '', builtIn = false } = {}) {
   });
 }
 
-const BUILT_INS = new Map([stripeGateway, nowpaymentsGateway, paypalGateway].map((def) => [def.id, normaliseGateway(def, { builtIn: true })]));
+const BUILT_INS = new Map([stripeGateway, nowpaymentsGateway].map((def) => [def.id, normaliseGateway(def, { builtIn: true })]));
 const registered = new Map();
 
 /** Called by `server/plugins.mjs` for a plugin's `registerPaymentGateway(def)`. A taken or reserved id is refused. */
@@ -87,6 +92,8 @@ export function registerPaymentGateway(def, { pluginId }) {
   if (!pluginId) throw new TypeError('A payment gateway is registered by a plugin.');
   const gateway = normaliseGateway(def, { pluginId });
   if (RESERVED_GATEWAY_IDS.includes(gateway.id) || BUILT_INS.has(gateway.id)) throw new TypeError(`The gateway id "${gateway.id}" is reserved.`);
+  const owner = PLUGIN_OWNED_GATEWAY_IDS[gateway.id];
+  if (owner && owner !== gateway.pluginId) throw new TypeError(`The gateway id "${gateway.id}" belongs to the plugin ${owner}.`);
   const existing = registered.get(gateway.id);
   if (existing && existing.pluginId !== gateway.pluginId) throw new TypeError(`The gateway id "${gateway.id}" is already registered by ${existing.pluginId}.`);
   registered.set(gateway.id, gateway);

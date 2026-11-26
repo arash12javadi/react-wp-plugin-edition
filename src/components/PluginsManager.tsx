@@ -303,7 +303,13 @@ export default function PluginsManager() {
             : storedActiveIds.includes(plugin.plugin_id),
         }));
       if (newRows.length > 0) {
-        const { error: insertError } = await supabase.from('plugins').insert(newRows);
+        // Idempotent on purpose: this effect can run twice at once (React StrictMode mounts twice), and
+        // both runs see the same new folder. A plain insert made the second run fail on the primary key
+        // (23505) and the first visit showed an error. A row that already exists is left exactly as it is,
+        // so its `active` value is never overwritten here.
+        const { error: insertError } = await supabase
+          .from('plugins')
+          .upsert(newRows, { onConflict: 'plugin_id', ignoreDuplicates: true });
         if (insertError) throw insertError;
       }
       for (const plugin of metadata.filter((item) => existingById.has(item.plugin_id))) {
@@ -374,7 +380,8 @@ export default function PluginsManager() {
       })
       .catch((loadError: unknown) => {
         if (mounted) {
-          const message = loadError instanceof Error ? loadError.message : 'Unable to load plugins.';
+          // A database error is a plain object, not an Error, so describeDbError gives its real text.
+          const message = describeDbError(loadError);
           setError(
             message.includes('relation') && message.includes('plugins')
               ? 'The plugins table is missing. Run supabase/schema.sql in the Supabase SQL Editor, then reload this page.'

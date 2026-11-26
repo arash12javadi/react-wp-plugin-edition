@@ -59,6 +59,7 @@ const loaded = await Promise.allSettled([
   import('../plugins/rwp-plugin-marketplace/server.mjs'),
   import('../plugins/rwp-developers/server.mjs'),
   import('../plugins/rwp-owner-vault/server.mjs'),
+  import('../plugins/rwp-payments-plus/server.mjs'),
   // rwp:server-plugin-imports:end
 ]);
 
@@ -93,12 +94,49 @@ const serverPlugins = bundledPlugins.filter((plugin) => {
  */
 let currentActiveIds = null;
 setActivePluginSource(() => currentActiveIds);
+
+/**
+ * `readPublicOption(name)` for a plugin's hooks: one row of the `options` table, read with the site's publishable key, so it can only
+ * ever see what any visitor can already read (options are public by design). A hook has no request context, so the site's Supabase
+ * address is the one the last plugin request carried (the same for every request of a site). Cached for 15 seconds per name; null
+ * when the option is absent, unreadable, or no request has arrived yet. Never use it for anything secret.
+ */
+let siteSupabase = { url: '', publishableKey: '' };
+const publicOptionCache = new Map();
+const PUBLIC_OPTION_MS = 15_000;
+const PUBLIC_OPTION_NAME = /^[a-z0-9_]{1,64}$/;
+async function readPublicOption(name) {
+  const option = String(name || '');
+  if (!PUBLIC_OPTION_NAME.test(option) || !siteSupabase.url || !siteSupabase.publishableKey) return null;
+  const cached = publicOptionCache.get(option);
+  if (cached && Date.now() - cached.at < PUBLIC_OPTION_MS) return cached.value;
+  let value = null;
+  try {
+    const key = siteSupabase.publishableKey;
+    const response = await fetch(`${siteSupabase.url.replace(/\/$/, '')}/rest/v1/options?option_name=eq.${option}&select=option_value`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const [row] = await response.json();
+    if (row) {
+      try { value = JSON.parse(row.option_value); } catch { value = row.option_value; }
+    }
+  } catch (error) {
+    // A failed read keeps the last good value rather than flipping a plugin's behaviour during an outage.
+    console.warn(`[plugins] the option ${option} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    return cached ? cached.value : null;
+  }
+  publicOptionCache.set(option, { at: Date.now(), value });
+  return value;
+}
+
 for (const plugin of serverPlugins) {
   if (typeof plugin.register !== 'function') continue;
   try {
     await plugin.register({
       ...hooksFor(plugin.id),
       registerPaymentGateway: (definition) => registerPaymentGateway(definition, { pluginId: plugin.id }),
+      readPublicOption,
     });
   } catch (error) {
     console.error(`[hooks] ${plugin.id} could not register its hooks: ${error instanceof Error ? error.message : String(error)}`);
@@ -439,6 +477,9 @@ async function routeWithinPlugin({ request, plugin, routePath }) {
 
   // Hooks of inactive plugins do not run; the first request that knows the active set also fires rwp_plugins_loaded, once.
   currentActiveIds = new Set(activeIds);
+  if (request.supabase?.url && request.supabase?.publishableKey) {
+    siteSupabase = { url: String(request.supabase.url), publishableKey: String(request.supabase.publishableKey) };
+  }
   if (!pluginsLoadedFired) {
     pluginsLoadedFired = true;
     await doAction('rwp_plugins_loaded');
