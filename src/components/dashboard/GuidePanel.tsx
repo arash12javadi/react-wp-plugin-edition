@@ -234,7 +234,7 @@ export default function GuidePanel({ navigate }: { navigate: Navigate }) {
           <ol>
             <li>Shop → Settings: currency, store address, tax, shipping zones and <strong>at least one payment method</strong>.</li>
             <li>Shop → Products: add products (simple, variable, grouped or external) and publish them.</li>
-            <li>For card or PayPal payments, add the Stripe or PayPal keys and <code>SUPABASE_SECRET_KEY</code> to <code>.env.local</code>. Shop → Settings → Status shows which are set.</li>
+            <li>For card payments, paste the Stripe key in Settings → Integrations → Shop payments (Apple Pay, Google Pay, iDEAL and more are switched on in Stripe). For PayPal, Mollie or GoCardless, activate RWP Payments Plus and choose them on its Payment methods screen; their fields then appear on the same card. The server also needs <code>SUPABASE_SECRET_KEY</code> in <code>.env.local</code>. Shop → Settings → Status shows what is set.</li>
             <li>Add the shop pages to your menu: <code>/shop</code>, <code>/cart</code>, <code>/checkout</code>, <code>/my-account</code>.</li>
           </ol>
           <p className={styles.muted}>Test Stripe with an <code>sk_test_</code> key and card 4242 4242 4242 4242. Prices, tax and stock are always calculated by the database, never trusted from the browser.</p>
