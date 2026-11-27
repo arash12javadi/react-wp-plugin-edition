@@ -11,6 +11,7 @@ import type { IntegrationReadOptions, IntegrationRowsResult } from './integratio
 export const SHOP_EMAIL_CONFIG_KEY: string;
 export const SHOP_PAYMENTS_CONFIG_KEY: string;
 export const PAGE_BUILDER_EMAIL_CONFIG_KEY: string;
+export const DEVELOPERS_EMAIL_CONFIG_KEY: string;
 
 export const PLUGIN_INTEGRATION_KEYS: Readonly<Record<string, readonly string[]>>;
 

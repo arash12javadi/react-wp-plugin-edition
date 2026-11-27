@@ -73,8 +73,75 @@ export function licenseLinkFrom(value) {
     // site that connected before this option existed has not agreed to anything.
     auto_install: row.auto_install === true,
     latest_versions: latestVersionsFrom(row.latest_versions),
+    // Plugins bought from developers' own shops (RWPD1), as react-wp.com last delivered them: installed and updated from that shop.
+    developer_licenses: developerLicensesFrom(row.developer_licenses),
+    // What "Roll back" may restore: per plugin, the version an update replaced and the commit it made (server/pluginRollback.mjs).
+    rollback_points: rollbackPointsFrom(row.rollback_points),
   };
 }
+
+const SHOP_HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/;
+const PUBLIC_KEY = /^[A-Za-z0-9+/]{40,200}={0,2}$/;
+
+/**
+ * The developer purchases react-wp.com delivered: `[{ plugin, name, key, seller_domain, public_key, version, expires_on }]`. Only a
+ * safe id, an RWPD1 key of that plugin, a plain host and a plausible public key are kept; at most 200.
+ */
+export function developerLicensesFrom(value) {
+  const out = new Map();
+  for (const item of Array.isArray(value) ? value : []) {
+    const plugin = str(item?.plugin);
+    const key = str(item?.key);
+    const shop = str(item?.seller_domain).toLowerCase();
+    const publicKey = str(item?.public_key);
+    if (!SAFE_PLUGIN_ID.test(plugin) || !key.startsWith(`RWPD1.${plugin}.`) || key.length > 400 || !SHOP_HOST.test(shop) || !PUBLIC_KEY.test(publicKey)) continue;
+    out.set(plugin, {
+      plugin,
+      name: str(item?.name).slice(0, 120) || plugin,
+      key,
+      seller_domain: shop,
+      public_key: publicKey,
+      version: VERSION.test(str(item?.version)) ? str(item.version) : '',
+      expires_on: /^\d{4}-\d{2}-\d{2}$/.test(str(item?.expires_on)) ? str(item.expires_on) : '',
+    });
+    if (out.size >= 200) break;
+  }
+  return [...out.values()];
+}
+
+/** The developer purchase the sync delivered for `plugin` (with a key and a shop to ask), or null. */
+export function developerEntryFor(row, plugin) {
+  const id = str(plugin);
+  const entry = (Array.isArray(row?.developer_licenses) ? row.developer_licenses : []).find((item) => str(item?.plugin) === id);
+  return SAFE_PLUGIN_ID.test(id) && entry && str(entry.key) && str(entry.public_key) && SHOP_HOST.test(str(entry.seller_domain)) ? entry : null;
+}
+
+const SHA1 = /^[0-9a-f]{40}$/;
+
+/** The rollback points of a settings row, cleaned (a damaged row offers nothing). */
+export function rollbackPointsFrom(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = {};
+  for (const [id, point] of Object.entries(source)) {
+    if (!SAFE_PLUGIN_ID.test(id) || !VERSION.test(str(point?.version)) || !SHA1.test(str(point?.commit))) continue;
+    out[id] = { version: str(point.version), commit: str(point.commit), at: str(point.at) };
+  }
+  return out;
+}
+
+/** The point to keep after an update answered `result` (what `installPluginFromGit` returns, with `update.from`). */
+export function pointAfterUpdate(result, now = new Date()) {
+  const commit = str(result?.commit?.sha);
+  const version = str(result?.update?.from);
+  if (!SHA1.test(commit) || !VERSION.test(version)) return null;
+  return { version, commit, at: now.toISOString() };
+}
+
+/** `RWPD1.plugin.…ABCD`: enough to recognise a key on screen, not enough to use it. */
+const keyHint = (key) => {
+  const parts = String(key || '').split('.');
+  return parts.length === 5 ? `${parts[0]}.${parts[1]}.${parts[2]}.${parts[3].slice(0, 4)}…` : '';
+};
 
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
@@ -124,7 +191,15 @@ export function publicLicenseLink(value, { env = globalThis.process?.env || {}, 
     tokenFingerprint: row.token_fingerprint,
     secretBox: safeSecretBoxEnabled(env),
     autoInstall: row.auto_install,
-    latestVersions: row.latest_versions,
+    // Developer plugins are offered as updates too: the version react-wp.com lists for each purchase.
+    latestVersions: {
+      ...Object.fromEntries(row.developer_licenses.filter((entry) => entry.version).map((entry) => [entry.plugin, entry.version])),
+      ...row.latest_versions,
+    },
+    developerLicenses: row.developer_licenses.map((entry) => ({
+      plugin: entry.plugin, name: entry.name, sellerDomain: entry.seller_domain, version: entry.version, expiresOn: entry.expires_on, keyHint: keyHint(entry.key),
+    })),
+    rollbackPoints: Object.fromEntries(Object.entries(row.rollback_points).map(([id, point]) => [id, { version: point.version, at: point.at }])),
   };
 }
 
@@ -239,8 +314,53 @@ export async function updateLicensedPlugin({ plugin, version = '', io, credentia
   } catch (error) {
     throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
   }
-  const { updateSoldPlugin } = await import('./pluginAutoInstall.mjs');
-  return updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}), chain, backup, readInstalled });
+  // A plugin bought from a developer's own shop updates from that shop, with the shop's signature (server/developerPackages.mjs).
+  const developer = developerEntryFor(row, plugin);
+  let result;
+  if (developer) {
+    const { updateDeveloperPlugin } = await import('./developerPackages.mjs');
+    result = await updateDeveloperPlugin({ entry: developer, domain: row.domain, version, io, credentials, now, fetchImpl, chain, backup, readInstalled });
+  } else {
+    const { updateSoldPlugin } = await import('./pluginAutoInstall.mjs');
+    result = await updateSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}), chain, backup, readInstalled });
+  }
+  await rememberRollback({ io, plugin: str(plugin), result, now });
+  return result;
+}
+
+/** Keeps the version an update replaced, for "Roll back". A failure here never fails the update that already landed. */
+async function rememberRollback({ io, plugin, result, now }) {
+  const point = pointAfterUpdate(result, now);
+  if (!point) return;
+  try {
+    const current = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+    await io.write(LICENSE_LINK_CONFIG_KEY, { ...current, rollback_points: { ...current.rollback_points, [plugin]: point } });
+  } catch {
+    // The plugin was updated; only the way back is not offered.
+  }
+}
+
+/**
+ * Puts a licensed plugin back to the version its last update replaced (Plugins → Roll back). Called by that button's route only.
+ */
+export async function rollbackLicensedPlugin({ plugin, io }) {
+  const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
+  const id = str(plugin);
+  const point = row.rollback_points[id];
+  if (!point) throw new LicenseLinkError(404, `There is no earlier version of ${id || 'this plugin'} kept to go back to. A rollback is offered after an update made from this screen.`, 'no_rollback');
+  const { GITHUB_CONFIG_KEY } = await import('./pluginAutoInstall.mjs');
+  const { rollbackPlugin, githubTargetFrom } = await import('./pluginRollback.mjs');
+  let target;
+  try {
+    target = githubTargetFrom(await io.read(GITHUB_CONFIG_KEY));
+  } catch {
+    throw new LicenseLinkError(501, 'Connect GitHub and Vercel under Settings → Integrations first, then try again.', 'no_github');
+  }
+  const result = await rollbackPlugin({ plugin: id, point, target });
+  const rest = { ...row.rollback_points };
+  delete rest[id];
+  await io.write(LICENSE_LINK_CONFIG_KEY, { ...row, rollback_points: rest }).catch(() => {});
+  return result;
 }
 
 /**
@@ -259,8 +379,13 @@ export async function installLicensedPlugin({ plugin, version = '', io, credenti
   } catch (error) {
     throw new LicenseLinkError(503, error instanceof Error ? error.message : `The stored site token could not be opened with ${SECRET_BOX_KEY_ENV}.`, 'token_unreadable');
   }
+  const developer = developerEntryFor(row, plugin);
+  if (developer) {
+    const { installDeveloperPlugin } = await import('./developerPackages.mjs');
+    return installDeveloperPlugin({ entry: developer, domain: row.domain, version, io, credentials, now, fetchImpl });
+  }
   const { installSoldPlugin } = await import('./pluginAutoInstall.mjs');
-  return installSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl });
+  return installSoldPlugin({ plugin, version, token, domain: row.domain, baseUrl: licenseLinkBase(env), io, credentials, now, fetchImpl, licensedIds: Object.keys(row.latest_versions || {}) });
 }
 
 /** Turns the automatic install of assigned plugins on or off. Everything else on the row stays as it is. */
@@ -395,6 +520,7 @@ export async function syncLicenses({ io, licenseIo, credentials = null, env = gl
       etag: install.complete ? str(response.headers.get('etag')) : '',
       // Kept as it was when an older platform sends no list.
       ...(Array.isArray(answer.latest) ? { latest_versions: latestVersionsFrom(answer.latest) } : {}),
+      ...(Array.isArray(answer.developer_licenses) ? { developer_licenses: developerLicensesFrom(answer.developer_licenses) } : {}),
     },
     fullMessage,
     install.complete,
@@ -407,6 +533,18 @@ export async function syncLicenses({ io, licenseIo, credentials = null, env = gl
 
 /** The only platform paths `platformRequest` may call: the developer listing routes, nothing that delivers keys or packages. */
 const DEVELOPER_PATH = /^developer\/[a-z-]{1,40}$/;
+/** The buyer paths the Plugins screen itself calls (`accountRequest`): claim a developer key, see and change this site's seats. */
+const BUYER_PATH = /^buyer\/(claim|seats|seat)$/;
+
+/**
+ * One request from the Plugins screen to react-wp.com as the connected account's buyer (claim a developer key, use or free a seat
+ * for this site). Called only from `server/licenseLinkRoutes.mjs`, which the platform owner reaches; a plugin uses
+ * `platformRequest`, which cannot reach these paths.
+ */
+export async function accountRequest({ io, path, method = 'GET', body, env = globalThis.process?.env || {}, fetchImpl = fetch }) {
+  if (!BUYER_PATH.test(String(path || ''))) throw new LicenseLinkError(400, 'That react-wp.com address is not one this screen may call.', 'bad_platform_path');
+  return platformRequest({ io, path, method, body, env, fetchImpl, timeoutMs: 20_000, allow: BUYER_PATH });
+}
 
 /**
  * One request from this site to react-wp.com in the connected account's name (RWP Developers sending a plugin to the
@@ -417,8 +555,10 @@ const DEVELOPER_PATH = /^developer\/[a-z-]{1,40}$/;
  *
  * @returns {Promise<{ status: number, body: any, domain: string }>}
  */
-export async function platformRequest({ io, path, method = 'GET', body, env = globalThis.process?.env || {}, fetchImpl = fetch, timeoutMs = 60_000 }) {
-  if (!DEVELOPER_PATH.test(String(path || ''))) throw new LicenseLinkError(400, 'That react-wp.com address is not one a plugin may call.', 'bad_platform_path');
+export async function platformRequest({ io, path, method = 'GET', body, env = globalThis.process?.env || {}, fetchImpl = fetch, timeoutMs = 60_000, allow = DEVELOPER_PATH }) {
+  // `allow` is DEVELOPER_PATH for plugins; only `accountRequest` passes BUYER_PATH, and a plugin cannot widen it past these two.
+  const pattern = allow === BUYER_PATH ? BUYER_PATH : DEVELOPER_PATH;
+  if (!pattern.test(String(path || ''))) throw new LicenseLinkError(400, 'That react-wp.com address is not one a plugin may call.', 'bad_platform_path');
   const row = licenseLinkFrom(await io.read(LICENSE_LINK_CONFIG_KEY));
   if (!isLicenseLinked(row)) {
     throw new LicenseLinkError(409, 'This site is not connected to a react-wp.com account. Connect it under Plugins → Connect to react-wp.com, then try again.', 'not_connected');

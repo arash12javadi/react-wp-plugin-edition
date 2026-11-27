@@ -39,12 +39,17 @@ import { readIntegrationRows } from './integrationSettings.mjs';
 export const SHOP_EMAIL_CONFIG_KEY = 'shop_email_config';
 export const SHOP_PAYMENTS_CONFIG_KEY = 'shop_payments_config';
 export const PAGE_BUILDER_EMAIL_CONFIG_KEY = 'page_builder_email_config';
+/** RWP Developers' own sender (optional); without it the site's Settings → Integrations → Email row sends its refund notices. */
+export const DEVELOPERS_EMAIL_CONFIG_KEY = 'developers_email_config';
 
 export const PLUGIN_INTEGRATION_KEYS = Object.freeze({
   'rwp-saas-installer': Object.freeze([SAAS_INSTALLER_CONFIG_KEY, GITHUB_CONFIG_KEY, DEPLOY_CONFIG_KEY]),
   // Own email row first, then the site's: the plugin's address wins, the site's is the fallback.
   'rwp-shop': Object.freeze([SHOP_EMAIL_CONFIG_KEY, EMAIL_CONFIG_KEY, SHOP_PAYMENTS_CONFIG_KEY]),
   'rwp-page-builder': Object.freeze([PAGE_BUILDER_EMAIL_CONFIG_KEY, EMAIL_CONFIG_KEY]),
+  // Refund and licence notices to the shop's buyers (20261127). Read only through core `sendPluginMail`, server-side: the plugin
+  // never returns these rows, and its admin screens never show them.
+  'rwp-developers': Object.freeze([DEVELOPERS_EMAIL_CONFIG_KEY, EMAIL_CONFIG_KEY]),
 });
 
 /** The rows `pluginId` declared, or none. Never the whole table. */

@@ -274,12 +274,14 @@ export async function updateSoldPlugin({ plugin, version = '', token, domain, ba
  *
  * @returns {Promise<object>} what `installPluginFromGit` answers, plus `install: { id, version }`
  */
-export async function installSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {} }) {
+export async function installSoldPlugin({ plugin, version = '', token, domain, baseUrl, io, credentials, now = new Date(), fetchImpl = fetch, deps = {}, licensedIds = [] }) {
   const d = {
     installedPluginVersions, installPluginFromGit, downloadZip, githubTargetFrom, assertPackageMatches, ...deps,
   };
   const id = str(plugin);
-  if (!SAFE_PLUGIN_ID.test(id) || !Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id)) {
+  // A sold plugin of this platform, or one react-wp.com named in the last sync as licensed to this site (another seller's paid plugin
+  // sold on the marketplace). The package must still be signed for this host.
+  if (!SAFE_PLUGIN_ID.test(id) || !(Object.hasOwn(COMMERCIAL_PLUGIN_ADDONS, id) || licensedIds.includes(id))) {
     throw new InstallError('Only the plugins sold on react-wp.com are installed from here. A free plugin is added from Plugins → Upload.', 400);
   }
   const publicKey = deps.publicKey ?? packagePublicKey();

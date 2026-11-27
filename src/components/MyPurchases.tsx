@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { client, getSystemSetting, setSystemSetting } from '../lib/db';
-import { installPurchased, loadPurchases, type Purchase, type PurchaseOverview } from '../lib/purchasedPlugins';
+import {
+  claimLicenceKey, installPurchased, loadPurchases, loadSeats, rollbackPurchased, setSeat, updatePurchased, type Purchase, type PurchaseOverview,
+} from '../lib/purchasedPlugins';
+import type { SiteSeat } from '../lib/licenseLinkApi';
 import styles from './MyPurchases.module.css';
 
 /**
@@ -10,6 +13,11 @@ import styles from './MyPurchases.module.css';
  * holds its keys (the account link fetches them), so each purchase is listed by name and **Install** adds it the one
  * safe way: react-wp.com signs the package for this site, the site checks it, and only then commits it to its own
  * repository (`POST /api/admin/license-link/install`).
+ *
+ * Plugins bought from a developer's own shop (RWPD1 keys) are listed too: the shop reports the sale to the buyer's react-wp.com
+ * account, or the owner claims the key here ("Claim licence key"), and Install / Update fetch the package from that shop and check
+ * its signature on this server. "This site" activates or frees one of a react-wp.com licence's sites for this site, and Roll back
+ * restores the version an update replaced.
  *
  * A site that is not connected can still paste a key by hand (the closed section at the bottom). That older path
  * asks the marketplace to verify the key and then uploads the package by URL, exactly like Plugins → Upload.
@@ -147,9 +155,46 @@ export default function MyPurchases() {
   const [installStep, setInstallStep] = useState('');
   const [installMessage, setInstallMessage] = useState<Record<string, { ok: boolean; text: string }>>({});
 
+  const [seats, setSeats] = useState<SiteSeat[]>([]);
+  const [claimKey, setClaimKey] = useState('');
+  const [claimNote, setClaimNote] = useState<{ ok: boolean; text: string } | null>(null);
+
   const refreshOverview = useCallback(async () => {
-    setOverview(await loadPurchases().catch(() => ({ connected: false, purchases: [] })));
+    const next = await loadPurchases().catch(() => ({ connected: false, purchases: [] }));
+    setOverview(next);
+    setSeats(next.connected ? await loadSeats().catch(() => []) : []);
   }, []);
+
+  /** Runs one button's action for one purchase and shows its sentence under the card. */
+  const act = async (purchase: Purchase, run: () => Promise<string>, fallback: string) => {
+    setWorking(purchase.id);
+    setNotes((current) => ({ ...current, [purchase.id]: { ok: true, text: '' } }));
+    try {
+      const text = await run();
+      setNotes((current) => ({ ...current, [purchase.id]: { ok: true, text } }));
+      await refreshOverview();
+    } catch (failure) {
+      setNotes((current) => ({ ...current, [purchase.id]: { ok: false, text: failure instanceof Error ? failure.message : fallback } }));
+    } finally {
+      setWorking('');
+    }
+  };
+
+  const claim = async () => {
+    const key = claimKey.trim();
+    if (!key) return;
+    setWorking('claim');
+    setClaimNote(null);
+    try {
+      setClaimNote({ ok: true, text: await claimLicenceKey(key) });
+      setClaimKey('');
+      await refreshOverview();
+    } catch (failure) {
+      setClaimNote({ ok: false, text: failure instanceof Error ? failure.message : 'That key could not be claimed.' });
+    } finally {
+      setWorking('');
+    }
+  };
 
   const refreshOne = useCallback(async (key: string): Promise<Entry> => {
     const result = await verifyKey(key);
@@ -246,6 +291,8 @@ export default function MyPurchases() {
   };
 
   const purchases = overview?.purchases || [];
+  const seatOf = (id: string) => seats.find((seat) => seat.plugin === id) || null;
+  const KIND_LABEL: Record<Purchase['kind'], string> = { core: 'react-wp.com', listed: 'react-wp.com marketplace', developer: 'Developer shop' };
 
   return (
     <div className={styles.panel}>
@@ -258,7 +305,10 @@ export default function MyPurchases() {
         <p className={styles.muted} role="status">Looking for your purchases…</p>
       ) : purchases.length > 0 ? (
         <ul className={styles.cards}>
-          {purchases.map((purchase) => (
+          {purchases.map((purchase) => {
+            const seat = seatOf(purchase.id);
+            const newer = purchase.installed && purchase.latestVersion && purchase.installedVersion && purchase.latestVersion !== purchase.installedVersion;
+            return (
             <li key={purchase.id} className={styles.card}>
               <div className={styles.cardMain}>
                 <span className={styles.cardName}>{purchase.name}</span>
@@ -270,21 +320,49 @@ export default function MyPurchases() {
                   <span className={styles.chipBad}>Licence expired</span>
                 )}
               </div>
-              {!purchase.installed && purchase.licensed && (
-                <button
-                  type="button"
-                  className={styles.primary}
-                  disabled={working !== ''}
-                  onClick={() => void installOne(purchase)}
-                >
-                  {working === purchase.id ? 'Installing…' : 'Install'}
-                </button>
-              )}
+              <p className={styles.muted}>
+                Sold by {purchase.kind === 'developer' ? purchase.sellerDomain : KIND_LABEL[purchase.kind]}
+                {purchase.latestVersion ? ` · latest v${purchase.latestVersion}` : ''}
+                {purchase.expiresOn ? ` · licence until ${purchase.expiresOn}` : ''}
+                {purchase.keyHint ? <> · key <code>{purchase.keyHint}</code></> : null}
+                {seat ? ` · ${seat.used} of ${seat.seats_label.toLowerCase()} in use${seat.active_here ? ', including this site' : ''}` : ''}
+              </p>
+              <div className={styles.rowActions}>
+                {!purchase.installed && purchase.licensed && (
+                  <button type="button" className={styles.primary} disabled={working !== ''} onClick={() => void installOne(purchase)}>
+                    {working === purchase.id ? 'Installing…' : 'Install'}
+                  </button>
+                )}
+                {newer && (
+                  <button type="button" className={styles.primary} disabled={working !== ''}
+                    onClick={() => void act(purchase, () => updatePurchased(purchase.id, purchase.latestVersion), `${purchase.name} could not be updated.`)}>
+                    Update to v{purchase.latestVersion}
+                  </button>
+                )}
+                {purchase.installed && purchase.rollbackTo && (
+                  <button type="button" className={styles.secondary} disabled={working !== ''}
+                    onClick={() => {
+                      if (window.confirm(`Go back to ${purchase.name} ${purchase.rollbackTo}? The current version is replaced in your repository and the site is rebuilt.`)) {
+                        void act(purchase, () => rollbackPurchased(purchase.id), `${purchase.name} could not be rolled back.`);
+                      }
+                    }}>
+                    Roll back to v{purchase.rollbackTo}
+                  </button>
+                )}
+                {seat && (
+                  <button type="button" className={styles.secondary} disabled={working !== ''}
+                    aria-label={seat.active_here ? `Stop using ${purchase.name} on this site` : `Use ${purchase.name} on this site`}
+                    onClick={() => void act(purchase, () => setSeat(purchase.id, seat.active_here ? 'deactivate' : 'activate'), 'The licence could not be changed.')}>
+                    {seat.active_here ? 'Free this site' : 'Use on this site'}
+                  </button>
+                )}
+              </div>
               {notes[purchase.id]?.text && (
                 <p className={notes[purchase.id].ok ? styles.notice : styles.error} role="status">{notes[purchase.id].text}</p>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       ) : overview.connected ? (
         <p className={styles.empty}>
@@ -295,6 +373,25 @@ export default function MyPurchases() {
           <p>Connect this site to your react-wp.com account and what you bought appears here, ready to install.</p>
           <a className={styles.primary} href={PLUGINS_SCREEN}>Connect this site</a>
         </div>
+      )}
+
+      {overview?.connected && (
+        <section className={styles.more} aria-labelledby="claim-heading">
+          <h2 id="claim-heading" className={styles.subheading}>Claim licence key</h2>
+          <p className={styles.muted}>
+            Bought a plugin on a developer&apos;s own shop? Paste the licence key (it starts with RWPD1.) to add it to your react-wp.com
+            account; it then appears above, ready to install, and on react-wp.com under My purchases.
+          </p>
+          <div className={styles.addRow}>
+            <label htmlFor="claim-key" className={styles.srOnly}>Developer licence key</label>
+            <input id="claim-key" className={styles.input} value={claimKey} placeholder="RWPD1.…" autoComplete="off" spellCheck={false}
+              onChange={(event) => setClaimKey(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void claim(); }} />
+            <button type="button" className={styles.secondary} onClick={() => void claim()} disabled={!claimKey.trim() || working !== ''}>
+              {working === 'claim' ? 'Checking…' : 'Claim'}
+            </button>
+          </div>
+          {claimNote && <p className={claimNote.ok ? styles.notice : styles.error} role="status">{claimNote.text}</p>}
+        </section>
       )}
 
       <details className={styles.more}>

@@ -6,6 +6,10 @@
  *   POST /api/admin/license-link/connect      `{ code }` → connects this site with a pairing code
  *   POST /api/admin/license-link/sync         fetches the keys now ("Sync now")
  *   POST /api/admin/license-link/disconnect   forgets the sealed token on this site
+ *   POST /api/admin/license-link/claim        `{ license_key }` → binds a developer's RWPD1 key to the account, then syncs
+ *   GET  /api/admin/license-link/seats        which of the account's licences use this site
+ *   POST /api/admin/license-link/seat         `{ plugin, action: 'activate' | 'deactivate' }` → uses or frees this site's seat
+ *   POST /api/admin/license-link/rollback     `{ plugin }` → puts a licensed plugin back to the version its last update replaced
  *
  * Every route needs the **platform owner** (`administrator` / `super_admin`, `authorizePlatformOwner`): the
  * connection decides which licences this installation runs, and its row is a platform-owner row. Requests
@@ -15,12 +19,16 @@
  * My licenses (the response says so).
  */
 import {
-  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, connectSite, licenseLinkFrom, licenseOptionIo, installLicensedPlugin, publicLicenseLink, setAutoInstall, syncLicenses, updateLicensedPlugin,
+  LICENSE_LINK_CONFIG_KEY, LicenseLinkError, accountRequest, connectSite, licenseLinkFrom, licenseOptionIo, installLicensedPlugin, publicLicenseLink, rollbackLicensedPlugin,
+  setAutoInstall, syncLicenses, updateLicensedPlugin,
 } from './licenseLink.mjs';
 import { settingsIo } from './gitDeploy/connection.mjs';
 
 const PREFIX = '/api/admin/license-link';
-const PATHS = new Set([PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/settings`, `${PREFIX}/install`, `${PREFIX}/update`, `${PREFIX}/disconnect`]);
+const PATHS = new Set([
+  PREFIX, `${PREFIX}/connect`, `${PREFIX}/sync`, `${PREFIX}/settings`, `${PREFIX}/install`, `${PREFIX}/update`, `${PREFIX}/disconnect`,
+  `${PREFIX}/claim`, `${PREFIX}/seats`, `${PREFIX}/seat`, `${PREFIX}/rollback`,
+]);
 
 /** The paths this module answers - the single list both engines route by. */
 export const ownsLicenseLinkPath = (pathname) => PATHS.has(pathname);
@@ -63,6 +71,11 @@ export async function handleLicenseLinkRequest(options) {
       if (method !== 'GET') return refuse(405, 'Only GET is supported here.');
       return ok(200, { link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }) });
     }
+    if (pathname === `${PREFIX}/seats`) {
+      if (method !== 'GET') return refuse(405, 'Only GET is supported here.');
+      const answer = await accountRequest({ io, path: 'buyer/seats', method: 'GET', env, fetchImpl });
+      return ok(200, { seats: Array.isArray(answer.body?.seats) ? answer.body.seats : [], domain: answer.domain });
+    }
     if (method !== 'POST') return refuse(405, 'Only POST is supported here.');
 
     if (pathname === `${PREFIX}/connect`) {
@@ -90,6 +103,30 @@ export async function handleLicenseLinkRequest(options) {
       // `backup: true`: the site publishes this plugin itself, so a copy of its current code is kept in the same commit.
       const result = await updateLicensedPlugin({ plugin: body?.plugin, version: body?.version, io, credentials, env, fetchImpl, backup: body?.backup === true ? 'always' : 'auto' });
       return ok(200, { result, deployment: result.deployment ?? null });
+    }
+    if (pathname === `${PREFIX}/claim`) {
+      // A key a developer's shop issued: react-wp.com checks its signature and binds it to the account, then the sync delivers it here.
+      const key = String(body?.license_key || '').trim();
+      if (!key) return refuse(400, 'Paste the licence key you got from the developer.');
+      const answer = await accountRequest({ io, path: 'buyer/claim', method: 'POST', body: { license_key: key }, env, fetchImpl });
+      let sync = null;
+      try {
+        sync = await syncLicenses({ io, licenseIo, credentials, env, fetchImpl });
+      } catch (error) {
+        sync = { changed: false, updated: [], message: error instanceof Error ? error.message : 'The sync did not complete.' };
+      }
+      return ok(200, { claim: answer.body, sync, link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }) });
+    }
+    if (pathname === `${PREFIX}/seat`) {
+      const action = body?.action === 'activate' ? 'activate' : body?.action === 'deactivate' ? 'deactivate' : '';
+      if (!action) return refuse(400, 'Send { "plugin": "...", "action": "activate" } or "deactivate".');
+      const answer = await accountRequest({ io, path: 'buyer/seat', method: 'POST', body: { plugin: String(body?.plugin || ''), action }, env, fetchImpl });
+      return ok(200, { seat: answer.body });
+    }
+    if (pathname === `${PREFIX}/rollback`) {
+      // The owner pressed Roll back. Never reached from a sync or a timer.
+      const result = await rollbackLicensedPlugin({ plugin: body?.plugin, io });
+      return ok(200, { result, link: publicLicenseLink(await io.read(LICENSE_LINK_CONFIG_KEY), { env }) });
     }
     if (pathname === `${PREFIX}/settings`) {
       if (typeof body?.autoInstall !== 'boolean') return refuse(400, 'Send { "autoInstall": true } or { "autoInstall": false }.');
